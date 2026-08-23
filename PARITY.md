@@ -40,7 +40,9 @@ outputs use the user's accepted platform-math tolerance when Windows and WASM
 | 31 | `MakeRList` | first live call from each of ten fresh local-RDP runs | exact row bounds, candidate membership, list order, and inversion flags; accepted platform-math tolerance for derived probability cells |
 | 32 | `FindActualEvents` / `StripUnfound` | all three first-event role calls from fresh local-RDP runs on all ten datasets | exact candidate inputs, found-slot sets, overlap scores, breakpoint matches, swap-last pruning, and structural `OKSeq` state; accepted p-value tolerance |
 | 33 | `StripDupInv` | first live call from each of ten fresh local-RDP runs | exact pre/post row bounds, list order, inverse removal, and inversion penalties |
-| 34 | `MakeLDist` / `MakeRCompat` | first six FAMat/SAMat calls from fresh local-RDP runs on all ten datasets | byte-identical list distances, compatibility/reverse-compatibility scores, and non-recombinant list bounds |
+| 34 | `MakeLDist` / `MakeRCompat` | every first-event call (6–24 calls per run) from fresh local-RDP runs on all ten datasets | byte-identical list distances, compatibility/reverse-compatibility scores, and non-recombinant list bounds across primary, tie-break, alternate-list, and retrim families |
+| 35 | `MakeDoneThis3` / `MakePhPrScore` | all first-event score calls from fresh local-RDP runs on all ten datasets | exact filter/trace state and numerically equivalent correlation/subscores |
+| 36 | `MakeTrpGroups2` / `MakeTrpScore2` | all three role calls from fresh local-RDP runs on all ten datasets | byte-identical group membership/counts and numerically equivalent triplet tree scores |
 
 The live `AlistRDP4` fixture covers 2,300 triplets and changes 709 redo states.
 Because the exact C++ implementation calls `FastRecCheckPB` internally, that
@@ -129,10 +131,12 @@ compiled RDP match all structural inputs and outputs on all ten datasets.
 The same connected path now executes Module3's active `FindActualEventsVB`
 wrapper, the compiled `FindActualEvents` body, `StripUnfound`, and
 `StripDupInv`, preserving their swap-last ordering and two confirmed legacy
-indexing bugs. It then runs `MakeLDist` and the first six FAMat/SAMat
-`MakeRCompat` calls. Every structural boundary matches fresh oracle runs on
-all ten datasets; carried probability cells use the approved `1e-12`
-tolerance.
+indexing bugs. It then runs `MakeLDist` and directly checks every observed
+`MakeRCompat` call, including the optional FCMat/SCMat, alternate-list, and
+post-retrim families (6–24 calls per dataset). The connected score path also
+ports `MakeDoneThis3`, `MakePhPrScore`, `MakeTrpGroups2`, and `MakeTrpScore2`.
+Every routine boundary matches fresh oracle runs on all ten datasets; carried
+probability and correlation-score cells use the approved `1e-12` tolerance.
 
 The orchestration preserves two otherwise easy-to-collapse state values:
 RDP passes the FASTA length to `FindSubSeqPB3` but the FASTA length plus one to

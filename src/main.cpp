@@ -872,7 +872,9 @@ int fasta_all_redo_events_fixture(
     const std::string& make_rlist_fixture_path,
     const std::string& find_actual_events_fixture_path,
     const std::string& strip_dup_inv_fixture_path,
-    const std::string& rcompat_fixture_path) {
+    const std::string& rcompat_fixture_path,
+    const std::string& phpr_fixture_path,
+    const std::string& score_support_fixture_path) {
     const Dna5ScanPreprocessApi preprocess_api{
         &MathFuncs::MyMathFuncs::MakeAListP2,
         &MathFuncs::MyMathFuncs::CountNucs,
@@ -2328,41 +2330,94 @@ int fasta_all_redo_events_fixture(
         background_adjusted, region_adjusted);
     bool rcompat_matches = strip_dup_matches &&
         rcompat_fixture.header.next_no == scan_state.next_no &&
-        rcompat_fixture.header.calls == 6;
-    for (int call_index = 0; call_index < 6; ++call_index) {
+        rcompat_fixture.header.calls >= 6;
+    for (unsigned int call_index = 0;
+         call_index < rcompat_fixture.header.calls; ++call_index) {
         const int base = call_index * 1000;
-        const auto& call = tree_compatibility.calls[call_index];
-        const std::vector<int> metadata{call_index + 1, call.role};
-        const auto& matrix = call_index < 3
-            ? background_adjusted : region_adjusted;
+        const auto metadata =
+            rdp_fixture_section<int>(rcompat_fixture, base + 1);
+        const auto call_sequences =
+            rdp_fixture_section<int>(rcompat_fixture, base + 2);
+        const auto call_comparison =
+            rdp_fixture_section<int>(rcompat_fixture, base + 3);
+        const auto compatibility_before =
+            rdp_fixture_section<int>(rcompat_fixture, base + 4);
+        const auto reverse_before =
+            rdp_fixture_section<int>(rcompat_fixture, base + 5);
+        const auto call_penalty =
+            rdp_fixture_section<int>(rcompat_fixture, base + 6);
+        const auto call_last =
+            rdp_fixture_section<int>(rcompat_fixture, base + 7);
+        const auto nonrecombinant_before =
+            rdp_fixture_section<int>(rcompat_fixture, base + 8);
+        const auto call_good =
+            rdp_fixture_section<int>(rcompat_fixture, base + 9);
+        const auto expected_done =
+            rdp_fixture_section<int>(rcompat_fixture, base + 10);
+        const auto call_list =
+            rdp_fixture_section<int>(rcompat_fixture, base + 11);
+        auto nonrecombinant_list =
+            rdp_fixture_section<int>(rcompat_fixture, base + 12);
+        const auto matrix =
+            rdp_fixture_section<float>(rcompat_fixture, base + 13);
+        const auto list_distances =
+            rdp_fixture_section<double>(rcompat_fixture, base + 14);
+        const bool dimensions_match = metadata.size() == 2 &&
+            call_sequences.size() == 3 && call_comparison.size() == 6 &&
+            compatibility_before.size() == 3 && reverse_before.size() == 3 &&
+            call_penalty.size() == 3 && call_last.size() == 3 &&
+            nonrecombinant_before.size() == 3 && list_distances.size() == 3;
+        RdpTreeCompatibilityCallState call;
+        if (dimensions_match) {
+            std::array<int, 3> compatibility{
+                compatibility_before[0], compatibility_before[1],
+                compatibility_before[2]};
+            std::array<int, 3> reverse{
+                reverse_before[0], reverse_before[1], reverse_before[2]};
+            std::array<int, 3> nonrecombinant_last{
+                nonrecombinant_before[0], nonrecombinant_before[1],
+                nonrecombinant_before[2]};
+            call = make_rdp_tree_compatibility_call(
+                scan_state.next_no,
+                {call_sequences[0], call_sequences[1], call_sequences[2]},
+                {call_comparison[0], call_comparison[1], call_comparison[2],
+                 call_comparison[3], call_comparison[4], call_comparison[5]},
+                metadata[1],
+                {call_penalty[0], call_penalty[1], call_penalty[2]},
+                {call_last[0], call_last[1], call_last[2]}, call_list,
+                call_good, matrix,
+                {list_distances[0], list_distances[1], list_distances[2]},
+                compatibility, reverse, nonrecombinant_last,
+                nonrecombinant_list);
+        }
+        bool integrated_matches = true;
+        if (call_index < 6 && dimensions_match) {
+            const auto& integrated = tree_compatibility.calls[call_index];
+            const auto& integrated_matrix = call_index < 3
+                ? background_adjusted : region_adjusted;
+            integrated_matches =
+                integrated_matrix == matrix &&
+                as_vector(actual_resolution.candidates.last) == call_last &&
+                actual_resolution.candidates.list == call_list &&
+                integrated.compatibility_after == call.compatibility_after &&
+                integrated.reverse_compatibility_after ==
+                    call.reverse_compatibility_after &&
+                integrated.nonrecombinant_last_after ==
+                    call.nonrecombinant_last_after;
+        }
         const bool call_matches =
-            metadata == rdp_fixture_section<int>(rcompat_fixture, base + 1) &&
-            selected_sequences ==
-                rdp_fixture_section<int>(rcompat_fixture, base + 2) &&
-            as_vector(correlation_comparison) ==
-                rdp_fixture_section<int>(rcompat_fixture, base + 3) &&
+            dimensions_match && integrated_matches &&
             as_vector(call.compatibility_before) ==
-                rdp_fixture_section<int>(rcompat_fixture, base + 4) &&
+                compatibility_before &&
             as_vector(call.reverse_compatibility_before) ==
-                rdp_fixture_section<int>(rcompat_fixture, base + 5) &&
-            as_vector(actual_resolution.inversion_penalty) ==
-                rdp_fixture_section<int>(rcompat_fixture, base + 6) &&
-            as_vector(actual_resolution.candidates.last) ==
-                rdp_fixture_section<int>(rcompat_fixture, base + 7) &&
+                reverse_before &&
             as_vector(call.nonrecombinant_last_before) ==
-                rdp_fixture_section<int>(rcompat_fixture, base + 8) &&
-            good_comparisons ==
-                rdp_fixture_section<int>(rcompat_fixture, base + 9) &&
-            call.done_before ==
-                rdp_fixture_section<int>(rcompat_fixture, base + 10) &&
-            actual_resolution.candidates.list ==
-                rdp_fixture_section<int>(rcompat_fixture, base + 11) &&
+                nonrecombinant_before &&
+            call.done_before == expected_done &&
             call.nonrecombinant_list_before ==
                 rdp_fixture_section<int>(rcompat_fixture, base + 12) &&
-            matrix ==
-                rdp_fixture_section<float>(rcompat_fixture, base + 13) &&
             as_vector(call.list_distances) ==
-                rdp_fixture_section<double>(rcompat_fixture, base + 14) &&
+                list_distances &&
             as_vector(call.compatibility_after) ==
                 rdp_fixture_section<int>(rcompat_fixture, base + 101) &&
             as_vector(call.reverse_compatibility_after) ==
@@ -2371,9 +2426,8 @@ int fasta_all_redo_events_fixture(
                 rdp_fixture_section<int>(rcompat_fixture, base + 103);
         if (!call_matches) {
             std::cerr << "MakeRCompat call " << call_index
-                      << " mismatch: matrix="
-                      << (matrix == rdp_fixture_section<float>(
-                             rcompat_fixture, base + 13))
+                      << " mismatch: dimensions=" << dimensions_match
+                      << " integrated=" << integrated_matches
                       << " ldist="
                       << (as_vector(call.list_distances) ==
                           rdp_fixture_section<double>(
@@ -2397,6 +2451,257 @@ int fasta_all_redo_events_fixture(
                       << '\n';
         }
         rcompat_matches = rcompat_matches && call_matches;
+    }
+    const char phpr_magic[8] = {
+        'P', 'H', 'P', 'R', 'S', 'C', 'O', '1'};
+    const auto phpr_fixture =
+        load_rdp_sectioned_fixture<PhPrScoreCaptureHeader>(
+            phpr_fixture_path, phpr_magic);
+    bool phpr_matches =
+        phpr_fixture.header.next_no == scan_state.next_no &&
+        phpr_fixture.header.calls >= 2 &&
+        phpr_fixture.header.calls <= 3;
+    for (unsigned int call_index = 0;
+         call_index < phpr_fixture.header.calls; ++call_index) {
+        const int base = static_cast<int>(call_index) * 1000;
+        const auto offset_values =
+            rdp_fixture_section<double>(phpr_fixture, base + 2);
+        const auto call_sequences =
+            rdp_fixture_section<int>(phpr_fixture, base + 3);
+        const auto done_this =
+            rdp_fixture_section<int>(phpr_fixture, base + 4);
+        const auto expected_trace =
+            rdp_fixture_section<int>(phpr_fixture, base + 5);
+        const auto first_matrix =
+            rdp_fixture_section<float>(phpr_fixture, base + 6);
+        const auto second_matrix =
+            rdp_fixture_section<float>(phpr_fixture, base + 7);
+        const auto expected_scores =
+            rdp_fixture_section<double>(phpr_fixture, base + 8);
+        const auto expected_sub_scores =
+            rdp_fixture_section<double>(phpr_fixture, base + 9);
+        const auto expected_sub_distances =
+            rdp_fixture_section<double>(phpr_fixture, base + 10);
+        const bool dimensions_match = offset_values.size() == 1 &&
+            call_sequences.size() == 3;
+        RdpPhylProScoreState actual;
+        if (dimensions_match) {
+            actual = make_rdp_phylpro_scores(
+                scan_state.next_no, offset_values[0], done_this,
+                {call_sequences[0], call_sequences[1], call_sequences[2]},
+                first_matrix, second_matrix);
+        }
+        const bool call_matches = dimensions_match &&
+            actual.trace_involved == expected_trace &&
+            probability_vectors_match(
+                as_vector(actual.scores), expected_scores) &&
+            probability_vectors_match(
+                as_vector(actual.sub_scores), expected_sub_scores) &&
+            probability_vectors_match(
+                as_vector(actual.sub_distance_scores),
+                expected_sub_distances);
+        if (!call_matches) {
+            std::cerr << "MakePhPrScore call " << call_index
+                      << " mismatch: dimensions=" << dimensions_match
+                      << " trace="
+                      << (dimensions_match &&
+                          actual.trace_involved == expected_trace)
+                      << " score="
+                      << (dimensions_match &&
+                          probability_vectors_match(
+                              as_vector(actual.scores), expected_scores))
+                      << " sub="
+                      << (dimensions_match &&
+                          probability_vectors_match(
+                              as_vector(actual.sub_scores),
+                              expected_sub_scores))
+                      << " distance="
+                      << (dimensions_match &&
+                          probability_vectors_match(
+                              as_vector(actual.sub_distance_scores),
+                              expected_sub_distances))
+                      << " values=";
+            if (dimensions_match) {
+                for (int role = 0; role < 3; ++role) {
+                    std::cerr << actual.scores[role] << '/'
+                              << expected_scores[role] << ',';
+                }
+                std::cerr << " sub=";
+                for (int role = 0; role < 3; ++role) {
+                    std::cerr << actual.sub_scores[role] << '/'
+                              << expected_sub_scores[role] << ',';
+                }
+            }
+            std::cerr << '\n';
+        }
+        phpr_matches = phpr_matches && call_matches;
+    }
+    const char score_support_magic[8] = {
+        'S', 'C', 'O', 'R', 'E', 'S', 'P', '1'};
+    const auto score_support_fixture =
+        load_rdp_sectioned_fixture<ScoreSupportCaptureHeader>(
+            score_support_fixture_path, score_support_magic);
+    bool score_support_matches =
+        score_support_fixture.header.next_no == scan_state.next_no &&
+        score_support_fixture.header.done_calls == 2 &&
+        score_support_fixture.header.group_calls == 3 &&
+        score_support_fixture.header.score_calls == 3;
+    for (unsigned int call_index = 0; call_index < 2; ++call_index) {
+        const int base = static_cast<int>(call_index) * 1000;
+        const auto call_sequences =
+            rdp_fixture_section<int>(score_support_fixture, base + 2);
+        const auto done_before =
+            rdp_fixture_section<int>(score_support_fixture, base + 3);
+        const auto raw_background =
+            rdp_fixture_section<float>(score_support_fixture, base + 4);
+        const auto ancestor_background =
+            rdp_fixture_section<float>(score_support_fixture, base + 5);
+        const auto ancestor_region =
+            rdp_fixture_section<float>(score_support_fixture, base + 6);
+        const auto expected_result =
+            rdp_fixture_section<int>(score_support_fixture, base + 7);
+        const auto expected_done =
+            rdp_fixture_section<int>(score_support_fixture, base + 8);
+        const bool dimensions_match = call_sequences.size() == 3 &&
+            expected_result.size() == 1;
+        std::vector<int> actual;
+        if (dimensions_match) {
+            actual = make_rdp_score_filter(
+                scan_state.next_no,
+                {call_sequences[0], call_sequences[1], call_sequences[2]},
+                raw_background, ancestor_background, ancestor_region);
+        }
+        const bool call_matches = dimensions_match &&
+            std::all_of(done_before.begin(), done_before.end(),
+                        [](const int value) { return value == 0; }) &&
+            expected_result[0] == 1 && actual == expected_done;
+        if (!call_matches) {
+            std::cerr << "MakeDoneThis3 call " << call_index
+                      << " mismatch: dimensions=" << dimensions_match
+                      << " output=" << (actual == expected_done) << '\n';
+        }
+        score_support_matches = score_support_matches && call_matches;
+    }
+    std::array<RdpTripletGroupState, 3> triplet_groups;
+    for (unsigned int call_index = 0; call_index < 3; ++call_index) {
+        const int base = 10000 + static_cast<int>(call_index) * 1000;
+        const auto raw_header =
+            rdp_fixture_section<unsigned int>(score_support_fixture, base + 1);
+        const auto call_sequences =
+            rdp_fixture_section<int>(score_support_fixture, base + 2);
+        const auto call_comparison =
+            rdp_fixture_section<int>(score_support_fixture, base + 3);
+        const auto counts_before =
+            rdp_fixture_section<int>(score_support_fixture, base + 4);
+        const auto done_before =
+            rdp_fixture_section<int>(score_support_fixture, base + 5);
+        const auto groups_before =
+            rdp_fixture_section<int>(score_support_fixture, base + 6);
+        const auto minimum_before =
+            rdp_fixture_section<double>(score_support_fixture, base + 7);
+        const auto matrix =
+            rdp_fixture_section<float>(score_support_fixture, base + 8);
+        const auto expected_result =
+            rdp_fixture_section<int>(score_support_fixture, base + 9);
+        const auto expected_counts =
+            rdp_fixture_section<int>(score_support_fixture, base + 10);
+        const auto expected_done =
+            rdp_fixture_section<int>(score_support_fixture, base + 11);
+        const auto expected_groups =
+            rdp_fixture_section<int>(score_support_fixture, base + 12);
+        const auto expected_minimum =
+            rdp_fixture_section<double>(score_support_fixture, base + 13);
+        const int role = raw_header.size() == 4
+            ? static_cast<int>(raw_header[2]) : -1;
+        const bool dimensions_match = role >= 0 && role < 3 &&
+            call_sequences.size() == 3 && call_comparison.size() == 6 &&
+            expected_result.size() == 1;
+        if (dimensions_match) {
+            triplet_groups[role] = make_rdp_triplet_groups(
+                role, scan_state.next_no,
+                {call_sequences[0], call_sequences[1], call_sequences[2]},
+                {call_comparison[0], call_comparison[1], call_comparison[2],
+                 call_comparison[3], call_comparison[4], call_comparison[5]},
+                matrix,
+                {minimum_before[0], minimum_before[1], minimum_before[2]});
+        }
+        const auto minimum_actual = dimensions_match
+            ? as_vector(triplet_groups[role].minimum_distances)
+            : std::vector<double>{};
+        const bool call_matches = dimensions_match &&
+            std::all_of(counts_before.begin(), counts_before.end(),
+                        [](const int value) { return value == 0; }) &&
+            std::all_of(done_before.begin(), done_before.end(),
+                        [](const int value) { return value == 0; }) &&
+            std::all_of(groups_before.begin(), groups_before.end(),
+                        [](const int value) { return value == 0; }) &&
+            triplet_groups[role].result == expected_result[0] &&
+            triplet_groups[role].counts == expected_counts &&
+            triplet_groups[role].done == expected_done &&
+            triplet_groups[role].groups == expected_groups &&
+            probability_vectors_match(minimum_actual, expected_minimum);
+        if (!call_matches) {
+            std::cerr << "MakeTrpGroups2 call " << call_index
+                      << " mismatch: role=" << role
+                      << " counts=" << (dimensions_match &&
+                          triplet_groups[role].counts == expected_counts)
+                      << " done=" << (dimensions_match &&
+                          triplet_groups[role].done == expected_done)
+                      << " groups=" << (dimensions_match &&
+                          triplet_groups[role].groups == expected_groups)
+                      << " minimum=" << (dimensions_match &&
+                          probability_vectors_match(
+                              minimum_actual, expected_minimum))
+                      << '\n';
+        }
+        score_support_matches = score_support_matches && call_matches;
+    }
+    for (unsigned int call_index = 0; call_index < 3; ++call_index) {
+        const int base = 20000 + static_cast<int>(call_index) * 1000;
+        const auto raw_header =
+            rdp_fixture_section<unsigned int>(score_support_fixture, base + 1);
+        const auto call_sequences =
+            rdp_fixture_section<int>(score_support_fixture, base + 2);
+        auto scores =
+            rdp_fixture_section<double>(score_support_fixture, base + 3);
+        const auto counts =
+            rdp_fixture_section<int>(score_support_fixture, base + 4);
+        const auto groups =
+            rdp_fixture_section<int>(score_support_fixture, base + 5);
+        const auto first_matrix =
+            rdp_fixture_section<float>(score_support_fixture, base + 6);
+        const auto second_matrix =
+            rdp_fixture_section<float>(score_support_fixture, base + 7);
+        const auto expected_result =
+            rdp_fixture_section<int>(score_support_fixture, base + 8);
+        const auto expected_scores =
+            rdp_fixture_section<double>(score_support_fixture, base + 9);
+        const int role = raw_header.size() == 4
+            ? static_cast<int>(raw_header[2]) : -1;
+        const bool dimensions_match = role >= 0 && role < 3 &&
+            call_sequences.size() == 3 && scores.size() == 4 &&
+            expected_result.size() == 1;
+        if (dimensions_match) {
+            RdpTripletGroupState inputs = triplet_groups[role];
+            inputs.counts = counts;
+            inputs.groups = groups;
+            scores[role] = make_rdp_triplet_tree_score(
+                role, scan_state.next_no,
+                {call_sequences[0], call_sequences[1], call_sequences[2]},
+                first_matrix, second_matrix, inputs);
+        }
+        const bool call_matches = dimensions_match &&
+            expected_result[0] == 1 &&
+            probability_vectors_match(scores, expected_scores);
+        if (!call_matches) {
+            std::cerr << "MakeTrpScore2 call " << call_index
+                      << " mismatch: role=" << role
+                      << " output="
+                      << (dimensions_match &&
+                          probability_vectors_match(scores, expected_scores))
+                      << '\n';
+        }
+        score_support_matches = score_support_matches && call_matches;
     }
     std::cout << "RDP all-redo raw event scan: " << events.scanned_triplets
               << " triplets (Alist return " << redo_count << "), "
@@ -2430,14 +2735,18 @@ int fasta_all_redo_events_fixture(
               << ", StripDupInv "
               << (strip_dup_matches ? "PASS" : "FAIL")
               << ", MakeRCompat "
-              << (rcompat_matches ? "PASS" : "FAIL") << "\n";
+              << (rcompat_matches ? "PASS" : "FAIL")
+              << ", MakePhPrScore "
+              << (phpr_matches ? "PASS" : "FAIL")
+              << ", score support "
+              << (score_support_matches ? "PASS" : "FAIL") << "\n";
 
     return make_test_structure_matches && first_selection_matches &&
             ufdist_matches && region_distance_matches &&
             check_matrix_matches && make_nj_matches ?
         (make_sdmp_matches && fill_rmat_matches && calcr_matches &&
          make_rlist_matches && find_actual_matches && strip_dup_matches &&
-             rcompat_matches
+             rcompat_matches && phpr_matches && score_support_matches
              ? 0 : 1) : 1;
 }
 
@@ -2623,12 +2932,13 @@ int main(int argc, char** argv) {
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
             argv[9], argv[10], argv[11]);
     }
-    if (argc == 20 &&
+    if (argc == 22 &&
         std::string_view(argv[1]) == "fasta-all-redo-events-fixture") {
         return fasta_all_redo_events_fixture(
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
             argv[9], argv[10], argv[11], {argv[12], argv[13], argv[14]},
-            argv[15], argv[16], argv[17], argv[18], argv[19]);
+            argv[15], argv[16], argv[17], argv[18], argv[19], argv[20],
+            argv[21]);
     }
     if (argc == 3 && std::string_view(argv[1]) == "alist-rdp4-fixture") {
         return alist_rdp4_fixture(argv[2]);

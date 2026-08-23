@@ -83,8 +83,9 @@ matrix for this connected prefix with:
 
 Run the all-redo event-state, first-selection, regional-distance,
 `CheckMatrixP`, first-NJ-tree, `MakeSDMP2`, `FillRmat`, `CalCR`, `MakeRList`,
-`FindActualEvents`, `StripDupInv`, and first FAMat/SAMat `MakeRCompat` parity
-table with:
+`FindActualEvents`, `StripDupInv`, every observed `MakeRCompat` family,
+`MakePhPrScore`, and the supporting tree-group score routines parity table
+with:
 
 ```sh
 ./tools/check-all-event-state-parity.sh

@@ -155,6 +155,18 @@ RdpActualEventResolution resolve_rdp_actual_events(
     const RdpRawEventState& events,
     int permanent_next_no = -1);
 
+struct RdpEventSetState {
+    std::array<int, 3> candidate_last{};
+    std::vector<int> candidate_list;
+    std::array<int, 6> set_totals{};
+    std::vector<unsigned char> role_sets;
+};
+
+RdpEventSetState find_rdp_event_sets(
+    int sequence_length, int next_no, int beginning, int ending,
+    const std::array<int, 3>& sequences,
+    const RdpRawEventState& events);
+
 struct RdpTreeCompatibilityCallState {
     int role{};
     std::array<int, 3> compatibility_before{};
@@ -178,6 +190,20 @@ struct RdpTreeCompatibilityState {
     std::array<RdpTreeCompatibilityCallState, 6> calls;
 };
 
+RdpTreeCompatibilityCallState make_rdp_tree_compatibility_call(
+    int next_no, const std::array<int, 3>& sequences,
+    const std::array<int, 6>& comparison_matrix, int role,
+    const std::array<int, 3>& inversion_penalty,
+    const std::array<int, 3>& candidate_last,
+    const std::vector<int>& candidate_list,
+    const std::vector<int>& good_comparisons,
+    const std::vector<float>& ancestor_matrix,
+    const std::array<double, 3>& list_distances,
+    std::array<int, 3>& compatibility,
+    std::array<int, 3>& reverse_compatibility,
+    std::array<int, 3>& nonrecombinant_last,
+    std::vector<int>& nonrecombinant_list);
+
 RdpTreeCompatibilityState evaluate_rdp_tree_compatibility(
     int next_no, const std::array<int, 3>& sequences,
     const std::array<int, 6>& comparison_matrix,
@@ -187,3 +213,45 @@ RdpTreeCompatibilityState evaluate_rdp_tree_compatibility(
     const std::vector<int>& good_comparisons,
     const std::vector<float>& background_ancestor_matrix,
     const std::vector<float>& region_ancestor_matrix);
+
+struct RdpPhylProScoreState {
+    std::vector<int> trace_involved;
+    std::array<double, 3> scores{};
+    std::array<double, 3> temporary_scores{};
+    std::array<double, 3> sub_scores{};
+    std::array<double, 3> sub_distance_scores{};
+    double result{};
+};
+
+RdpPhylProScoreState make_rdp_phylpro_scores(
+    int next_no, double minimum_offset,
+    const std::vector<int>& done_this,
+    const std::array<int, 3>& sequences,
+    const std::vector<float>& background_matrix,
+    const std::vector<float>& region_matrix);
+
+std::vector<int> make_rdp_score_filter(
+    int next_no, const std::array<int, 3>& sequences,
+    const std::vector<float>& raw_background_rows,
+    const std::vector<float>& ancestor_background_rows,
+    const std::vector<float>& ancestor_region_rows);
+
+struct RdpTripletGroupState {
+    std::vector<int> counts;
+    std::vector<int> done;
+    std::vector<int> groups;
+    std::array<double, 3> minimum_distances{};
+    int result{};
+};
+
+RdpTripletGroupState make_rdp_triplet_groups(
+    int role, int next_no, const std::array<int, 3>& sequences,
+    const std::array<int, 6>& comparison_matrix,
+    const std::vector<float>& ancestor_background_rows,
+    std::array<double, 3> minimum_distances = {});
+
+double make_rdp_triplet_tree_score(
+    int role, int next_no, const std::array<int, 3>& sequences,
+    const std::vector<float>& ancestor_background_rows,
+    const std::vector<float>& ancestor_region_rows,
+    const RdpTripletGroupState& groups);

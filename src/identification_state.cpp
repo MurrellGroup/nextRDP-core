@@ -1,5 +1,6 @@
 #include "identification_state.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -1398,6 +1399,332 @@ RdpActualEventResolution resolve_rdp_actual_events(
     return output;
 }
 
+RdpEventSetState find_rdp_event_sets(
+    const int sequence_length, const int next_no, const int beginning,
+    const int ending, const std::array<int, 3>& sequences,
+    const RdpRawEventState& events) {
+    const int count = next_no + 1;
+    if (sequence_length < 1 || beginning < 1 || ending < 1 ||
+        beginning > sequence_length || ending > sequence_length ||
+        events.current_xover.size() != static_cast<std::size_t>(count) ||
+        events.xover_list.size() != static_cast<std::size_t>(count)) {
+        throw std::runtime_error("FindSets input dimensions differ");
+    }
+    const auto cell = [](const int role, const int sequence) {
+        return static_cast<std::size_t>(role) + sequence * 3;
+    };
+    const int target_size = ending > beginning
+        ? ending - beginning + 1
+        : ending + sequence_length - beginning + 1;
+    const auto event_overlap = [&](const RdpRawEvent& event) {
+        int overlap = 0;
+        int event_size = 0;
+        int position = event.beginning;
+        while (true) {
+            ++event_size;
+            const bool in_target = beginning <= ending
+                ? position >= beginning && position <= ending
+                : position >= beginning || position <= ending;
+            if (in_target) ++overlap;
+            if (position == event.ending) break;
+            ++position;
+            if (position > sequence_length) position = 1;
+            if (event_size > sequence_length) break;
+        }
+        return static_cast<float>(overlap) /
+            ((static_cast<float>(target_size) + event_size) / 2.0F) > 0.3F;
+    };
+    const auto event_members = [](const RdpRawEvent& event) {
+        return std::array<int, 3>{
+            event.daughter, event.major_parent, event.minor_parent};
+    };
+
+    RdpEventSetState output;
+    output.candidate_list.assign(static_cast<std::size_t>(3 * count), 0);
+    std::vector<unsigned char> sets(static_cast<std::size_t>(3 * count), 0);
+    for (int row = 0; row <= next_no; ++row) {
+        for (const auto& event : events.xover_list[row]) {
+            const auto members = event_members(event);
+            std::array<unsigned char, 3> involved{};
+            bool any = false;
+            for (int role = 0; role < 3; ++role) {
+                if (std::find(members.begin(), members.end(),
+                              sequences[role]) != members.end()) {
+                    involved[role] = 1;
+                    any = true;
+                }
+            }
+            if (any && event_overlap(event)) {
+                for (int role = 0; role < 3; ++role) {
+                    if (involved[role] == 0) continue;
+                    for (const int member : members) {
+                        if (member >= 0 && member <= next_no) {
+                            sets[cell(role, member)] = 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    std::vector<unsigned char> membership(
+        static_cast<std::size_t>(3 * count), 0);
+    for (int role = 0; role < 3; ++role) {
+        membership[cell(role, sequences[role])] = 1;
+    }
+    bool changed = false;
+    for (int sequence = 0; sequence <= next_no; ++sequence) {
+        const int total = sets[cell(0, sequence)] +
+            sets[cell(1, sequence)] + sets[cell(2, sequence)];
+        if (total == 2) {
+            for (int role = 0; role < 3; ++role) {
+                if (sets[cell(role, sequence)] == 0 &&
+                    membership[cell(role, sequence)] == 0) {
+                    membership[cell(role, sequence)] = 1;
+                    changed = true;
+                }
+            }
+        }
+    }
+    const auto rebuild_lists = [&] {
+        output.candidate_last = {-1, -1, -1};
+        std::fill(output.candidate_list.begin(),
+                  output.candidate_list.end(), 0);
+        for (int role = 0; role < 3; ++role) {
+            for (int sequence = 0; sequence <= next_no; ++sequence) {
+                if (membership[cell(role, sequence)] != 0) {
+                    ++output.candidate_last[role];
+                    output.candidate_list[cell(
+                        role, output.candidate_last[role])] = sequence;
+                }
+            }
+        }
+    };
+    rebuild_lists();
+
+    std::vector<unsigned char> unique_sets(
+        static_cast<std::size_t>(7 * count), 0);
+    while (changed) {
+        std::fill(sets.begin(), sets.end(), 0);
+        for (int row = 0; row <= next_no; ++row) {
+            for (const auto& event : events.xover_list[row]) {
+                if (!event_overlap(event)) continue;
+                const auto members = event_members(event);
+                for (int role = 0; role < 3; ++role) {
+                    bool touches = false;
+                    for (const int member : members) {
+                        if (member >= 0 && member <= next_no &&
+                            membership[cell(role, member)] != 0) {
+                            touches = true;
+                            break;
+                        }
+                    }
+                    if (touches) {
+                        for (const int member : members) {
+                            if (member >= 0 && member <= next_no) {
+                                sets[cell(role, member)] = 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        changed = false;
+        std::fill(unique_sets.begin(), unique_sets.end(), 0);
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            const int total = sets[cell(0, sequence)] +
+                sets[cell(1, sequence)] + sets[cell(2, sequence)];
+            if (total == 2) {
+                for (int role = 0; role < 3; ++role) {
+                    if (sets[cell(role, sequence)] == 0 &&
+                        membership[cell(role, sequence)] == 0) {
+                        membership[cell(role, sequence)] = 1;
+                        changed = true;
+                    }
+                }
+            } else if (total == 1) {
+                for (int role = 0; role < 3; ++role) {
+                    if (sets[cell(role, sequence)] != 0) {
+                        unique_sets[static_cast<std::size_t>(role + 4) +
+                                    sequence * 7] = 1;
+                    }
+                }
+            }
+        }
+        rebuild_lists();
+    }
+    for (int role = 0; role < 3; ++role) {
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            output.set_totals[role * 2] +=
+                unique_sets[static_cast<std::size_t>(role + 4) +
+                            sequence * 7];
+        }
+    }
+    output.role_sets = std::move(sets);
+    return output;
+}
+
+RdpTreeCompatibilityCallState make_rdp_tree_compatibility_call(
+    const int next_no, const std::array<int, 3>& sequences,
+    const std::array<int, 6>& comparison_matrix, const int role,
+    const std::array<int, 3>& inversion_penalty,
+    const std::array<int, 3>& candidate_last,
+    const std::vector<int>& candidate_list,
+    const std::vector<int>& good_comparisons,
+    const std::vector<float>& matrix,
+    const std::array<double, 3>& list_distances,
+    std::array<int, 3>& compatibility,
+    std::array<int, 3>& reverse_compatibility,
+    std::array<int, 3>& nonrecombinant_last,
+    std::vector<int>& nonrecombinant_list) {
+    const int count = next_no + 1;
+    if (role < 0 || role > 2 ||
+        candidate_list.size() != static_cast<std::size_t>(3 * count) ||
+        good_comparisons.size() != static_cast<std::size_t>(2 * count) ||
+        matrix.size() != static_cast<std::size_t>(count) * count ||
+        nonrecombinant_list.size() != static_cast<std::size_t>(3 * count)) {
+        throw std::runtime_error("MakeRCompat input dimensions differ");
+    }
+    const auto cell = [](const int selected_role, const int item) {
+        return static_cast<std::size_t>(selected_role) + item * 3;
+    };
+    RdpTreeCompatibilityCallState call;
+    call.role = role;
+    call.compatibility_before = compatibility;
+    call.reverse_compatibility_before = reverse_compatibility;
+    call.nonrecombinant_last_before = nonrecombinant_last;
+    call.nonrecombinant_list_before = nonrecombinant_list;
+    call.list_distances = list_distances;
+    std::vector<int> categories(next_no * 3 + 1, 0);
+    std::vector<int> done(count, 0);
+    call.done_before = done;
+
+    const int first_selected = sequences[comparison_matrix[role]];
+    const int second_selected = sequences[comparison_matrix[role + 3]];
+    done[first_selected] = 1;
+    done[second_selected] = 1;
+    for (int slot = 0; slot <= candidate_last[role]; ++slot) {
+        const int recombinant = candidate_list[cell(role, slot)];
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            if (done[sequence] == 0 &&
+                (good_comparisons[sequence] == 1 ||
+                 good_comparisons[sequence + count] == 1) &&
+                matrix[recombinant +
+                       static_cast<std::size_t>(sequence) * count] <
+                    list_distances[role]) {
+                int comparison = 0;
+                for (; comparison <= candidate_last[role]; ++comparison) {
+                    if (sequence == candidate_list[cell(role, comparison)]) {
+                        break;
+                    }
+                }
+                if (comparison == candidate_last[role] + 1) {
+                    done[sequence] = 1;
+                    nonrecombinant_list[cell(
+                        role, nonrecombinant_last[role])] = sequence;
+                    ++nonrecombinant_last[role];
+                }
+            }
+        }
+    }
+    --nonrecombinant_last[role];
+
+    compatibility[role] = 0;
+    for (int slot = 0; slot <= candidate_last[role]; ++slot) {
+        std::fill(categories.begin(), categories.end(), 0);
+        const int recombinant = candidate_list[cell(role, slot)];
+        if (nonrecombinant_last[role] > -1) {
+            for (int item = 0; item <= nonrecombinant_last[role]; ++item) {
+                const int nonrecombinant =
+                    nonrecombinant_list[cell(role, item)];
+                const int category = static_cast<int>(
+                    matrix[recombinant +
+                           static_cast<std::size_t>(nonrecombinant) * count] *
+                        1000.0F + 0.0000001F);
+                categories[category] = 1;
+            }
+        }
+        for (const int selected : {first_selected, second_selected}) {
+            if (matrix[recombinant +
+                       static_cast<std::size_t>(selected) * count] <
+                list_distances[role]) {
+                for (int item = 0; item <= candidate_last[role]; ++item) {
+                    const int other = candidate_list[cell(role, item)];
+                    const int category = static_cast<int>(
+                        matrix[other +
+                               static_cast<std::size_t>(selected) * count] *
+                            1000.0F + 0.0000001F);
+                    categories[category] = 1;
+                }
+            }
+        }
+        int category_count = 0;
+        for (int category = 0; category <= next_no; ++category) {
+            category_count += categories[category];
+        }
+        compatibility[role] = std::max(compatibility[role], category_count);
+    }
+
+    int added_first = 0;
+    int added_second = 0;
+    for (int slot = 0; slot <= candidate_last[role]; ++slot) {
+        const int recombinant = candidate_list[cell(role, slot)];
+        if (matrix[recombinant +
+                   static_cast<std::size_t>(first_selected) * count] <
+                list_distances[role] && added_first == 0) {
+            ++nonrecombinant_last[role];
+            nonrecombinant_list[cell(role, nonrecombinant_last[role])] =
+                first_selected;
+            added_first = 1;
+        }
+        if (matrix[recombinant +
+                   static_cast<std::size_t>(second_selected) * count] <
+                list_distances[role] && added_second == 0) {
+            ++nonrecombinant_last[role];
+            nonrecombinant_list[cell(role, nonrecombinant_last[role])] =
+                second_selected;
+            added_second = 1;
+        }
+    }
+    reverse_compatibility[role] = 0;
+    if (nonrecombinant_last[role] > -1) {
+        for (int item = 0; item <= nonrecombinant_last[role]; ++item) {
+            std::fill(categories.begin(), categories.end(), 0);
+            const int nonrecombinant =
+                nonrecombinant_list[cell(role, item)];
+            for (int slot = 0; slot <= candidate_last[role]; ++slot) {
+                const int recombinant = candidate_list[cell(role, slot)];
+                const int category = static_cast<int>(
+                    matrix[nonrecombinant +
+                           static_cast<std::size_t>(recombinant) * count] *
+                        1000.0F + 0.0000001F);
+                categories[category] = 1;
+            }
+            int category_count = 0;
+            for (int category = 0; category <= next_no; ++category) {
+                category_count += categories[category];
+            }
+            --category_count;
+            reverse_compatibility[role] = std::max(
+                reverse_compatibility[role], category_count);
+        }
+    }
+    if (nonrecombinant_last[role] > -1 &&
+        reverse_compatibility[role] < compatibility[role]) {
+        compatibility[role] = reverse_compatibility[role];
+    }
+    if (compatibility[role] > candidate_last[role]) {
+        compatibility[role] = candidate_last[role];
+    }
+    if (compatibility[role] > 0) {
+        compatibility[role] += inversion_penalty[role];
+    }
+    call.compatibility_after = compatibility;
+    call.reverse_compatibility_after = reverse_compatibility;
+    call.nonrecombinant_last_after = nonrecombinant_last;
+    return call;
+}
+
 RdpTreeCompatibilityState evaluate_rdp_tree_compatibility(
     const int next_no, const std::array<int, 3>& sequences,
     const std::array<int, 6>& comparison_matrix,
@@ -1635,4 +1962,293 @@ RdpTreeCompatibilityState evaluate_rdp_tree_compatibility(
                  region_last, region_list);
     }
     return output;
+}
+
+RdpPhylProScoreState make_rdp_phylpro_scores(
+    const int next_no, const double minimum_offset,
+    const std::vector<int>& done_this,
+    const std::array<int, 3>& sequences,
+    const std::vector<float>& background_matrix,
+    const std::vector<float>& region_matrix) {
+    const int count = next_no + 1;
+    const auto matrix_cells = static_cast<std::size_t>(count) * count;
+    if (done_this.size() != static_cast<std::size_t>(2 * count) ||
+        background_matrix.size() != matrix_cells ||
+        region_matrix.size() != matrix_cells) {
+        throw std::runtime_error("MakePhPrScore input dimensions differ");
+    }
+
+    // Literal port of threshold.CPP::MakePhPrScore. In particular,
+    // NumInvolved is a last index, while NS is the number of observations
+    // remaining after the current reference sequence is excluded.
+    RdpPhylProScoreState output;
+    output.trace_involved.assign(count, 0);
+    for (int role = 0; role < 3; ++role) {
+        output.trace_involved[role] = sequences[role];
+    }
+    int last_involved = 2;
+    for (int sequence = 0; sequence <= next_no; ++sequence) {
+        if (done_this[sequence * 2] == 0 ||
+            done_this[sequence * 2 + 1] == 0) {
+            ++last_involved;
+            if (last_involved <= next_no) {
+                output.trace_involved[last_involved] = sequence;
+            } else {
+                --last_involved;
+                break;
+            }
+        }
+    }
+
+    for (int omitted = 0; omitted < 4; ++omitted) {
+        const double sample_count = omitted == 0
+            ? static_cast<double>(last_involved)
+            : static_cast<double>(last_involved - 1);
+        if (omitted > 0) output.sub_scores[omitted - 1] = 0.0;
+        if (sample_count > 1.0) {
+            for (int role = 0; role < 3; ++role) {
+                if (role == omitted - 1) continue;
+                double sum_x = 0.0;
+                double sum_y = 0.0;
+                double sum_xy = 0.0;
+                double sum_x2 = 0.0;
+                double sum_y2 = 0.0;
+                for (int item = 0; item <= last_involved; ++item) {
+                    if (item == omitted - 1) continue;
+                    const int reference = output.trace_involved[role];
+                    const int other = output.trace_involved[item];
+                    if (reference == other) continue;
+                    const auto index = static_cast<std::size_t>(reference) +
+                        static_cast<std::size_t>(other) * count;
+                    const double first = background_matrix[index];
+                    const double second = region_matrix[index];
+                    if (omitted == 0) {
+                        output.sub_distance_scores[role] +=
+                            std::fabs(first - second);
+                    }
+                    sum_x += first;
+                    sum_y += second;
+                    sum_xy += first * second;
+                    sum_x2 += first * first;
+                    sum_y2 += second * second;
+                }
+
+                double score = 1.0;
+                if (sum_x2 > 0.0 && sum_y2 > 0.0 &&
+                    !((sample_count * sum_y2) * 0.99999 < sum_y * sum_y &&
+                      (sample_count * sum_y2) / 0.99999 > sum_y * sum_y) &&
+                    !((sample_count * sum_x2) * 0.99999 < sum_x * sum_x &&
+                      (sample_count * sum_x2) / 0.99999 > sum_x * sum_x)) {
+                    const double denominator =
+                        std::sqrt(sample_count * sum_x2 - sum_x * sum_x) *
+                        std::sqrt(sample_count * sum_y2 - sum_y * sum_y);
+                    score = (sample_count * sum_xy - sum_x * sum_y) /
+                        denominator + minimum_offset;
+                }
+                output.temporary_scores[role] = score;
+                if (omitted == 0) {
+                    output.scores[role] = score;
+                } else {
+                    output.sub_scores[omitted - 1] += score;
+                }
+            }
+        } else if (omitted == 0) {
+            output.scores[0] = 1.0;
+        } else {
+            output.sub_scores[omitted - 1] = 1.0;
+        }
+        if (omitted > 0) output.sub_scores[omitted - 1] /= 2.0;
+    }
+    output.result = 1.0;
+    return output;
+}
+
+std::vector<int> make_rdp_score_filter(
+    const int next_no, const std::array<int, 3>& sequences,
+    const std::vector<float>& raw_background_rows,
+    const std::vector<float>& ancestor_background_rows,
+    const std::vector<float>& ancestor_region_rows) {
+    const int count = next_no + 1;
+    const auto cells = static_cast<std::size_t>(3 * count);
+    if (raw_background_rows.size() != cells ||
+        ancestor_background_rows.size() != cells ||
+        ancestor_region_rows.size() != cells) {
+        throw std::runtime_error("MakeDoneThis3 input dimensions differ");
+    }
+    const auto cell = [](const int role, const int sequence) {
+        return static_cast<std::size_t>(role) + sequence * 3;
+    };
+
+    // MakeDoneThis3 is the selected-row form of MakeDoneThis2: its first
+    // matrix index is a triplet role, not an absolute sequence number.
+    float upper_background = 0.0F;
+    float lower_background = 10000.0F;
+    float upper_region = 0.0F;
+    float lower_region = 10000.0F;
+    for (int first = 0; first < 3; ++first) {
+        for (int second = 0; second < 3; ++second) {
+            const float background =
+                ancestor_background_rows[cell(first, sequences[second])];
+            upper_background = std::max(upper_background, background);
+            lower_background = std::min(lower_background, background);
+            const float region =
+                ancestor_region_rows[cell(first, sequences[second])];
+            upper_region = std::max(upper_region, region);
+            lower_region = std::min(lower_region, region);
+        }
+    }
+
+    std::vector<int> done(static_cast<std::size_t>(2 * count), 0);
+    for (int role = 0; role < 3; ++role) {
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            const float background =
+                ancestor_background_rows[cell(role, sequence)];
+            if (background < lower_background ||
+                background > upper_background) {
+                done[sequence * 2] = 1;
+            }
+            const float region = ancestor_region_rows[cell(role, sequence)];
+            if (region < lower_region || region > upper_region) {
+                done[sequence * 2 + 1] = 1;
+            }
+        }
+    }
+    for (int role = 0; role < 3; ++role) {
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            const float background =
+                ancestor_background_rows[cell(role, sequence)];
+            if (background > lower_background &&
+                background < upper_background) {
+                done[sequence * 2] = 0;
+            }
+            const float region = ancestor_region_rows[cell(role, sequence)];
+            if (region > lower_region && region < upper_region) {
+                done[sequence * 2 + 1] = 0;
+            }
+        }
+    }
+    for (const int sequence : sequences) {
+        done[sequence * 2] = 1;
+        done[sequence * 2 + 1] = 1;
+    }
+    for (int sequence = 0; sequence <= next_no; ++sequence) {
+        if (raw_background_rows[cell(0, sequence)] == 3.0F ||
+            raw_background_rows[cell(1, sequence)] == 3.0F ||
+            raw_background_rows[cell(2, sequence)] == 3.0F) {
+            done[sequence * 2] = 1;
+            done[sequence * 2 + 1] = 1;
+        }
+    }
+    return done;
+}
+
+RdpTripletGroupState make_rdp_triplet_groups(
+    const int role, const int next_no,
+    const std::array<int, 3>& sequences,
+    const std::array<int, 6>& comparison_matrix,
+    const std::vector<float>& ancestor_background_rows,
+    std::array<double, 3> minimum_distances) {
+    const int count = next_no + 1;
+    if (role < 0 || role > 2 ||
+        ancestor_background_rows.size() !=
+            static_cast<std::size_t>(3 * count)) {
+        throw std::runtime_error("MakeTrpGroups2 input dimensions differ");
+    }
+    const auto cell = [](const int selected_role, const int sequence) {
+        return static_cast<std::size_t>(selected_role) + sequence * 3;
+    };
+    RdpTripletGroupState output;
+    output.counts.assign(count, 0);
+    output.done.assign(count, 0);
+    output.groups.assign(count, 0);
+    output.minimum_distances = minimum_distances;
+    output.minimum_distances[role] = 0.0;
+    const int first_parent = sequences[comparison_matrix[role]];
+    const int second_parent = sequences[comparison_matrix[role + 3]];
+    for (int sequence = 0; sequence <= next_no; ++sequence) {
+        const float distance = ancestor_background_rows[cell(role, sequence)];
+        if (distance < ancestor_background_rows[cell(role, first_parent)] &&
+            distance < ancestor_background_rows[cell(role, second_parent)]) {
+            output.done[sequence] = 1;
+            output.groups[sequence] = 0;
+            if (distance > output.minimum_distances[role]) {
+                output.minimum_distances[role] = distance;
+            }
+        }
+    }
+    int group_number = 1;
+    while (true) {
+        double minimum = 10001.0;
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            const float distance =
+                ancestor_background_rows[cell(role, sequence)];
+            if (output.done[sequence] == 0 &&
+                distance < minimum &&
+                distance > output.minimum_distances[role]) {
+                minimum = distance;
+            }
+        }
+        if (minimum == 10001.0) break;
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            if (ancestor_background_rows[cell(role, sequence)] == minimum) {
+                output.groups[sequence] = group_number;
+                output.done[sequence] = 1;
+            }
+        }
+        ++group_number;
+    }
+    for (int sequence = 0; sequence <= next_no; ++sequence) {
+        ++output.counts[output.groups[sequence]];
+    }
+    output.result = 1;
+    return output;
+}
+
+double make_rdp_triplet_tree_score(
+    const int role, const int next_no,
+    const std::array<int, 3>& sequences,
+    const std::vector<float>& ancestor_background_rows,
+    const std::vector<float>& ancestor_region_rows,
+    const RdpTripletGroupState& groups) {
+    const int count = next_no + 1;
+    if (role < 0 || role > 2 ||
+        ancestor_background_rows.size() !=
+            static_cast<std::size_t>(3 * count) ||
+        ancestor_region_rows.size() !=
+            static_cast<std::size_t>(3 * count) ||
+        groups.counts.size() != static_cast<std::size_t>(count) ||
+        groups.groups.size() != static_cast<std::size_t>(count)) {
+        throw std::runtime_error("MakeTrpScore2 input dimensions differ");
+    }
+    const auto cell = [](const int selected_role, const int sequence) {
+        return static_cast<std::size_t>(selected_role) + sequence * 3;
+    };
+    (void)sequences;
+    double score = 0.0;
+    for (int first = 0; first <= next_no; ++first) {
+        const float first_background =
+            ancestor_background_rows[cell(role, first)];
+        const float first_region = ancestor_region_rows[cell(role, first)];
+        for (int second = first + 1; second <= next_no; ++second) {
+            const float second_background =
+                ancestor_background_rows[cell(role, second)];
+            const float second_region =
+                ancestor_region_rows[cell(role, second)];
+            const bool changed =
+                (second_background > first_background &&
+                 second_region < first_region) ||
+                (second_background < first_background &&
+                 second_region > first_region) ||
+                (second_background == first_background &&
+                 second_region != first_region) ||
+                (second_background != first_background &&
+                 second_region == first_region);
+            if (changed) {
+                score += 1.0 / static_cast<double>(
+                    groups.counts[groups.groups[first]] *
+                    groups.counts[groups.groups[second]]);
+            }
+        }
+    }
+    return score;
 }
