@@ -246,7 +246,7 @@ void pack_category(
 
 RdpDistanceState build_rdp_distance_state(
     const RdpScanState& scan_state, const int start_position,
-    const int end_position) {
+    const int end_position, const bool apply_initial_caller_normalization) {
     if (scan_state.next_no < 0 || scan_state.sequence_length < 1) {
         throw std::runtime_error("distance calculation requires sequences");
     }
@@ -340,8 +340,9 @@ RdpDistanceState build_rdp_distance_state(
         if (result.upper_distance < upper) result.upper_distance = upper;
     }
 
-    // CalcDistances performs this immediately after FastDistanceCalcZ. It is
-    // intentionally not folded into the distance kernel because RDP does not.
+    // CalcDistances performs this immediately after the initial
+    // FastDistanceCalcZ. Event-region callers consume the raw kernel state.
+    if (!apply_initial_caller_normalization) return result;
     int cutoff = scan_state.sequence_length / 100;
     if (cutoff < 30) cutoff = 30;
     if (cutoff > 50) cutoff = 50;
@@ -358,6 +359,83 @@ RdpDistanceState build_rdp_distance_state(
                 result.distance[first_offset] = 0.0F;
                 result.distance[second_offset] = 0.0F;
             }
+        }
+    }
+    return result;
+}
+
+RdpEventDistanceMatrices finish_rdp_event_distances(
+    const int next_no, const RdpDistanceState& full_alignment,
+    const RdpDistanceState& event_region) {
+    const int stride = next_no + 1;
+    const auto matrix_size = static_cast<std::size_t>(stride) * stride;
+    if (full_alignment.valid_sites.size() != matrix_size ||
+        full_alignment.differences.size() != matrix_size ||
+        event_region.valid_sites.size() != matrix_size ||
+        event_region.differences.size() != matrix_size) {
+        throw std::runtime_error("FinishDists matrix dimensions do not match");
+    }
+
+    RdpEventDistanceMatrices result;
+    result.background.assign(matrix_size, 0.0F);
+    result.event_region.assign(matrix_size, 0.0F);
+
+    // Installed DNA.dll FinishDists semantics. Its optimized x87 body retains
+    // the correction/log chain above single precision and rounds only at the
+    // final matrix store; using the apparent source-level float temporaries
+    // changes tied NJ merge order on these alignments.
+    for (int first = 0; first < next_no; ++first) {
+        for (int second = first + 1; second <= next_no; ++second) {
+            const auto upper = static_cast<std::size_t>(first) +
+                static_cast<std::size_t>(second) * stride;
+            const auto lower = static_cast<std::size_t>(second) +
+                static_cast<std::size_t>(first) * stride;
+
+            double comparable = full_alignment.valid_sites[upper] -
+                event_region.valid_sites[upper];
+            if (comparable > 0.0) {
+                double matching = comparable -
+                    (full_alignment.differences[upper] -
+                     event_region.differences[upper]);
+                if (comparable == matching) {
+                    result.background[upper] = 0.0F;
+                } else {
+                    comparable = matching / comparable;
+                    if (comparable > 0.25) {
+                        matching = (4.0 * comparable - 1.0) / 3.0;
+                        const double logged = std::log(matching);
+                        result.background[upper] =
+                            static_cast<float>(-0.75 * logged);
+                    } else {
+                        result.background[upper] = 10.0F;
+                    }
+                }
+            } else {
+                result.background[upper] = 10.0F;
+            }
+            result.background[lower] = result.background[upper];
+
+            comparable = event_region.valid_sites[upper];
+            if (comparable > 0.0) {
+                double matching = comparable -
+                    event_region.differences[upper];
+                if (comparable == matching) {
+                    result.event_region[upper] = 0.0F;
+                } else {
+                    comparable = matching / comparable;
+                    if (comparable > 0.25) {
+                        matching = (4.0 * comparable - 1.0) / 3.0;
+                        const double logged = std::log(matching);
+                        result.event_region[upper] =
+                            static_cast<float>(-0.75 * logged);
+                    } else {
+                        result.event_region[upper] = 10.0F;
+                    }
+                }
+            } else {
+                result.event_region[upper] = 10.0F;
+            }
+            result.event_region[lower] = result.event_region[upper];
         }
     }
     return result;

@@ -859,7 +859,11 @@ int fasta_all_redo_events_fixture(
     const std::string& fasta_path, const std::string& alist_fixture_path,
     const std::string& define_event_fixture_path,
     const std::string& make_test_fixture_path,
-    const std::string& find_best_fixture_path) {
+    const std::string& find_best_fixture_path,
+    const std::string& ufdist_fixture_path,
+    const std::string& super_dist_p2_fixture_path,
+    const std::string& check_matrix_fixture_path,
+    const std::string& make_nj_fixture_path) {
     const Dna5ScanPreprocessApi preprocess_api{
         &MathFuncs::MyMathFuncs::MakeAListP2,
         &MathFuncs::MyMathFuncs::CountNucs,
@@ -1076,6 +1080,518 @@ int fasta_all_redo_events_fixture(
         native_find_best_result.size() == 1 &&
         find_best_result == native_find_best_result[0] &&
         trace == native_trace;
+    const char ufdist_magic[8] = {
+        'U', 'F', 'D', 'I', 'S', 'T', '\0', '\0'};
+    const auto ufdist_fixture =
+        load_rdp_sectioned_fixture<UFDistCaptureHeader>(
+            ufdist_fixture_path, ufdist_magic);
+    const auto& selected = events.xover_list[trace[0]][trace[1] - 1];
+    std::vector<int> selected_sequences{
+        selected.daughter, selected.minor_parent, selected.major_parent};
+    const auto native_valid =
+        rdp_fixture_section<float>(ufdist_fixture, 1);
+    const auto native_differences =
+        rdp_fixture_section<float>(ufdist_fixture, 2);
+    const auto native_sequences =
+        rdp_fixture_section<int>(ufdist_fixture, 5);
+    const auto native_sequence_data =
+        rdp_fixture_section<short>(ufdist_fixture, 6);
+    bool selected_sequence_data_matches = true;
+    const int sequence_stride = scan_state.sequence_length + 1;
+    for (const int sequence : selected_sequences) {
+        for (int position = 0; position <= scan_state.sequence_length;
+             ++position) {
+            const auto index = static_cast<std::size_t>(position) +
+                static_cast<std::size_t>(sequence) * sequence_stride;
+            if (scan_state.sequence_data[index] != native_sequence_data[index]) {
+                selected_sequence_data_matches = false;
+            }
+        }
+    }
+    const bool ufdist_inputs_match =
+        ufdist_fixture.header.sequence_length == scan_state.sequence_length &&
+        ufdist_fixture.header.begin == selected.beginning &&
+        ufdist_fixture.header.end == selected.ending &&
+        ufdist_fixture.header.pair_matrix_ub == scan_state.next_no &&
+        ufdist_fixture.header.sequence_data_ub ==
+            scan_state.sequence_length &&
+        distance_state.valid_sites == native_valid &&
+        distance_state.differences == native_differences &&
+        selected_sequences == native_sequences &&
+        selected_sequence_data_matches;
+    std::vector<float> breakpoint_distance(3, 0.0F);
+    std::vector<float> remainder_distance(3, 0.0F);
+    const int ufdist_result = MathFuncs::MyMathFuncs::UFDist(
+        scan_state.sequence_length, selected.beginning, selected.ending,
+        scan_state.next_no, distance_state.valid_sites.data(),
+        distance_state.differences.data(), breakpoint_distance.data(),
+        remainder_distance.data(), selected_sequences.data(),
+        scan_state.sequence_length, scan_state.sequence_data.data());
+    const auto native_breakpoint =
+        rdp_fixture_section<float>(ufdist_fixture, 101);
+    const auto native_remainder =
+        rdp_fixture_section<float>(ufdist_fixture, 102);
+    const auto native_ufdist_result =
+        rdp_fixture_section<int>(ufdist_fixture, 103);
+    const bool ufdist_matches = ufdist_inputs_match &&
+        native_ufdist_result.size() == 1 &&
+        ufdist_result == native_ufdist_result[0] &&
+        breakpoint_distance == native_breakpoint &&
+        remainder_distance == native_remainder;
+    if (!ufdist_matches) {
+        std::cerr << "UFDist integration mismatch: interval="
+                  << selected.beginning << '-' << selected.ending << '/'
+                  << ufdist_fixture.header.begin << '-'
+                  << ufdist_fixture.header.end << " roles="
+                  << selected_sequences[0] << ',' << selected_sequences[1]
+                  << ',' << selected_sequences[2] << '/';
+        for (std::size_t index = 0; index < native_sequences.size(); ++index) {
+            if (index != 0) std::cerr << ',';
+            std::cerr << native_sequences[index];
+        }
+        std::cerr << " valid="
+                  << (distance_state.valid_sites == native_valid)
+                  << " differences="
+                  << (distance_state.differences == native_differences)
+                  << " sequence-data="
+                  << (scan_state.sequence_data == native_sequence_data)
+                  << " selected-sequence-data="
+                  << selected_sequence_data_matches
+                  << " result=" << ufdist_result << '/'
+                  << (native_ufdist_result.empty() ?
+                          -1 : native_ufdist_result[0])
+                  << " breakpoint="
+                  << (breakpoint_distance == native_breakpoint)
+                  << " remainder="
+                  << (remainder_distance == native_remainder) << '\n';
+    }
+    const char super_dist_magic[8] = {
+        'S', 'U', 'P', 'D', 'I', 'S', 'T', '2'};
+    const auto super_dist_fixture =
+        load_rdp_sectioned_fixture<SuperDistP2CaptureHeader>(
+            super_dist_p2_fixture_path, super_dist_magic);
+    const auto native_region_differences =
+        rdp_fixture_section<float>(super_dist_fixture, 102);
+    const auto native_region_valid =
+        rdp_fixture_section<float>(super_dist_fixture, 103);
+    const auto native_region_distance =
+        rdp_fixture_section<float>(super_dist_fixture, 104);
+    auto region_distance_state = build_rdp_distance_state(
+        scan_state, selected.beginning, selected.ending, false);
+    const bool region_distance_matches =
+        super_dist_fixture.header.next_no == scan_state.next_no &&
+        region_distance_state.differences == native_region_differences &&
+        region_distance_state.valid_sites == native_region_valid &&
+        region_distance_state.distance == native_region_distance;
+
+    const char check_matrix_magic[8] = {
+        'C', 'H', 'K', 'M', 'A', 'T', 'P', '\0'};
+    const auto check_matrix_fixture =
+        load_rdp_sectioned_fixture<CheckMatrixPCaptureHeader>(
+            check_matrix_fixture_path, check_matrix_magic);
+    const auto& check_header = check_matrix_fixture.header;
+    auto generated_matrices = finish_rdp_event_distances(
+        scan_state.next_no, distance_state, region_distance_state);
+    std::vector<unsigned char> minimum_pair{3, 3, 0};
+    std::vector<unsigned char> sequence_pair(3, 0);
+    const std::array<int, 3> role_outlier{2, 1, 0};
+    float minimum_background = 1000000.0F;
+    float minimum_region = 1000000.0F;
+    int role_pair = 0;
+    for (int first = 0; first < 2; ++first) {
+        for (int second = first + 1; second < 3; ++second) {
+            const auto offset =
+                static_cast<std::size_t>(selected_sequences[first]) +
+                static_cast<std::size_t>(selected_sequences[second]) *
+                    (scan_state.next_no + 1);
+            if (generated_matrices.background[offset] < minimum_background) {
+                minimum_background = generated_matrices.background[offset];
+                minimum_pair[0] = static_cast<unsigned char>(role_pair);
+                sequence_pair[0] = static_cast<unsigned char>(first);
+                sequence_pair[1] = static_cast<unsigned char>(second);
+                sequence_pair[2] =
+                    static_cast<unsigned char>(role_outlier[role_pair]);
+            }
+            if (generated_matrices.event_region[offset] < minimum_region) {
+                minimum_region = generated_matrices.event_region[offset];
+                minimum_pair[1] = static_cast<unsigned char>(role_pair);
+            }
+            ++role_pair;
+        }
+    }
+    const int matrix_stride = scan_state.next_no + 1;
+    for (int sequence = 0; sequence <= scan_state.next_no; ++sequence) {
+        generated_matrices.background[
+            static_cast<std::size_t>(sequence) * matrix_stride + sequence] =
+            0.0F;
+    }
+
+    // CheckMatrixX's VB prepass, immediately before CheckMatrixP.
+    for (int sequence = 0; sequence <= scan_state.next_no; ++sequence) {
+        bool erase = false;
+        for (int role = 0; role < 3; ++role) {
+            const int selected_sequence = selected_sequences[role];
+            if (selected_sequence <= scan_state.next_no &&
+                sequence != selected_sequence) {
+                const auto offset =
+                    static_cast<std::size_t>(selected_sequence) +
+                    static_cast<std::size_t>(sequence) * matrix_stride;
+                if (distance_state.valid_sites[offset] -
+                            region_distance_state.valid_sites[offset] <
+                        check_header.minimum_sequence_size ||
+                    region_distance_state.valid_sites[offset] <
+                        check_header.sco) {
+                    erase = true;
+                    break;
+                }
+            }
+        }
+        if (erase) {
+            for (int other = 0; other <= scan_state.next_no; ++other) {
+                const auto first = static_cast<std::size_t>(sequence) +
+                    static_cast<std::size_t>(other) * matrix_stride;
+                const auto second = static_cast<std::size_t>(other) +
+                    static_cast<std::size_t>(sequence) * matrix_stride;
+                generated_matrices.background[first] = 3.0F;
+                generated_matrices.background[second] = 3.0F;
+                generated_matrices.event_region[first] = 3.0F;
+                generated_matrices.event_region[second] = 3.0F;
+            }
+        }
+    }
+
+    std::vector<int> minimums(matrix_stride, 0);
+    std::vector<unsigned char> missing_pair(
+        static_cast<std::size_t>(matrix_stride) * matrix_stride, 0);
+    std::vector<int> background_total(matrix_stride, 0);
+    std::vector<int> region_total(matrix_stride, 0);
+    const auto native_minimums_in =
+        rdp_fixture_section<int>(check_matrix_fixture, 1);
+    const auto native_sequences_in =
+        rdp_fixture_section<int>(check_matrix_fixture, 2);
+    const auto native_missing_in =
+        rdp_fixture_section<unsigned char>(check_matrix_fixture, 3);
+    const auto native_check_valid =
+        rdp_fixture_section<float>(check_matrix_fixture, 4);
+    const auto native_check_sub_valid =
+        rdp_fixture_section<float>(check_matrix_fixture, 5);
+    const auto native_background_in =
+        rdp_fixture_section<float>(check_matrix_fixture, 6);
+    const auto native_region_in =
+        rdp_fixture_section<float>(check_matrix_fixture, 7);
+    const auto native_background_total_in =
+        rdp_fixture_section<int>(check_matrix_fixture, 8);
+    const auto native_region_total_in =
+        rdp_fixture_section<int>(check_matrix_fixture, 9);
+    const auto float_vectors_match = [](const std::vector<float>& actual,
+                                        const std::vector<float>& expected) {
+        if (actual.size() != expected.size()) return false;
+        for (std::size_t index = 0; index < actual.size(); ++index) {
+            if (std::abs(actual[index] - expected[index]) > 1.0e-6F) {
+                return false;
+            }
+        }
+        return true;
+    };
+    const bool check_matrix_inputs_match =
+        check_header.next_no == scan_state.next_no &&
+        check_header.missing_pair_ub == scan_state.next_no &&
+        check_header.valid_ub == scan_state.next_no &&
+        check_header.sub_valid_ub == scan_state.next_no &&
+        check_header.matrix_ub == scan_state.next_no &&
+        minimums == native_minimums_in &&
+        selected_sequences == native_sequences_in &&
+        missing_pair == native_missing_in &&
+        distance_state.valid_sites == native_check_valid &&
+        region_distance_state.valid_sites == native_check_sub_valid &&
+        float_vectors_match(
+            generated_matrices.background, native_background_in) &&
+        float_vectors_match(
+            generated_matrices.event_region, native_region_in) &&
+        background_total == native_background_total_in &&
+        region_total == native_region_total_in;
+    const int check_matrix_result = MathFuncs::MyMathFuncs::CheckMatrixP(
+        minimums.data(), selected_sequences.data(), scan_state.next_no,
+        check_header.sco, check_header.minimum_sequence_size,
+        scan_state.next_no, missing_pair.data(), scan_state.next_no,
+        distance_state.valid_sites.data(), scan_state.next_no,
+        region_distance_state.valid_sites.data(), scan_state.next_no,
+        generated_matrices.background.data(),
+        generated_matrices.event_region.data(), background_total.data(),
+        region_total.data());
+    const auto native_minimums_out =
+        rdp_fixture_section<int>(check_matrix_fixture, 101);
+    const auto native_missing_out =
+        rdp_fixture_section<unsigned char>(check_matrix_fixture, 102);
+    const auto native_background_out =
+        rdp_fixture_section<float>(check_matrix_fixture, 103);
+    const auto native_region_out =
+        rdp_fixture_section<float>(check_matrix_fixture, 104);
+    const auto native_background_total_out =
+        rdp_fixture_section<int>(check_matrix_fixture, 105);
+    const auto native_region_total_out =
+        rdp_fixture_section<int>(check_matrix_fixture, 106);
+    const auto native_check_result =
+        rdp_fixture_section<int>(check_matrix_fixture, 107);
+    const bool check_matrix_matches = check_matrix_inputs_match &&
+        native_check_result.size() == 1 &&
+        check_matrix_result == native_check_result[0] &&
+        minimums == native_minimums_out &&
+        missing_pair == native_missing_out &&
+        float_vectors_match(
+            generated_matrices.background, native_background_out) &&
+        float_vectors_match(
+            generated_matrices.event_region, native_region_out) &&
+        background_total == native_background_total_out &&
+        region_total == native_region_total_out;
+    if (!check_matrix_matches) {
+        const auto report_float_difference = [&](const char* label,
+                                                  const auto& actual,
+                                                  const auto& expected) {
+            std::size_t mismatch_count = 0;
+            std::size_t first_mismatch = 0;
+            for (std::size_t index = 0;
+                 index < std::min(actual.size(), expected.size()); ++index) {
+                if (actual[index] != expected[index]) {
+                    if (mismatch_count == 0) first_mismatch = index;
+                    ++mismatch_count;
+                }
+            }
+            std::cerr << ' ' << label << '=' << mismatch_count;
+            if (mismatch_count != 0) {
+                std::cerr << '@' << first_mismatch << ':'
+                          << actual[first_mismatch] << '/'
+                          << expected[first_mismatch];
+            }
+        };
+        std::cerr << "CheckMatrix integration mismatch: inputs="
+                  << check_matrix_inputs_match << " minimums-in="
+                  << (std::vector<int>(matrix_stride, 0) == native_minimums_in)
+                  << " sequences="
+                  << (selected_sequences == native_sequences_in)
+                  << " valid="
+                  << (distance_state.valid_sites == native_check_valid)
+                  << " sub-valid="
+                  << (region_distance_state.valid_sites ==
+                      native_check_sub_valid)
+                  << " background-in="
+                  << (native_background_in ==
+                      finish_rdp_event_distances(
+                          scan_state.next_no, distance_state,
+                          region_distance_state).background)
+                  << " region-in="
+                  << (native_region_in == region_distance_state.distance)
+                  << " result=" << check_matrix_result << '/'
+                  << (native_check_result.empty() ? -1 : native_check_result[0])
+                  << ';';
+        report_float_difference(
+            "background-out", generated_matrices.background,
+            native_background_out);
+        report_float_difference(
+            "region-out", generated_matrices.event_region,
+            native_region_out);
+        std::cerr << '\n';
+    }
+
+    const char make_nj_magic[8] = {
+        'M', 'A', 'K', 'E', 'N', 'J', 'P', '2'};
+    const auto make_nj_fixture =
+        load_rdp_sectioned_fixture<MakeNJTreesP2CaptureHeader>(
+            make_nj_fixture_path, make_nj_magic);
+    const auto& nj_header = make_nj_fixture.header;
+    std::vector<int> outlier{2, 1, 0};
+    std::vector<int> redo_list(matrix_stride, 0);
+    for (int sequence = 0; sequence <= scan_state.next_no; ++sequence) {
+        const auto diagonal = static_cast<std::size_t>(sequence) +
+            static_cast<std::size_t>(sequence) * matrix_stride;
+        if (generated_matrices.background[diagonal] == 3.0F) {
+            redo_list[sequence] = 1;
+        }
+    }
+    int local_last_sequence = -1;
+    std::vector<int> trace_sequences(
+        static_cast<std::size_t>(2) * matrix_stride, 0);
+    for (int sequence = 0; sequence <= scan_state.next_no; ++sequence) {
+        if (redo_list[sequence] == 0) {
+            ++local_last_sequence;
+            trace_sequences[static_cast<std::size_t>(sequence) * 2] =
+                local_last_sequence;
+            trace_sequences[1 + static_cast<std::size_t>(local_last_sequence) *
+                    2] = sequence;
+        }
+    }
+    const int name_length = std::max(
+        2, static_cast<int>(std::to_string(local_last_sequence).size()));
+    std::vector<float> background_adjusted(
+        static_cast<std::size_t>(matrix_stride) * matrix_stride, 0.0F);
+    std::vector<float> region_adjusted(
+        static_cast<std::size_t>(matrix_stride) * matrix_stride, 0.0F);
+    const int local_stride = local_last_sequence + 1;
+    std::vector<char> background_holder(
+        static_cast<std::size_t>(local_stride) * 80 + 1, 0);
+    std::vector<char> region_holder(
+        static_cast<std::size_t>(local_stride) * 80 + 1, 0);
+    std::vector<float> temporary_background(
+        static_cast<std::size_t>(local_stride) * local_stride, 0.0F);
+    std::vector<float> temporary_region(
+        static_cast<std::size_t>(local_stride) * local_stride, 0.0F);
+
+    const auto native_nj_sequences =
+        rdp_fixture_section<int>(make_nj_fixture, 1);
+    const auto native_nj_minimum_pair =
+        rdp_fixture_section<unsigned char>(make_nj_fixture, 2);
+    const auto native_nj_sequence_pair =
+        rdp_fixture_section<unsigned char>(make_nj_fixture, 3);
+    const auto native_nj_outlier =
+        rdp_fixture_section<int>(make_nj_fixture, 4);
+    const auto native_nj_trace =
+        rdp_fixture_section<int>(make_nj_fixture, 5);
+    const auto native_nj_background =
+        rdp_fixture_section<float>(make_nj_fixture, 6);
+    const auto native_nj_region =
+        rdp_fixture_section<float>(make_nj_fixture, 7);
+    const auto native_nj_background_adjusted =
+        rdp_fixture_section<float>(make_nj_fixture, 8);
+    const auto native_nj_region_adjusted =
+        rdp_fixture_section<float>(make_nj_fixture, 9);
+    const auto native_nj_redo =
+        rdp_fixture_section<int>(make_nj_fixture, 10);
+    const auto native_nj_background_holder =
+        rdp_fixture_section<char>(make_nj_fixture, 11);
+    const auto native_nj_region_holder =
+        rdp_fixture_section<char>(make_nj_fixture, 12);
+    const auto native_nj_temporary_background =
+        rdp_fixture_section<float>(make_nj_fixture, 13);
+    const auto native_nj_temporary_region =
+        rdp_fixture_section<float>(make_nj_fixture, 14);
+    const bool make_nj_inputs_match =
+        nj_header.resolve_root == 1 &&
+        nj_header.nseqs == local_last_sequence &&
+        nj_header.next_no == scan_state.next_no &&
+        nj_header.name_length == name_length &&
+        nj_header.sequence_length == scan_state.sequence_length &&
+        nj_header.trace_sequences_ub == 1 &&
+        nj_header.first_matrix_ub == scan_state.next_no &&
+        nj_header.second_matrix_ub == scan_state.next_no &&
+        nj_header.first_adjusted_matrix_ub == scan_state.next_no &&
+        nj_header.second_adjusted_matrix_ub == scan_state.next_no &&
+        selected_sequences == native_nj_sequences &&
+        minimum_pair == native_nj_minimum_pair &&
+        sequence_pair == native_nj_sequence_pair &&
+        outlier == native_nj_outlier &&
+        trace_sequences == native_nj_trace &&
+        float_vectors_match(
+            generated_matrices.background, native_nj_background) &&
+        float_vectors_match(
+            generated_matrices.event_region, native_nj_region) &&
+        background_adjusted == native_nj_background_adjusted &&
+        region_adjusted == native_nj_region_adjusted &&
+        redo_list == native_nj_redo &&
+        background_holder == native_nj_background_holder &&
+        region_holder == native_nj_region_holder &&
+        temporary_background == native_nj_temporary_background &&
+        temporary_region == native_nj_temporary_region;
+    const int make_nj_result = MathFuncs::MyMathFuncs::MakeNJTreesP2(
+        1, local_last_sequence, scan_state.next_no,
+        selected_sequences.data(), minimum_pair.data(), sequence_pair.data(),
+        nj_header.seed, name_length, scan_state.sequence_length, 1,
+        outlier.data(), trace_sequences.data(), scan_state.next_no,
+        generated_matrices.background.data(), scan_state.next_no,
+        generated_matrices.event_region.data(), scan_state.next_no,
+        background_adjusted.data(), scan_state.next_no,
+        region_adjusted.data(), redo_list.data(), background_holder.data(),
+        region_holder.data(), temporary_background.data(),
+        temporary_region.data());
+    const auto native_nj_result =
+        rdp_fixture_section<int>(make_nj_fixture, 115);
+    const bool make_nj_matches = make_nj_inputs_match &&
+        native_nj_result.size() == 1 && make_nj_result == native_nj_result[0] &&
+        selected_sequences ==
+            rdp_fixture_section<int>(make_nj_fixture, 101) &&
+        minimum_pair ==
+            rdp_fixture_section<unsigned char>(make_nj_fixture, 102) &&
+        sequence_pair ==
+            rdp_fixture_section<unsigned char>(make_nj_fixture, 103) &&
+        outlier == rdp_fixture_section<int>(make_nj_fixture, 104) &&
+        trace_sequences == rdp_fixture_section<int>(make_nj_fixture, 105) &&
+        float_vectors_match(
+            generated_matrices.background,
+            rdp_fixture_section<float>(make_nj_fixture, 106)) &&
+        float_vectors_match(
+            generated_matrices.event_region,
+            rdp_fixture_section<float>(make_nj_fixture, 107)) &&
+        float_vectors_match(
+            background_adjusted,
+            rdp_fixture_section<float>(make_nj_fixture, 108)) &&
+        float_vectors_match(
+            region_adjusted,
+            rdp_fixture_section<float>(make_nj_fixture, 109)) &&
+        redo_list == rdp_fixture_section<int>(make_nj_fixture, 110) &&
+        background_holder ==
+            rdp_fixture_section<char>(make_nj_fixture, 111) &&
+        region_holder == rdp_fixture_section<char>(make_nj_fixture, 112) &&
+        float_vectors_match(
+            temporary_background,
+            rdp_fixture_section<float>(make_nj_fixture, 113)) &&
+        float_vectors_match(
+            temporary_region,
+            rdp_fixture_section<float>(make_nj_fixture, 114));
+    if (!make_nj_matches) {
+        const auto native_background_holder_out =
+            rdp_fixture_section<char>(make_nj_fixture, 111);
+        const auto native_region_holder_out =
+            rdp_fixture_section<char>(make_nj_fixture, 112);
+        const auto first_char_difference = [](const auto& actual,
+                                              const auto& expected) {
+            const auto common = std::min(actual.size(), expected.size());
+            std::size_t index = 0;
+            while (index < common && actual[index] == expected[index]) ++index;
+            return index;
+        };
+        const auto holder_text = [](const std::vector<char>& holder) {
+            std::string value;
+            for (std::size_t index = 0;
+                 index < std::min<std::size_t>(holder.size(), 160); ++index) {
+                const unsigned char character = holder[index];
+                if (character >= 32 && character < 127) {
+                    value.push_back(static_cast<char>(character));
+                } else {
+                    value += '<' + std::to_string(character) + '>';
+                }
+            }
+            return value;
+        };
+        std::cerr << "MakeNJTreesP2 integration mismatch: inputs="
+                  << make_nj_inputs_match << " nseqs="
+                  << local_last_sequence << '/' << nj_header.nseqs
+                  << " min-pair=" << static_cast<int>(minimum_pair[0])
+                  << ',' << static_cast<int>(minimum_pair[1]) << '/';
+        for (std::size_t index = 0; index < native_nj_minimum_pair.size();
+             ++index) {
+            if (index != 0) std::cerr << ',';
+            std::cerr << static_cast<int>(native_nj_minimum_pair[index]);
+        }
+        std::cerr << " seq-pair="
+                  << static_cast<int>(sequence_pair[0]) << ','
+                  << static_cast<int>(sequence_pair[1]) << ','
+                  << static_cast<int>(sequence_pair[2]) << " trace="
+                  << (trace_sequences == native_nj_trace) << " redo="
+                  << (redo_list == native_nj_redo) << " holders="
+                  << (background_holder == native_background_holder_out)
+                  << ','
+                  << (region_holder == native_region_holder_out)
+                  << " holder-first="
+                  << first_char_difference(
+                      background_holder, native_background_holder_out)
+                  << ','
+                  << first_char_difference(
+                      region_holder, native_region_holder_out)
+                  << " region-tree='" << holder_text(region_holder)
+                  << "'/'" << holder_text(native_region_holder_out) << '\''
+                  << " result=" << make_nj_result << '/'
+                  << (native_nj_result.empty() ? -1 : native_nj_result[0])
+                  << '\n';
+    }
     std::cout << "RDP all-redo raw event scan: " << events.scanned_triplets
               << " triplets (Alist return " << redo_count << "), "
               << events.significant_candidates << " significant intervals, "
@@ -1088,8 +1604,18 @@ int fasta_all_redo_events_fixture(
               << (make_test_structure_matches ? "PASS" : "FAIL")
               << ", first selection "
               << (first_selection_matches ? "PASS" : "FAIL") << " ("
-              << trace[0] << ',' << trace[1] << ")\n";
-    return make_test_structure_matches && first_selection_matches ? 0 : 1;
+              << trace[0] << ',' << trace[1] << "), UFDist "
+              << (ufdist_matches ? "PASS" : "FAIL")
+              << ", region distance "
+              << (region_distance_matches ? "PASS" : "FAIL")
+              << ", CheckMatrix "
+              << (check_matrix_matches ? "PASS" : "FAIL")
+              << ", first NJ tree "
+              << (make_nj_matches ? "PASS" : "FAIL") << "\n";
+    return make_test_structure_matches && first_selection_matches &&
+            ufdist_matches && region_distance_matches &&
+            check_matrix_matches && make_nj_matches ?
+        0 : 1;
 }
 
 int alist_rdp4_fixture(const std::string& path) {
@@ -1274,10 +1800,11 @@ int main(int argc, char** argv) {
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
             argv[9], argv[10], argv[11]);
     }
-    if (argc == 7 &&
+    if (argc == 11 &&
         std::string_view(argv[1]) == "fasta-all-redo-events-fixture") {
         return fasta_all_redo_events_fixture(
-            argv[2], argv[3], argv[4], argv[5], argv[6]);
+            argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
+            argv[9], argv[10]);
     }
     if (argc == 3 && std::string_view(argv[1]) == "alist-rdp4-fixture") {
         return alist_rdp4_fixture(argv[2]);

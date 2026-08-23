@@ -81,7 +81,8 @@ matrix for this connected prefix with:
 ./tools/check-all-pre-scan-parity.sh
 ```
 
-Run the all-redo event-state and first-selection parity table with:
+Run the all-redo event-state, first-selection, regional-distance,
+`CheckMatrixP`, and first-NJ-tree parity table with:
 
 ```sh
 ./tools/check-all-event-state-parity.sh

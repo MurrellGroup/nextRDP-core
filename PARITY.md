@@ -89,6 +89,17 @@ the same first event on all ten datasets. Run
 cells retain the accepted Windows/WASM final-rounding differences and are not
 part of the structural identity gate.
 
+The selected event now continues through the first phylogenetic test. The
+generated full-alignment state and selected-region state match the native
+`UFDist` and `SuperDistP2` boundaries on all ten datasets. The port then
+executes the installed `DNA.dll!FinishDists` evaluation order, the VB
+`CheckMatrixX` masking prepass, `CheckMatrixP`, sequence removal and trace-list
+construction, and `MakeNJTreesP2`. Both generated NJ tree strings and all
+discrete outputs match on all ten datasets. Tiny platform `log` differences in
+otherwise equivalent stored Jukes-Cantor cells are compared at `1e-6`; the
+delayed-rounding implementation is required because rounding the apparent
+source `float` temporaries changes the native tied-tree merge order.
+
 The orchestration preserves two otherwise easy-to-collapse state values:
 RDP passes the FASTA length to `FindSubSeqPB3` but the FASTA length plus one to
 `XOHomologyP`, and its initial tree-selected `HighHomol` can differ from the
