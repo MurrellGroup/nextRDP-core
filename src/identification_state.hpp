@@ -232,6 +232,59 @@ RdpPatternState check_rdp_sequence_patterns(
     const std::vector<short>& sequence_data,
     const std::vector<double>& acceptable_sequences);
 
+struct RdpFinalTrimState {
+    std::array<int, 3> candidate_last{};
+    std::vector<int> candidate_list;
+    std::array<int, 3> nonrecombinant_last{};
+    std::vector<int> nonrecombinant_list;
+    std::vector<double> acceptable_sequences;
+};
+
+RdpFinalTrimState run_rdp_final_trim_candidate_maintenance(
+    int next_no,
+    const std::array<int, 3>& sequences,
+    const std::array<int, 6>& comparison_matrix,
+    const std::array<unsigned char, 2>& minimum_pair,
+    const std::array<unsigned char, 3>& inside_roles,
+    const std::array<unsigned char, 3>& correlation_warnings,
+    const std::vector<unsigned char>& unfound,
+    const std::vector<float>& correlations,
+    const std::vector<float>& inversions,
+    const std::vector<float>& local_distance_panels,
+    const std::vector<float>& first_ancestor_small,
+    const std::vector<float>& region_ancestor_small,
+    const std::vector<float>& first_collapsed_small,
+    const std::vector<float>& region_collapsed_small,
+    const std::array<int, 3>& candidate_last,
+    const std::vector<int>& candidate_list,
+    const std::vector<double>& acceptable_sequences);
+
+std::vector<double> calculate_rdp_match_evidence(
+    int sequence_length, int next_no, int beginning, int ending,
+    const std::array<int, 3>& sequences,
+    const std::array<int, 6>& comparison_matrix,
+    const std::vector<short>& sequence_data,
+    const std::vector<double>& acceptable_sequences,
+    bool conservative_grouping);
+
+RdpFinalTrimState make_rdp_consensus_candidates(
+    int next_no, const std::array<int, 3>& sequences,
+    const std::array<int, 6>& comparison_matrix,
+    const std::array<unsigned char, 3>& correlation_warnings,
+    const std::vector<float>& correlations,
+    const std::vector<float>& inversions,
+    const std::vector<float>& first_direct,
+    const std::vector<float>& region_direct,
+    const std::vector<float>& first_ancestor,
+    const std::vector<float>& region_ancestor,
+    const std::vector<float>& first_direct_small,
+    const std::vector<float>& region_direct_small,
+    const std::vector<float>& first_ancestor_small,
+    const std::vector<float>& region_ancestor_small,
+    const std::vector<float>& first_collapsed_small,
+    const std::vector<float>& region_collapsed_small,
+    RdpFinalTrimState state, bool conservative_grouping);
+
 RdpTreeCompatibilityCallState make_rdp_tree_compatibility_call(
     int next_no, const std::array<int, 3>& sequences,
     const std::array<int, 6>& comparison_matrix, int role,

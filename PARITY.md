@@ -45,6 +45,9 @@ outputs use the user's accepted platform-math tolerance when Windows and WASM
 | 36 | `MakeTrpGroups2` / `MakeTrpScore2` | all three role calls from fresh local-RDP runs on all ten datasets | byte-identical group membership/counts and numerically equivalent triplet tree scores |
 | 37 | `FindSets` and pre-retrim compatibility orchestration | complete first-event path from fresh local-RDP runs on all ten datasets | exact alternate candidate sets and exact conditional 6-, 9-, or 24-call `FAMat`/`FCMat`/`SAMat`/`SCMat` family order |
 | 38 | `CheckPatternX` / `CheckPattern` score panel | first live call from each of ten fresh local-RDP runs | byte-identical per-sequence pattern counts and completion mask; integrated VB proportion-panel update |
+| 39 | `FinalTrim` candidate maintenance | first retrim path from fresh local-RDP runs on all ten datasets | exact active candidate bounds and membership on every dataset that retrims |
+| 40 | `MakeVarMap2` / `MakeCntHit2` / `CalcMatchY` | native DLL trace plus connected first-event path | byte-identical hit products and breakpoint smoothing state; both native grouping-threshold branches ported |
+| 41 | `ConsensusOK` | post-retrim candidate state from fresh local-RDP runs on all ten datasets | exact active candidate bounds, membership, and list order |
 
 The live `AlistRDP4` fixture covers 2,300 triplets and changes 709 redo states.
 Because the exact C++ implementation calls `FastRecCheckPB` internally, that
@@ -144,3 +147,12 @@ The orchestration preserves two otherwise easy-to-collapse state values:
 RDP passes the FASTA length to `FindSubSeqPB3` but the FASTA length plus one to
 `XOHomologyP`, and its initial tree-selected `HighHomol` can differ from the
 average-selected `HighHomol` later passed to `FindNextP`.
+
+The connected path now also enters `FinalTrim` when the native compatibility
+scores request a retrim. It ports the active candidate-maintenance loop,
+`MakeVarMap2`, `MakeCntHit2`, `CalcMatchY`, and `ConsensusOK`, including the
+configured conservative grouping thresholds. The resulting active `RNum` and
+`RList` ranges match the post-retrim `MakeRCompat` boundary on all four demo
+datasets that take this path; the other six correctly skip it. As in VB, cells
+beyond each `RNum` are stale backing-array storage and are not observable list
+members.

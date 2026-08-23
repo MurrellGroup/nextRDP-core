@@ -1,4 +1,5 @@
 #include "identification_state.hpp"
+#include "MathFuncsDll.h"
 
 #include <algorithm>
 #include <cmath>
@@ -38,6 +39,151 @@ double rdp_ttest_probability(const double value,
                              const int degrees_of_freedom) {
     const double half_pi = 4.0 * std::atan(1.0) / 2.0;
     return 1.0 - rdp_buzz(value, degrees_of_freedom, half_pi) / 2.0;
+}
+
+int make_var_map2(const int next_no, const int sequence_length,
+                  const int variable_site_upper_bound,
+                  const short* sequence_data, short* variable_site_map,
+                  int* variable_region_position, int* variable_position,
+                  const int* sequences, const int* comparison_matrix) {
+    int variable_sites = 0;
+    const int position_stride = sequence_length + 1;
+    const int map_sequence_stride = (variable_site_upper_bound + 1) * 3;
+    for (int position = 0; position <= sequence_length; ++position) {
+        variable_region_position[position] = variable_sites;
+        const int first = sequence_data[
+            position + sequences[0] * position_stride];
+        const int second = sequence_data[
+            position + sequences[1] * position_stride];
+        const int third = sequence_data[
+            position + sequences[2] * position_stride];
+        if (first == 46 || second == 46 || third == 46 ||
+            (first == second && first == third)) {
+            continue;
+        }
+        ++variable_sites;
+        variable_position[variable_sites] = position;
+        const int variable_offset = variable_sites * 3;
+        for (int role = 0; role < 3; ++role) {
+            const int representative = sequence_data[
+                position + sequences[role] * position_stride];
+            const int first_parent = sequence_data[
+                position + sequences[comparison_matrix[role]] *
+                    position_stride];
+            const int second_parent = sequence_data[
+                position + sequences[comparison_matrix[role + 3]] *
+                    position_stride];
+            for (int sequence = 0; sequence <= next_no; ++sequence) {
+                const int value = sequence_data[
+                    position + sequence * position_stride];
+                auto& destination = variable_site_map[
+                    role + variable_offset + sequence * map_sequence_stride];
+                if (representative == value) {
+                    destination = 2;
+                } else if (value != 46) {
+                    if ((value == first_parent && representative == second_parent) ||
+                        (representative == first_parent && value == second_parent)) {
+                        destination = -1;
+                    } else if ((value == first_parent && value != second_parent) ||
+                               (value != first_parent && value == second_parent)) {
+                        destination = 0;
+                    } else if (value != first_parent && value != second_parent) {
+                        destination = 1;
+                    }
+                }
+            }
+        }
+    }
+    return variable_sites;
+}
+
+void make_count_hits(const int beginning, const int ending,
+                     const int smoothing_window, const int next_no,
+                     const int variable_sites, const int sequence_length,
+                     const int variable_site_upper_bound,
+                     std::vector<double>& count_hits,
+                     const std::vector<short>& variable_site_map,
+                     std::vector<float>& variable_site_smooth,
+                     const std::vector<int>& variable_region_position) {
+    const int smooth_sequence_stride = (variable_sites + 1) * 3;
+    const int map_sequence_stride = (variable_site_upper_bound + 1) * 3;
+    for (int role = 0; role < 3; ++role) {
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            int total = 0;
+            const int map_base = role + sequence * map_sequence_stride;
+            const int smooth_base = role + sequence * smooth_sequence_stride;
+            for (int offset = 1 - smoothing_window;
+                 offset <= smoothing_window + 1; ++offset) {
+                int site = offset;
+                if (site < 1) site = variable_sites + site;
+                else if (site > variable_sites) site -= variable_sites;
+                total += variable_site_map[site * 3 + map_base];
+            }
+            variable_site_smooth[3 + smooth_base] = static_cast<float>(
+                static_cast<double>(total) /
+                ((smoothing_window * 2 + 1) * 2));
+            for (int site = 2; site <= variable_sites; ++site) {
+                int remove = site - smoothing_window - 1;
+                if (remove < 1) remove = variable_sites + remove;
+                else if (remove > variable_sites) remove -= variable_sites;
+                total -= variable_site_map[remove * 3 + map_base];
+                int add = site + smoothing_window;
+                if (add > variable_sites) add -= variable_sites;
+                total += variable_site_map[add * 3 + map_base];
+                variable_site_smooth[site * 3 + smooth_base] =
+                    static_cast<float>(static_cast<double>(total) /
+                        ((smoothing_window * 2 + 1) * 2));
+            }
+        }
+    }
+    const auto accumulate = [&](const int first, const int last,
+                                const int side, double& samples) {
+        for (int site = first; site <= last; ++site) {
+            samples += 1.0;
+            const int site_offset = site * 3;
+            for (int sequence = 0; sequence <= next_no; ++sequence) {
+                const int smooth_base =
+                    site_offset + sequence * smooth_sequence_stride;
+                for (int role = 0; role < 3; ++role) {
+                    const float value = variable_site_smooth[
+                        role + smooth_base];
+                    if (value > 0.6F) {
+                        count_hits[role + side * 3 + sequence * 6] +=
+                            (value - 0.6) / 0.4;
+                    }
+                }
+            }
+        }
+    };
+    const auto divide = [&](const int side, const double samples) {
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            for (int role = 0; role < 3; ++role) {
+                count_hits[role + side * 3 + sequence * 6] /= samples;
+            }
+        }
+    };
+    int stop = beginning > 1 ? beginning - 1 : beginning;
+    if (beginning < ending) {
+        double samples = 0.0;
+        accumulate(1, variable_region_position[stop - 1], 0, samples);
+        accumulate(variable_region_position[ending + 1],
+                   variable_region_position[sequence_length], 0, samples);
+        divide(0, samples);
+        samples = 0.0;
+        accumulate(variable_region_position[beginning],
+                   variable_region_position[ending], 1, samples);
+        divide(1, samples);
+    } else {
+        double samples = 0.0;
+        accumulate(1, variable_region_position[ending], 1, samples);
+        accumulate(variable_region_position[beginning],
+                   variable_region_position[sequence_length], 1, samples);
+        divide(1, samples);
+        samples = 0.0;
+        accumulate(variable_region_position[ending + 1],
+                   variable_region_position[beginning - 1], 0, samples);
+        divide(0, samples);
+    }
 }
 
 }  // namespace
@@ -2281,6 +2427,1011 @@ RdpPatternState check_rdp_sequence_patterns(
         }
     }
     return output;
+}
+
+RdpFinalTrimState run_rdp_final_trim_candidate_maintenance(
+    const int next_no,
+    const std::array<int, 3>& sequences,
+    const std::array<int, 6>& comparison_matrix,
+    const std::array<unsigned char, 2>& minimum_pair,
+    const std::array<unsigned char, 3>& inside_roles,
+    const std::array<unsigned char, 3>& correlation_warnings,
+    const std::vector<unsigned char>& unfound,
+    const std::vector<float>& correlations,
+    const std::vector<float>& inversions,
+    const std::vector<float>& local_distance_panels,
+    const std::vector<float>& first_ancestor_small,
+    const std::vector<float>& region_ancestor_small,
+    const std::vector<float>& first_collapsed_small,
+    const std::vector<float>& region_collapsed_small,
+    const std::array<int, 3>& candidate_last,
+    const std::vector<int>& candidate_list,
+    const std::vector<double>& acceptable_sequences) {
+    const int count = next_no + 1;
+    const auto small_cells = static_cast<std::size_t>(3 * count);
+    if (next_no < 2 || unfound.size() != small_cells ||
+        correlations.size() != static_cast<std::size_t>(9 * count) ||
+        inversions.size() != static_cast<std::size_t>(9 * count) ||
+        local_distance_panels.size() != static_cast<std::size_t>(12 * count) ||
+        first_ancestor_small.size() != small_cells ||
+        region_ancestor_small.size() != small_cells ||
+        first_collapsed_small.size() != small_cells ||
+        region_collapsed_small.size() != small_cells ||
+        candidate_list.size() != small_cells ||
+        acceptable_sequences.size() != static_cast<std::size_t>(57 * count)) {
+        throw std::runtime_error("FinalTrim candidate dimensions differ");
+    }
+    const auto row = [](const int role, const int value) {
+        return static_cast<std::size_t>(role) + value * 3;
+    };
+    const auto rc = [](const int role, const int region, const int sequence) {
+        return static_cast<std::size_t>(role) + region * 3 + sequence * 9;
+    };
+    const auto dm = [](const int panel, const int role, const int sequence) {
+        return static_cast<std::size_t>(panel) + role * 4 + sequence * 12;
+    };
+    const auto ok = [](const int role, const int category, const int sequence) {
+        return static_cast<std::size_t>(role) + category * 3 + sequence * 57;
+    };
+
+    RdpFinalTrimState output;
+    output.candidate_last = candidate_last;
+    output.candidate_list = candidate_list;
+    output.nonrecombinant_last.fill(0);
+    output.nonrecombinant_list.assign(small_cells, 0);
+    output.acceptable_sequences = acceptable_sequences;
+
+    // Module2.FinalTrim 23398-23477: preserve the correlation cube, then
+    // erase evidence from warned regions and inverted interpretations.
+    auto trimmed_correlations = correlations;
+    for (int region = 0; region < 3; ++region) {
+        if (correlation_warnings[region] == 0) continue;
+        for (int role = 0; role < 3; ++role) {
+            for (int sequence = 0; sequence <= next_no; ++sequence) {
+                trimmed_correlations[rc(role, region, sequence)] = 0.0F;
+            }
+        }
+    }
+    for (std::size_t index = 0; index < inversions.size(); ++index) {
+        if (inversions[index] != 0.0F) trimmed_correlations[index] = 0.0F;
+    }
+    std::vector<unsigned char> duplicates(small_cells, 0);
+    for (int role = 0; role < 3; ++role) {
+        for (int slot = 0; slot <= output.candidate_last[role]; ++slot) {
+            const int sequence = output.candidate_list[row(role, slot)];
+            if (sequence > next_no) continue;
+            for (int region = 0; region < 3; ++region) {
+                if (trimmed_correlations[rc(role, region, sequence)] > 0.83F) {
+                    ++duplicates[row(region, sequence)];
+                }
+            }
+        }
+    }
+    for (int role = 0; role < 3; ++role) {
+        for (int slot = 0; slot <= output.candidate_last[role]; ++slot) {
+            const int sequence = output.candidate_list[row(role, slot)];
+            if (sequence > next_no) continue;
+            for (int region = 0; region < 3; ++region) {
+                if (duplicates[row(region, sequence)] > 1) {
+                    trimmed_correlations[rc(role, region, sequence)] = 0.0F;
+                }
+            }
+        }
+    }
+    for (int role = 0; role < 3; ++role) {
+        for (int slot = 0; slot <= output.candidate_last[role]; ++slot) {
+            const int sequence = output.candidate_list[row(role, slot)];
+            if (sequence <= next_no &&
+                (trimmed_correlations[rc(role, 0, sequence)] >= 0.83F ||
+                 trimmed_correlations[rc(role, 1, sequence)] >= 0.83F ||
+                 trimmed_correlations[rc(role, 2, sequence)] >= 0.83F)) {
+                output.acceptable_sequences[ok(role, 5, sequence)] = 1.0;
+            }
+            output.acceptable_sequences[ok(role, 6, sequence)] = 1.0;
+        }
+    }
+
+    const bool have_collapsed = !first_collapsed_small.empty();
+    const auto& first_prune = have_collapsed
+        ? first_collapsed_small : first_ancestor_small;
+    const auto& region_prune = have_collapsed
+        ? region_collapsed_small : region_ancestor_small;
+    std::array<int, 4> old_last{};
+    old_last.fill(0);
+
+    // Module2.FinalTrim 23504-23831. VB deliberately compares only RNum,
+    // not list contents, when deciding whether another maintenance pass is
+    // needed; the same termination quirk is retained here.
+    for (int role = 0; role < 3; ++role) {
+        std::array<double, 2> nearest_distances{};
+        while (old_last[role] != output.candidate_last[role]) {
+            old_last[role] = output.candidate_last[role];
+            std::vector<unsigned char> taken(count, 0);
+            nearest_distances = {0.0, 0.0};
+            for (int slot = 0; slot <= output.candidate_last[role]; ++slot) {
+                const int sequence = output.candidate_list[row(role, slot)];
+                if (sequence > next_no) continue;
+                taken[sequence] = 1;
+                nearest_distances[0] = std::max<double>(
+                    nearest_distances[0], first_ancestor_small[row(role, sequence)]);
+                nearest_distances[1] = std::max<double>(
+                    nearest_distances[1], region_ancestor_small[row(role, sequence)]);
+            }
+            output.nonrecombinant_last[role] = -1;
+            for (int sequence = 0; sequence <= next_no; ++sequence) {
+                if (first_ancestor_small[row(role, sequence)] <=
+                        nearest_distances[0] && taken[sequence] == 0) {
+                    ++output.nonrecombinant_last[role];
+                    output.nonrecombinant_list[row(
+                        role, output.nonrecombinant_last[role])] = sequence;
+                    taken[sequence] = 1;
+                }
+                if (region_ancestor_small[row(role, sequence)] <=
+                        nearest_distances[1] && taken[sequence] == 0) {
+                    ++output.nonrecombinant_last[role];
+                    output.nonrecombinant_list[row(
+                        role, output.nonrecombinant_last[role])] = sequence;
+                    taken[sequence] = 1;
+                }
+            }
+            std::vector<unsigned char> remove(static_cast<std::size_t>(2 * count), 0);
+            if (output.nonrecombinant_last[role] > -1) {
+                nearest_distances[0] = 1000000.0;
+                for (int slot = 0; slot <= output.nonrecombinant_last[role]; ++slot) {
+                    const int sequence = output.nonrecombinant_list[row(role, slot)];
+                    const float value = first_prune[row(role, sequence)];
+                    // The source compares the ancestor value against a
+                    // threshold formed using integer arithmetic.
+                    if (value < nearest_distances[0] &&
+                        first_ancestor_small[row(role, sequence)] <
+                            static_cast<float>((next_no * 2) / 1000)) {
+                        nearest_distances[0] = value;
+                    }
+                }
+                auto mark_from_panel_pair = [&](const int sequence,
+                                                const int first_panel,
+                                                const int second_panel) {
+                    int go_on = 0;
+                    if (correlation_warnings[0] == 0) {
+                        if (trimmed_correlations[rc(role, 0, sequence)] > 0.95F) {
+                            for (const int panel : {first_panel, second_panel}) {
+                                if (local_distance_panels[dm(panel, role, sequence)] >
+                                        local_distance_panels[dm(
+                                            panel, role,
+                                            sequences[comparison_matrix[role]])] ||
+                                    local_distance_panels[dm(panel, role, sequence)] >
+                                        local_distance_panels[dm(
+                                            panel, role,
+                                            sequences[comparison_matrix[role + 3]])]) {
+                                    if (local_distance_panels[dm(panel, role, sequence)] >
+                                            local_distance_panels[dm(
+                                                panel, comparison_matrix[role], sequence)] ||
+                                        local_distance_panels[dm(panel, role, sequence)] >
+                                            local_distance_panels[dm(
+                                                panel, comparison_matrix[role + 3], sequence)]) {
+                                        go_on += 2;
+                                    } else {
+                                        go_on += 1;
+                                    }
+                                } else {
+                                    go_on -= 1;
+                                }
+                            }
+                        } else {
+                            go_on = 1;
+                        }
+                    } else {
+                        go_on = 1;
+                    }
+                    return go_on;
+                };
+                auto prune_pass = [&](const std::vector<float>& matrix,
+                                      const int evidence_region,
+                                      const int first_panel,
+                                      const int second_panel,
+                                      const int mark_side,
+                                      const double nearest) {
+                    int slot = 0;
+                    while (slot <= output.candidate_last[role]) {
+                        const int sequence = output.candidate_list[row(role, slot)];
+                        if (sequence > next_no ||
+                            trimmed_correlations[rc(role, 0, sequence)] >= 0.99F ||
+                            trimmed_correlations[rc(role, 1, sequence)] >= 0.99F) {
+                            ++slot;
+                            continue;
+                        }
+                        const float first_correlation =
+                            trimmed_correlations[rc(role, 0, sequence)];
+                        const float second_correlation =
+                            trimmed_correlations[rc(role, 1, sequence)];
+                        if (!((first_correlation < 0.99F && first_correlation > 0.83F) ||
+                              (second_correlation < 0.99F && second_correlation > 0.83F))) {
+                            ++slot;
+                            continue;
+                        }
+                        const float value = matrix[row(role, sequence)];
+                        const float parent0 = matrix[row(
+                            role, sequences[comparison_matrix[role]])];
+                        const float parent1 = matrix[row(
+                            role, sequences[comparison_matrix[role + 3]])];
+                        if (!(value > nearest || value > parent0 || value > parent1)) {
+                            ++slot;
+                            continue;
+                        }
+                        int go_on = 1;
+                        if (first_correlation > 0.95F || second_correlation > 0.95F) {
+                            go_on = 0;
+                        }
+                        if (unfound[row(role, sequence)] == 1 || go_on == 1) {
+                            output.acceptable_sequences[ok(role, 6, sequence)] = 0.0;
+                            if (slot < output.candidate_last[role]) {
+                                output.candidate_list[row(role, slot)] =
+                                    output.candidate_list[row(
+                                        role, output.candidate_last[role])];
+                            }
+                            --output.candidate_last[role];
+                            continue;
+                        }
+                        go_on = mark_from_panel_pair(
+                            sequence, first_panel, second_panel);
+                        if (go_on > 0 && correlation_warnings[evidence_region] == 0) {
+                            go_on = 0;
+                            if (trimmed_correlations[
+                                    rc(role, evidence_region, sequence)] > 0.95F) {
+                                for (const int panel : {first_panel, second_panel}) {
+                                    if (local_distance_panels[dm(panel, role, sequence)] >
+                                            local_distance_panels[dm(
+                                                panel, role,
+                                                sequences[comparison_matrix[role]])] ||
+                                        local_distance_panels[dm(panel, role, sequence)] >
+                                            local_distance_panels[dm(
+                                                panel, role,
+                                                sequences[comparison_matrix[role + 3]])]) {
+                                        if (local_distance_panels[dm(panel, role, sequence)] >
+                                                local_distance_panels[dm(
+                                                    panel, comparison_matrix[role], sequence)] ||
+                                            local_distance_panels[dm(panel, role, sequence)] >
+                                                local_distance_panels[dm(
+                                                    panel, comparison_matrix[role + 3], sequence)]) {
+                                            go_on += 2;
+                                        } else {
+                                            go_on += 1;
+                                        }
+                                    } else {
+                                        go_on -= 1;
+                                    }
+                                }
+                            } else {
+                                go_on = 1;
+                            }
+                        }
+                        if (go_on > 0) remove[sequence + mark_side * count] = 1;
+                        ++slot;
+                    }
+                };
+                prune_pass(first_prune, 1, 2, 3, 0, nearest_distances[0]);
+
+                nearest_distances[1] = 1000000.0;
+                for (int slot = 0; slot <= output.nonrecombinant_last[role]; ++slot) {
+                    const int sequence = output.nonrecombinant_list[row(role, slot)];
+                    const float value = region_prune[row(role, sequence)];
+                    if (value < nearest_distances[1] &&
+                        value < static_cast<float>((next_no * 2) / 1000)) {
+                        nearest_distances[1] = value;
+                    }
+                }
+                prune_pass(region_prune, 1, 2, 3, 1, nearest_distances[1]);
+            } else {
+                nearest_distances = {0.0, 0.0};
+            }
+            int slot = 0;
+            while (slot <= output.candidate_last[role]) {
+                const int sequence = output.candidate_list[row(role, slot)];
+                if (sequence <= next_no && remove[sequence] == 1 &&
+                    remove[sequence + count] == 1) {
+                    output.acceptable_sequences[ok(role, 6, sequence)] = 0.0;
+                    if (slot < output.candidate_last[role]) {
+                        output.candidate_list[row(role, slot)] =
+                            output.candidate_list[row(
+                                role, output.candidate_last[role])];
+                    }
+                    --output.candidate_last[role];
+                } else {
+                    ++slot;
+                }
+            }
+        }
+
+        // FinalTrim's two source-faithful near-sequence collection passes.
+        std::vector<unsigned char> already_in(count, 0);
+        for (int slot = 0; slot <= output.candidate_last[role]; ++slot) {
+            const int sequence = output.candidate_list[row(role, slot)];
+            if (sequence <= next_no) already_in[sequence] = 1;
+        }
+        for (const int sequence : sequences) already_in[sequence] = 1;
+        double nearest_first = 1000000.0;
+        double nearest_region = 1000000.0;
+        for (int slot = 0; slot <= output.nonrecombinant_last[role]; ++slot) {
+            const int sequence = output.nonrecombinant_list[row(role, slot)];
+            nearest_first = std::min<double>(
+                nearest_first, first_prune[row(role, sequence)]);
+            nearest_region = std::min<double>(
+                nearest_region, region_prune[row(role, sequence)]);
+        }
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            if (already_in[sequence] == 0 &&
+                first_prune[row(role, sequence)] <= nearest_first &&
+                region_prune[row(role, sequence)] <= nearest_region &&
+                (trimmed_correlations[rc(role, 0, sequence)] > 0.83F ||
+                 trimmed_correlations[rc(role, 1, sequence)] > 0.83F ||
+                 trimmed_correlations[rc(role, 2, sequence)] > 0.83F)) {
+                ++output.candidate_last[role];
+                output.candidate_list[row(role, output.candidate_last[role])] =
+                    sequence;
+                already_in[sequence] = 1;
+            }
+        }
+        const float first_parent0 = first_ancestor_small[row(
+            role, sequences[comparison_matrix[role]])];
+        const float first_parent1 = first_ancestor_small[row(
+            role, sequences[comparison_matrix[role + 3]])];
+        const float region_parent0 = region_ancestor_small[row(
+            role, sequences[comparison_matrix[role]])];
+        const float region_parent1 = region_ancestor_small[row(
+            role, sequences[comparison_matrix[role + 3]])];
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            if (already_in[sequence] == 0 &&
+                first_ancestor_small[row(role, sequence)] < first_parent0 &&
+                first_ancestor_small[row(role, sequence)] < first_parent1 &&
+                region_ancestor_small[row(role, sequence)] < region_parent0 &&
+                region_ancestor_small[row(role, sequence)] < region_parent1) {
+                ++output.candidate_last[role];
+                output.candidate_list[row(role, output.candidate_last[role])] =
+                    sequence;
+                already_in[sequence] = 1;
+            }
+        }
+    }
+
+    // RWinPP is 4 at this caller, so the MinPair/INList block guarded by
+    // RWinPP < 3 is intentionally skipped.
+    for (int role = 0; role < 3; ++role) {
+        for (int slot = 0; slot <= output.candidate_last[role]; ++slot) {
+            output.acceptable_sequences[ok(
+                role, 15, output.candidate_list[row(role, slot)])] = 1.0;
+        }
+    }
+    (void)minimum_pair;
+    (void)inside_roles;
+    return output;
+}
+
+std::vector<double> calculate_rdp_match_evidence(
+    const int sequence_length, const int next_no, const int beginning,
+    const int ending, const std::array<int, 3>& sequences,
+    const std::array<int, 6>& comparison_matrix,
+    const std::vector<short>& sequence_data,
+    const std::vector<double>& acceptable_sequences,
+    const bool conservative_grouping) {
+    const int count = next_no + 1;
+    const int position_stride = sequence_length + 1;
+    if (sequence_length < 1 || next_no < 2 || beginning < 1 ||
+        beginning > sequence_length || ending < 1 ||
+        ending > sequence_length ||
+        sequence_data.size() <
+            static_cast<std::size_t>(position_stride * count) ||
+        acceptable_sequences.size() != static_cast<std::size_t>(57 * count)) {
+        throw std::runtime_error("CalcMatchY input dimensions differ");
+    }
+    const auto nucleotide = [&](const int position, const int sequence) {
+        return sequence_data[position + sequence * position_stride];
+    };
+    const auto is_variable = [&](const int position) {
+        return nucleotide(position, sequences[0]) != 46 &&
+            nucleotide(position, sequences[1]) != 46 &&
+            nucleotide(position, sequences[2]) != 46 &&
+            (nucleotide(position, sequences[0]) !=
+                 nucleotide(position, sequences[1]) ||
+             nucleotide(position, sequences[0]) !=
+                 nucleotide(position, sequences[2]));
+    };
+    const auto ok = [](const int role, const int category, const int sequence) {
+        return static_cast<std::size_t>(role) + category * 3 + sequence * 57;
+    };
+    auto output = acceptable_sequences;
+    int interval_variable_sites = 0;
+    int position = beginning;
+    do {
+        if (is_variable(position)) ++interval_variable_sites;
+        ++position;
+        if (position > sequence_length) position = 1;
+    } while (position != ending);
+    const int target_window = interval_variable_sites >= 30
+        ? 15 : static_cast<int>(std::nearbyint(interval_variable_sites / 2.0));
+    if (target_window < 2) return output;
+
+    std::array<int, 4> cycles{};
+    std::array<int, 4> bounds{};
+    int fragment_length = 0;
+    int variable_sites = 0;
+    position = beginning;
+    do {
+        ++fragment_length;
+        if (is_variable(position) && ++variable_sites == 40) break;
+        --position;
+        if (position < 1) {
+            position = sequence_length;
+            ++cycles[0];
+            if (cycles[0] > 40 || (cycles[0] > 2 && variable_sites == 0)) {
+                break;
+            }
+        }
+    } while (true);
+    bounds[0] = position;
+    if (fragment_length > sequence_length * 3) {
+        for (int role = 0; role < 3; ++role) {
+            for (int sequence = 0; sequence <= next_no; ++sequence) {
+                output[ok(role, 17, sequence)] = 0.0;
+            }
+        }
+        return output;
+    }
+    const int local_beginning = fragment_length;
+    position = beginning + 1;
+    if (position > sequence_length) {
+        position = 1;
+        ++cycles[1];
+    }
+    variable_sites = 0;
+    do {
+        ++fragment_length;
+        if (is_variable(position) && ++variable_sites == 40) break;
+        ++position;
+        if (position > sequence_length) {
+            position = 1;
+            ++cycles[1];
+            if (cycles[1] > 40 || (cycles[1] > 2 && variable_sites == 0)) {
+                break;
+            }
+        }
+    } while (true);
+    bounds[1] = position;
+    position = ending;
+    variable_sites = 0;
+    do {
+        ++fragment_length;
+        if (is_variable(position) && ++variable_sites == 40) break;
+        --position;
+        if (position < 1) {
+            position = sequence_length;
+            ++cycles[2];
+            if (cycles[2] > 40 || (cycles[2] > 2 && variable_sites == 0)) {
+                break;
+            }
+        }
+    } while (true);
+    bounds[2] = position;
+    if (fragment_length > sequence_length * 3) {
+        for (int role = 0; role < 3; ++role) {
+            for (int sequence = 0; sequence <= next_no; ++sequence) {
+                output[ok(role, 17, sequence)] = 0.0;
+            }
+        }
+        return output;
+    }
+    const int local_ending = fragment_length;
+    position = ending + 1;
+    if (position > sequence_length) {
+        position = 1;
+        ++cycles[3];
+    }
+    variable_sites = 0;
+    do {
+        ++fragment_length;
+        if (is_variable(position) && ++variable_sites == 40) break;
+        ++position;
+        if (position > sequence_length) {
+            position = 1;
+            ++cycles[3];
+            if (cycles[3] > 40 || (cycles[3] > 2 && variable_sites == 0)) {
+                break;
+            }
+        }
+    } while (true);
+    bounds[3] = position;
+    if (fragment_length > sequence_length * 3) {
+        for (int role = 0; role < 3; ++role) {
+            for (int sequence = 0; sequence <= next_no; ++sequence) {
+                output[ok(role, 17, sequence)] = 0.0;
+            }
+        }
+        return output;
+    }
+
+    const int sequence2_upper_bound = fragment_length + 1;
+    std::vector<short> sequence2(
+        static_cast<std::size_t>(sequence2_upper_bound + 1) * count, 0);
+    fragment_length = MathFuncs::MyMathFuncs::MakeLenFrag(
+        sequence_length, next_no, beginning, ending, cycles.data(),
+        bounds.data(), sequence2_upper_bound, sequence2.data(),
+        sequence_length, const_cast<short*>(sequence_data.data()));
+    if (fragment_length > sequence_length * 3) {
+        for (int role = 0; role < 3; ++role) {
+            for (int sequence = 0; sequence <= next_no; ++sequence) {
+                output[ok(role, 17, sequence)] = 0.0;
+            }
+        }
+        return output;
+    }
+
+    constexpr int map_upper_bound = 160;
+    std::vector<int> variable_positions(sequence2_upper_bound + 1, 0);
+    std::vector<int> variable_region_positions(sequence2_upper_bound + 2, 0);
+    variable_region_positions[sequence2_upper_bound + 1] =
+        sequence2_upper_bound + 1;
+    std::vector<short> variable_site_map(
+        static_cast<std::size_t>(3) * (map_upper_bound + 1) * count, 0);
+    variable_sites = make_var_map2(
+        next_no, sequence2_upper_bound, map_upper_bound, sequence2.data(),
+        variable_site_map.data(), variable_region_positions.data(),
+        variable_positions.data(), sequences.data(), comparison_matrix.data());
+    int smoothing_window = std::max(target_window, 5);
+    std::vector<float> variable_site_smooth(
+        static_cast<std::size_t>(3) * (variable_sites + 1) * count, 0.0F);
+    std::vector<double> count_hits(static_cast<std::size_t>(6) * count, 0.0);
+    make_count_hits(local_beginning, local_ending, smoothing_window, next_no,
+                    variable_sites, sequence2_upper_bound, map_upper_bound,
+                    count_hits, variable_site_map, variable_site_smooth,
+                    variable_region_positions);
+    for (int role = 0; role < 3; ++role) {
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            output[ok(role, 17, sequence)] =
+                count_hits[role + sequence * 6] *
+                count_hits[role + 3 + sequence * 6];
+        }
+    }
+
+    const auto smooth = [&](const int role, int site, const int sequence) {
+        const int maximum = variable_region_positions[sequence2_upper_bound];
+        if (site < 0) site += maximum;
+        else if (site > maximum) site -= maximum;
+        return variable_site_smooth[
+            role + site * 3 + sequence * 3 * (variable_sites + 1)];
+    };
+    for (int role = 0; role < 3; ++role) {
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            const std::array<float, 6> track{
+                smooth(role,
+                       variable_region_positions[local_beginning] -
+                           smoothing_window,
+                       sequence),
+                smooth(role,
+                       variable_region_positions[local_beginning] +
+                           smoothing_window,
+                       sequence),
+                smooth(role,
+                       variable_region_positions[local_ending] -
+                           smoothing_window,
+                       sequence),
+                smooth(role,
+                       variable_region_positions[local_ending] +
+                           smoothing_window,
+                       sequence),
+                smooth(role, variable_region_positions[local_beginning],
+                       sequence),
+                smooth(role, variable_region_positions[local_ending],
+                       sequence),
+            };
+            double value = 0.0;
+            if (!conservative_grouping) {
+                if ((track[0] > 0.8F && track[1] > 0.8F &&
+                     track[4] > 0.8F) ||
+                    (track[2] > 0.8F && track[3] > 0.8F &&
+                     track[5] > 0.8F)) {
+                    value = 1.0;
+                } else if (track[4] > 0.9F || track[5] > 0.9F) {
+                    value = 1.0;
+                } else if (track[4] > 0.8F || track[5] > 0.8F) {
+                    value = 2.0;
+                } else if ((track[4] > 0.75F || track[5] > 0.75F) &&
+                           (track[1] > 0.75F || track[2] > 0.75F) &&
+                           (track[0] > 0.75F || track[3] > 0.75F)) {
+                    if ((track[0] + track[1] + track[4]) / 3.0F > 0.75F ||
+                        (track[2] + track[3] + track[5]) / 3.0F > 0.75F ||
+                        (track[0] > 0.75F && track[1] > 0.75F &&
+                         track[4] > 0.75F) ||
+                        (track[2] > 0.75F && track[3] > 0.75F &&
+                         track[5] > 0.75F) ||
+                        ((track[0] > 0.7F && track[1] > 0.7F &&
+                          track[4] > 0.7F) &&
+                         (track[2] > 0.7F && track[3] > 0.7F &&
+                          track[5] > 0.7F))) {
+                        value = 2.0;
+                    }
+                } else if ((track[4] < 0.65F && track[5] < 0.65F) ||
+                           (track[1] < 0.65F && track[2] < 0.65F) ||
+                           (track[0] < 0.65F && track[3] < 0.65F) ||
+                           ((track[0] < 0.7F && track[1] < 0.7F &&
+                             track[4] < 0.7F) &&
+                            (track[2] < 0.7F && track[3] < 0.7F &&
+                             track[5] < 0.7F)) ||
+                           ((track[0] + track[1] + track[4]) / 3.0F < 0.7F &&
+                            (track[2] + track[3] + track[5]) / 3.0F < 0.7F)) {
+                    value = -1.0;
+                }
+            } else {
+                if ((track[0] > 0.75F && track[1] > 0.75F &&
+                     track[4] > 0.75F) ||
+                    (track[2] > 0.75F && track[3] > 0.75F &&
+                     track[5] > 0.75F)) {
+                    value = 1.0;
+                } else if (track[4] > 0.85F || track[5] > 0.85F) {
+                    value = 1.0;
+                } else if (track[4] > 0.75F || track[5] > 0.75F) {
+                    value = 2.0;
+                } else if ((track[4] > 0.7F || track[5] > 0.7F) &&
+                           (track[1] > 0.7F || track[2] > 0.7F) &&
+                           (track[0] > 0.7F || track[3] > 0.7F)) {
+                    if ((track[0] + track[1] + track[4]) / 3.0F > 0.75F ||
+                        (track[2] + track[3] + track[5]) / 3.0F > 0.75F ||
+                        (track[0] > 0.7F && track[1] > 0.7F &&
+                         track[4] > 0.7F) ||
+                        (track[2] > 0.7F && track[3] > 0.7F &&
+                         track[5] > 0.7F) ||
+                        ((track[0] > 0.65F && track[1] > 0.65F &&
+                          track[4] > 0.65F) &&
+                         (track[2] > 0.65F && track[3] > 0.65F &&
+                          track[5] > 0.65F))) {
+                        value = 2.0;
+                    }
+                } else if ((track[4] < 0.6F && track[5] < 0.6F) ||
+                           (track[1] < 0.6F && track[2] < 0.6F) ||
+                           (track[0] < 0.6F && track[3] < 0.6F) ||
+                           ((track[0] < 0.65F && track[1] < 0.65F &&
+                             track[4] < 0.65F) &&
+                            (track[2] < 0.65F && track[3] < 0.65F &&
+                             track[5] < 0.65F)) ||
+                           ((track[0] + track[1] + track[4]) / 3.0F < 0.6F &&
+                            (track[2] + track[3] + track[5]) / 3.0F < 0.6F)) {
+                    value = -1.0;
+                }
+            }
+            output[ok(role, 18, sequence)] = value;
+        }
+    }
+    return output;
+}
+
+RdpFinalTrimState make_rdp_consensus_candidates(
+    const int next_no, const std::array<int, 3>& sequences,
+    const std::array<int, 6>& comparison_matrix,
+    const std::array<unsigned char, 3>& correlation_warnings,
+    const std::vector<float>& correlations,
+    const std::vector<float>& inversions,
+    const std::vector<float>& first_direct,
+    const std::vector<float>& region_direct,
+    const std::vector<float>& first_ancestor,
+    const std::vector<float>& region_ancestor,
+    const std::vector<float>& first_direct_small,
+    const std::vector<float>& region_direct_small,
+    const std::vector<float>& first_ancestor_small,
+    const std::vector<float>& region_ancestor_small,
+    const std::vector<float>& first_collapsed_small,
+    const std::vector<float>& region_collapsed_small,
+    RdpFinalTrimState state, const bool conservative_grouping) {
+    const int count = next_no + 1;
+    const auto full_cells = static_cast<std::size_t>(count) * count;
+    const auto small_cells = static_cast<std::size_t>(3 * count);
+    if (first_direct.size() != full_cells || region_direct.size() != full_cells ||
+        first_ancestor.size() != full_cells || region_ancestor.size() != full_cells ||
+        first_direct_small.size() != small_cells ||
+        region_direct_small.size() != small_cells ||
+        first_ancestor_small.size() != small_cells ||
+        region_ancestor_small.size() != small_cells ||
+        first_collapsed_small.size() != small_cells ||
+        region_collapsed_small.size() != small_cells ||
+        correlations.size() != static_cast<std::size_t>(9 * count) ||
+        inversions.size() != static_cast<std::size_t>(9 * count) ||
+        state.candidate_list.size() != small_cells ||
+        state.acceptable_sequences.size() !=
+            static_cast<std::size_t>(57 * count)) {
+        throw std::runtime_error("ConsensusOK input dimensions differ");
+    }
+    const auto small = [](const int role, const int sequence) {
+        return static_cast<std::size_t>(role) + sequence * 3;
+    };
+    const auto full = [count](const int first, const int second) {
+        return static_cast<std::size_t>(first) + second * count;
+    };
+    const auto rc = [](const int role, const int region, const int sequence) {
+        return static_cast<std::size_t>(role) + region * 3 + sequence * 9;
+    };
+    const auto ok = [](const int role, const int category, const int sequence) {
+        return static_cast<std::size_t>(role) + category * 3 + sequence * 57;
+    };
+    auto& ok_sequences = state.acceptable_sequences;
+    std::vector<float> maximum_correlation(small_cells, 0.0F);
+    for (int role = 0; role < 3; ++role) {
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            for (int region = 0; region < 3; ++region) {
+                if (correlation_warnings[region] == 0 &&
+                    inversions[rc(role, region, sequence)] == 0.0F) {
+                    maximum_correlation[small(role, sequence)] = std::max(
+                        maximum_correlation[small(role, sequence)],
+                        correlations[rc(role, region, sequence)]);
+                }
+            }
+        }
+    }
+    std::vector<double> consensus_score(small_cells, 0.0);
+    for (int role = 0; role < 3; ++role) {
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            if (sequence == sequences[role]) {
+                consensus_score[small(role, sequence)] = 1000.0;
+                continue;
+            }
+            if (sequence == sequences[0] || sequence == sequences[1] ||
+                sequence == sequences[2]) {
+                continue;
+            }
+            double score = 0.0;
+            const double probability = ok_sequences[ok(role, 0, sequence)];
+            if (probability > 0.0 && probability < 1.0) {
+                score += -std::log10(probability) * 20.0;
+            }
+            score += ok_sequences[ok(role, 1, sequence)] * 5.0;
+            score += ok_sequences[ok(role, 3, sequence)] * 4.0;
+            if (ok_sequences[ok(role, 2, sequence)] == 1.0 &&
+                ok_sequences[ok(role, 4, sequence)] == 1.0) {
+                score *= 1.2;
+            } else if (ok_sequences[ok(role, 2, sequence)] == 1.0 ||
+                       ok_sequences[ok(role, 4, sequence)] == 1.0) {
+                score *= 1.1;
+            }
+            if (ok_sequences[ok(role, 5, sequence)] == 1.0) score *= 1.1;
+            if (ok_sequences[ok(role, 6, sequence)] == 1.0) score *= 1.1;
+            if (ok_sequences[ok(role, 15, sequence)] == 1.0) score *= 2.0;
+            const double corr = maximum_correlation[small(role, sequence)];
+            score = (score + corr) * corr;
+            // NS is a VB Long. Preserve conversion after each compound
+            // assignment, including the surprising -0.5/2^-NS path.
+            long evidence = static_cast<long>(std::nearbyint(
+                (ok_sequences[ok(role, 7, sequence)] +
+                 ok_sequences[ok(role, 8, sequence)]) / 2.0));
+            for (int category = 9; category <= 14; ++category) {
+                if (ok_sequences[ok(role, category, sequence)] != 0.0) {
+                    evidence = static_cast<long>(std::nearbyint(
+                        evidence + ok_sequences[ok(role, category, sequence)]));
+                }
+            }
+            if (evidence < 1) {
+                evidence = static_cast<long>(std::nearbyint(-0.5));
+                evidence = 1 - evidence;
+                evidence = static_cast<long>(std::nearbyint(
+                    std::pow(2.0, -evidence)));
+            }
+            consensus_score[small(role, sequence)] = score * evidence;
+        }
+    }
+    const auto original_last = state.candidate_last;
+    const auto original_list = state.candidate_list;
+    state.candidate_last.fill(-1);
+
+    // ConsensusOK's role-topology veto can be expressed uniformly through
+    // CompMat even though the VB source spells out all three branches.
+    for (int role = 0; role < 3; ++role) {
+        const int other0 = comparison_matrix[role];
+        const int other1 = comparison_matrix[role + 3];
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            auto& topology = ok_sequences[ok(role, 18, sequence)];
+            if (topology <= -1.0) continue;
+            if (!((first_ancestor_small[small(role, sequence)] <=
+                       first_ancestor_small[small(other1, sequence)] ||
+                   region_ancestor_small[small(role, sequence)] <=
+                       region_ancestor_small[small(other1, sequence)]) &&
+                  (first_ancestor_small[small(role, sequence)] <=
+                       first_ancestor_small[small(other0, sequence)] ||
+                   region_ancestor_small[small(role, sequence)] <=
+                       region_ancestor_small[small(other0, sequence)]))) {
+                topology = -1.0;
+                continue;
+            }
+            const auto apply_cross_veto = [&](const std::vector<float>& matrix) {
+                const float first = matrix[small(role, sequences[other0])];
+                const float second = matrix[small(role, sequences[other1])];
+                if ((first < second &&
+                     matrix[small(other0, sequence)] >
+                         matrix[small(other1, sequence)]) ||
+                    (first > second &&
+                     matrix[small(other0, sequence)] <
+                         matrix[small(other1, sequence)])) {
+                    topology = -1.0;
+                }
+            };
+            apply_cross_veto(first_ancestor_small);
+            apply_cross_veto(region_ancestor_small);
+        }
+    }
+
+    const auto append = [&](const int role, const int sequence) {
+        ++state.candidate_last[role];
+        state.candidate_list[small(role, state.candidate_last[role])] = sequence;
+    };
+    for (int role = 0; role < 3; ++role) {
+        const int other0 = comparison_matrix[role];
+        const int other1 = comparison_matrix[role + 3];
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            const double topology = ok_sequences[ok(role, 18, sequence)];
+            if (topology <= -1.0) continue;
+            const double match = ok_sequences[ok(role, 17, sequence)];
+            const double score = consensus_score[small(role, sequence)];
+            bool added = false;
+            if ((((score > 30.0 && match > 0.05) || score * match > 2.0) &&
+                 topology == 1.0) || (match > 0.1 && topology == 1.0)) {
+                append(role, sequence);
+                continue;
+            }
+            if (((score > 30.0 && match > 0.05) || score * match > 2.0) &&
+                topology > 0.0) {
+                for (int candidate = 0; candidate <= next_no; ++candidate) {
+                    if (ok_sequences[ok(role, 18, candidate)] == 1.0 &&
+                        candidate != sequence &&
+                        region_ancestor_small[small(role, candidate)] >=
+                            region_ancestor_small[small(role, sequence)] &&
+                        first_ancestor_small[small(role, candidate)] >=
+                            first_ancestor_small[small(role, sequence)]) {
+                        append(role, sequence);
+                        added = true;
+                        break;
+                    }
+                }
+            } else if (topology > 1.0) {
+                for (int candidate = 0; candidate <= next_no; ++candidate) {
+                    if (ok_sequences[ok(role, 18, candidate)] == 1.0 &&
+                        candidate != sequence &&
+                        region_ancestor_small[small(role, candidate)] >=
+                            region_ancestor_small[small(role, sequence)] &&
+                        first_ancestor_small[small(role, candidate)] >=
+                            first_ancestor_small[small(role, sequence)]) {
+                        append(role, sequence);
+                        added = true;
+                        break;
+                    }
+                }
+            }
+            if (added || topology <= 0.0) continue;
+            const bool collapsed_role_is_nearest =
+                ((first_collapsed_small[small(role, sequence)] <=
+                      first_collapsed_small[small(other0, sequence)] &&
+                  first_collapsed_small[small(role, sequence)] <=
+                      first_collapsed_small[small(other1, sequence)]) ||
+                 (region_collapsed_small[small(role, sequence)] <=
+                      region_collapsed_small[small(other0, sequence)] &&
+                  region_collapsed_small[small(role, sequence)] <=
+                      region_collapsed_small[small(other1, sequence)])) &&
+                first_collapsed_small[small(role, sequences[other0])] >=
+                    first_collapsed_small[small(other0, sequence)] &&
+                first_collapsed_small[small(role, sequences[other1])] >=
+                    first_collapsed_small[small(other1, sequence)] &&
+                region_collapsed_small[small(role, sequences[other0])] >=
+                    region_collapsed_small[small(other0, sequence)] &&
+                region_collapsed_small[small(role, sequences[other1])] >=
+                    region_collapsed_small[small(other1, sequence)];
+            if (collapsed_role_is_nearest) {
+                if (!((first_direct_small[small(other0, sequence)] == 0.0F &&
+                       region_direct_small[small(other0, sequence)] == 0.0F) ||
+                      (first_direct_small[small(other1, sequence)] == 0.0F &&
+                       region_direct_small[small(other1, sequence)] == 0.0F))) {
+                    append(role, sequence);
+                    added = true;
+                }
+            } else if (first_direct[full(sequences[role], sequence)] == 0.0F &&
+                       region_direct[full(sequences[role], sequence)] == 0.0F) {
+                append(role, sequence);
+                added = true;
+            }
+            if (added) continue;
+            const bool equal_ancestor_pattern =
+                first_ancestor_small[small(role, sequences[other0])] ==
+                    first_ancestor_small[small(other0, sequence)] &&
+                first_ancestor_small[small(role, sequences[other1])] ==
+                    first_ancestor_small[small(other1, sequence)] &&
+                region_ancestor_small[small(role, sequences[other0])] ==
+                    region_ancestor_small[small(other0, sequence)] &&
+                region_ancestor_small[small(role, sequences[other1])] ==
+                    region_ancestor_small[small(other1, sequence)];
+            // The x=0 source branch accidentally tests FMat(0,Y), while the
+            // other roles test FMat(ISeqs(x),Y). Preserve that typo.
+            const int zero_test_sequence = role == 0 ? 0 : sequences[role];
+            if (equal_ancestor_pattern ||
+                (first_direct[full(zero_test_sequence, sequence)] == 0.0F &&
+                 region_direct[full(zero_test_sequence, sequence)] == 0.0F)) {
+                append(role, sequence);
+            }
+        }
+
+        std::vector<unsigned char> in_list(count, 0);
+        for (int slot = 0; slot <= state.candidate_last[role]; ++slot) {
+            in_list[state.candidate_list[small(role, slot)]] = 1;
+        }
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            const double topology = ok_sequences[ok(role, 18, sequence)];
+            if (topology <= -1.0 || in_list[sequence] != 0 ||
+                (topology <= 0.0 && !conservative_grouping)) {
+                continue;
+            }
+            const double match = ok_sequences[ok(role, 17, sequence)];
+            const double score = consensus_score[small(role, sequence)];
+            bool added = false;
+            if ((score > 30.0 && match > 0.05) || score * match > 2.0) {
+                for (int candidate = 0; candidate <= next_no; ++candidate) {
+                    if (in_list[candidate] != 0 &&
+                        ok_sequences[ok(role, 18, candidate)] > 0.0 &&
+                        candidate != sequence &&
+                        region_ancestor_small[small(2, candidate)] ==
+                            region_ancestor_small[small(2, sequence)] &&
+                        first_ancestor_small[small(2, candidate)] ==
+                            first_ancestor_small[small(2, sequence)] &&
+                        region_ancestor_small[small(1, candidate)] ==
+                            region_ancestor_small[small(1, sequence)] &&
+                        first_ancestor_small[small(1, candidate)] ==
+                            first_ancestor_small[small(1, sequence)] &&
+                        region_ancestor_small[small(0, candidate)] ==
+                            region_ancestor_small[small(0, sequence)] &&
+                        first_ancestor_small[small(0, candidate)] ==
+                            first_ancestor_small[small(0, sequence)]) {
+                        append(role, sequence);
+                        added = true;
+                        break;
+                    }
+                }
+            } else {
+                for (int candidate = 0; candidate <= next_no; ++candidate) {
+                    if (in_list[candidate] != 0 && candidate != sequence &&
+                        region_direct[full(sequences[role], candidate)] >
+                            region_direct[full(candidate, sequence)] &&
+                        first_direct[full(sequences[role], candidate)] >
+                            first_direct[full(candidate, sequence)]) {
+                        append(role, sequence);
+                        added = true;
+                        break;
+                    }
+                }
+            }
+            if (added) in_list[sequence] = 1;
+        }
+        std::fill(in_list.begin(), in_list.end(), 0);
+        for (int slot = 0; slot <= state.candidate_last[role]; ++slot) {
+            in_list[state.candidate_list[small(role, slot)]] = 1;
+        }
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            if (ok_sequences[ok(role, 18, sequence)] <= -1.0 ||
+                in_list[sequence] != 0) {
+                continue;
+            }
+            for (int candidate = 0; candidate <= next_no; ++candidate) {
+                if (in_list[candidate] != 0 && candidate != sequence &&
+                    region_ancestor_small[small(role, candidate)] >=
+                        region_ancestor[full(candidate, sequence)] &&
+                    first_ancestor_small[small(role, candidate)] >=
+                        first_ancestor[full(candidate, sequence)] &&
+                    region_direct_small[small(role, candidate)] >=
+                        region_direct[full(candidate, sequence)] &&
+                    first_direct_small[small(role, candidate)] >=
+                        first_direct[full(candidate, sequence)]) {
+                    append(role, sequence);
+                    break;
+                }
+            }
+        }
+    }
+    for (int role = 0; role < 3; ++role) {
+        if (state.candidate_last[role] != -1) continue;
+        state.candidate_last = original_last;
+        state.candidate_list = original_list;
+        break;
+    }
+    return state;
 }
 
 RdpPhylProScoreState make_rdp_phylpro_scores(

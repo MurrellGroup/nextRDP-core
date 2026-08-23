@@ -2839,6 +2839,173 @@ int fasta_all_redo_events_fixture(
                   << " done="
                   << (pattern_state.done == expected_pattern_done) << '\n';
     }
+    bool final_trim_prefix_matches = true;
+    bool final_trim_runs = false;
+    std::array<int, 3> expected_trim_last{};
+    std::vector<int> expected_trim_list;
+    for (unsigned int call_index = 6;
+         call_index < rcompat_fixture.header.calls; ++call_index) {
+        const int base = static_cast<int>(call_index) * 1000;
+        const auto call_last =
+            rdp_fixture_section<int>(rcompat_fixture, base + 7);
+        const auto call_list =
+            rdp_fixture_section<int>(rcompat_fixture, base + 11);
+        if (call_last != as_vector(actual_resolution.candidates.last) ||
+            call_list != actual_resolution.candidates.list) {
+            if (call_last.size() == 3) {
+                expected_trim_last = {
+                    call_last[0], call_last[1], call_last[2]};
+                expected_trim_list = call_list;
+                final_trim_runs = true;
+            }
+            break;
+        }
+    }
+    if (final_trim_runs) {
+        auto trim_prefix = run_rdp_final_trim_candidate_maintenance(
+            scan_state.next_no, correlation_sequences,
+            correlation_comparison, final_minimum_pair, role_lists.inside,
+            correlation_decisions.warnings, actual_resolution.unfound,
+            actual_resolution.correlations.correlations.correlation,
+            actual_resolution.correlations.correlations.inversion,
+            local_distance_panels, first_adjusted_small,
+            second_adjusted_small, first_collapsed, second_collapsed,
+            actual_resolution.candidates.last,
+            actual_resolution.candidates.list,
+            pattern_state.acceptable_sequences);
+        const auto trim_maintenance = trim_prefix;
+        trim_prefix.acceptable_sequences = calculate_rdp_match_evidence(
+            scan_state.sequence_length, scan_state.next_no,
+            selected.beginning, selected.ending, correlation_sequences,
+            correlation_comparison, scan_state.sequence_data,
+            trim_prefix.acceptable_sequences, true);
+        trim_prefix = make_rdp_consensus_candidates(
+            scan_state.next_no, correlation_sequences,
+            correlation_comparison, correlation_decisions.warnings,
+            actual_resolution.correlations.correlations.correlation,
+            actual_resolution.correlations.correlations.inversion,
+            generated_matrices.background, generated_matrices.event_region,
+            background_adjusted, region_adjusted, first_direct_small,
+            second_direct_small, first_adjusted_small, second_adjusted_small,
+            first_collapsed, second_collapsed, std::move(trim_prefix), true);
+        final_trim_prefix_matches =
+            trim_prefix.candidate_last == expected_trim_last;
+        for (int role = 0; role < 3 && final_trim_prefix_matches; ++role) {
+            for (int slot = 0; slot <= expected_trim_last[role]; ++slot) {
+                if (trim_prefix.candidate_list[role + slot * 3] !=
+                    expected_trim_list[role + slot * 3]) {
+                    final_trim_prefix_matches = false;
+                    break;
+                }
+            }
+        }
+        if (!final_trim_prefix_matches) {
+            std::cerr << "FinalTrim/ConsensusOK checkpoint: event="
+                      << selected.beginning << '-' << selected.ending
+                      << " maintenance=";
+            for (const int value : trim_maintenance.candidate_last) {
+                std::cerr << value << ',';
+            }
+            std::cerr << ':';
+            for (int role = 0; role < 3; ++role) {
+                std::cerr << '[';
+                for (int slot = 0;
+                     slot <= trim_maintenance.candidate_last[role]; ++slot) {
+                    std::cerr << trim_maintenance.candidate_list[
+                        role + slot * 3] << ',';
+                }
+                std::cerr << ']';
+            }
+            std::cerr << " last=";
+            for (const int value : trim_prefix.candidate_last) {
+                std::cerr << value << ',';
+            }
+            std::cerr << '/';
+            for (const int value : expected_trim_last) {
+                std::cerr << value << ',';
+            }
+            std::cerr << " lists=";
+            for (int role = 0; role < 3; ++role) {
+                std::cerr << '[';
+                for (int slot = 0; slot <= trim_prefix.candidate_last[role];
+                     ++slot) {
+                    std::cerr << trim_prefix.candidate_list[
+                        role + slot * 3] << ',';
+                }
+                std::cerr << "]/[";
+                for (int slot = 0; slot <= expected_trim_last[role]; ++slot) {
+                    std::cerr << expected_trim_list[role + slot * 3] << ',';
+                }
+                std::cerr << "] ";
+            }
+            for (int role = 0; role < 3; ++role) {
+                for (int slot = 0; slot <= expected_trim_last[role]; ++slot) {
+                    const int sequence = expected_trim_list[role + slot * 3];
+                    bool present = false;
+                    for (int actual_slot = 0;
+                         actual_slot <= trim_prefix.candidate_last[role];
+                         ++actual_slot) {
+                        present = present || trim_prefix.candidate_list[
+                            role + actual_slot * 3] == sequence;
+                    }
+                    if (present) continue;
+                    std::cerr << " missing(" << role << ',' << sequence
+                              << ") ok=";
+                    for (int category = 0; category <= 18; ++category) {
+                        std::cerr << trim_prefix.acceptable_sequences[
+                            role + category * 3 + sequence * 57] << ',';
+                    }
+                    std::cerr << " F/FA/FC="
+                              << first_direct_small[role + sequence * 3]
+                              << '/'
+                              << first_adjusted_small[role + sequence * 3]
+                              << '/' << first_collapsed[role + sequence * 3]
+                              << " S/SA/SC="
+                              << second_direct_small[role + sequence * 3]
+                              << '/'
+                              << second_adjusted_small[role + sequence * 3]
+                              << '/' << second_collapsed[role + sequence * 3]
+                              << " rc=";
+                    for (int region = 0; region < 3; ++region) {
+                        std::cerr << actual_resolution.correlations.correlations
+                            .correlation[role + region * 3 + sequence * 9]
+                                  << ',';
+                    }
+                    const auto full_index = [matrix_stride](
+                        const int first, const int second) {
+                        return static_cast<std::size_t>(first) +
+                            static_cast<std::size_t>(second) * matrix_stride;
+                    };
+                    std::cerr << " stragglers=";
+                    for (int actual_slot = 0;
+                         actual_slot <= trim_prefix.candidate_last[role];
+                         ++actual_slot) {
+                        const int candidate = trim_prefix.candidate_list[
+                            role + actual_slot * 3];
+                        std::cerr << candidate << '{'
+                                  << second_adjusted_small[
+                                         role + candidate * 3]
+                                  << ">=" << region_adjusted[
+                                         full_index(candidate, sequence)]
+                                  << ',' << first_adjusted_small[
+                                         role + candidate * 3]
+                                  << ">=" << background_adjusted[
+                                         full_index(candidate, sequence)]
+                                  << ',' << second_direct_small[
+                                         role + candidate * 3]
+                                  << ">=" << generated_matrices.event_region[
+                                         full_index(candidate, sequence)]
+                                  << ',' << first_direct_small[
+                                         role + candidate * 3]
+                                  << ">=" << generated_matrices.background[
+                                         full_index(candidate, sequence)]
+                                  << "},";
+                    }
+                }
+            }
+            std::cerr << '\n';
+        }
+    }
     std::cout << "RDP all-redo raw event scan: " << events.scanned_triplets
               << " triplets (Alist return " << redo_count << "), "
               << events.significant_candidates << " significant intervals, "
@@ -2879,7 +3046,9 @@ int fasta_all_redo_events_fixture(
               << ", score support "
               << (score_support_matches ? "PASS" : "FAIL")
               << ", CheckPatternX "
-              << (check_pattern_matches ? "PASS" : "FAIL") << "\n";
+              << (check_pattern_matches ? "PASS" : "FAIL")
+              << ", FinalTrim prefix "
+              << (final_trim_prefix_matches ? "PASS" : "FAIL") << "\n";
 
     return make_test_structure_matches && first_selection_matches &&
             ufdist_matches && region_distance_matches &&
@@ -2887,7 +3056,8 @@ int fasta_all_redo_events_fixture(
         (make_sdmp_matches && fill_rmat_matches && calcr_matches &&
          make_rlist_matches && find_actual_matches && strip_dup_matches &&
              rcompat_matches && rcompat_flow_matches && phpr_matches &&
-             score_support_matches && check_pattern_matches
+             score_support_matches && check_pattern_matches &&
+             final_trim_prefix_matches
              ? 0 : 1) : 1;
 }
 
