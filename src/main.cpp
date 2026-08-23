@@ -365,7 +365,8 @@ int fasta_first_xover_walk_fixture(
     const std::string& find_next_fixture_path,
     const std::string& define_event_fixture_path,
     const std::string& probability_p2_fixture_path,
-    const std::string& probability_p_fixture_path) {
+    const std::string& probability_p_fixture_path,
+    const std::string& pb4_fixture_path) {
     const Dna5ScanPreprocessApi preprocess_api{
         &MathFuncs::MyMathFuncs::MakeAListP2,
         &MathFuncs::MyMathFuncs::CountNucs,
@@ -381,6 +382,7 @@ int fasta_first_xover_walk_fixture(
         &MathFuncs::MyMathFuncs::DefineEventP2,
         &MathFuncs::MyMathFuncs::ProbCalcP2,
         &MathFuncs::MyMathFuncs::ProbCalcP,
+        &MathFuncs::MyMathFuncs::FindSubSeqPB4,
     };
     auto scan_state =
         build_rdp_scan_state_from_fasta(fasta_path, preprocess_api);
@@ -543,6 +545,8 @@ int fasta_first_xover_walk_fixture(
         rdp_fixture_section<double>(probability_p_fixture, 101);
     const RdpProbabilitySettings probability_settings{
         alist_header.circular,
+        alist_header.mc_correction,
+        alist_header.mc_flag,
         alist_header.probability_file_flag,
         alist_header.probability_one_ub,
         alist_header.probability_two_ub,
@@ -695,9 +699,105 @@ int fasta_first_xover_walk_fixture(
                   << '\n';
         return 1;
     }
+    bool reached_significant_event =
+        apply_rdp_probability_cutoff(state, probability_settings);
+    while (!reached_significant_event) {
+        state.probability_tested = false;
+        continue_rdp_xover_to_first_probability(
+            state, scan_state, pb3_fixture.header.xover_window, settings,
+            probability_settings, probability_estimate, fact_three, fact,
+            xover_api);
+        if (!state.probability_tested) {
+            if (!advance_rdp_role_cycle(state, 0)) break;
+            scan_rdp_current_roles_to_first_probability(
+                state, scan_state, pb3_fixture.header.xover_window, settings,
+                probability_settings, probability_estimate, fact_three, fact,
+                xover_api);
+        }
+        if (!state.probability_tested) continue;
+        reached_significant_event =
+            apply_rdp_probability_cutoff(state, probability_settings);
+    }
+    if (reached_significant_event) {
+        const char pb4_magic[8] = {
+            'F', 'S', 'P', 'B', '4', '\0', '\0', '\0'};
+        const auto pb4_fixture = load_find_subseq_fixture(
+            pb4_fixture_path, pb4_magic, "FindSubSeqPB4");
+        const auto expected_pb4_ah =
+            find_subseq_pb3_section<int>(pb4_fixture, 101);
+        const auto expected_pb4_xover =
+            find_subseq_pb3_section<char>(pb4_fixture, 102);
+        const auto expected_xdiffpos =
+            find_subseq_pb3_section<int>(pb4_fixture, 103);
+        const auto expected_xposdiff =
+            find_subseq_pb3_section<int>(pb4_fixture, 104);
+        const auto expected_pb4_result =
+            find_subseq_pb3_section<int>(pb4_fixture, 105);
+        const auto expected_pb4_ah_in =
+            find_subseq_pb3_section<int>(pb4_fixture, 1);
+        const auto expected_pb4_compressed =
+            find_subseq_pb3_section<unsigned char>(pb4_fixture, 2);
+        const auto expected_pb4_xover_in =
+            find_subseq_pb3_section<char>(pb4_fixture, 3);
+        const auto expected_xdiffpos_in =
+            find_subseq_pb3_section<int>(pb4_fixture, 4);
+        const auto expected_xposdiff_in =
+            find_subseq_pb3_section<int>(pb4_fixture, 5);
+        const auto expected_pb4_fss =
+            find_subseq_pb3_section<unsigned char>(pb4_fixture, 6);
+        const std::vector<int> pb4_ah_before(
+            state.agreement_counts.begin(), state.agreement_counts.end());
+        const auto pb4_xover_before = state.xover_sequence;
+        const std::vector<int> zero_positions(
+            static_cast<std::size_t>(scan_state.sequence_length + 201), 0);
+        const bool pb4_inputs_match =
+            pb4_fixture.header.fss_ub == alist_header.fss_rdp_ub &&
+            pb4_fixture.header.xover_window ==
+                pb3_fixture.header.xover_window &&
+            pb4_fixture.header.compressed_sequence_ub ==
+                scan_state.compressed_sequence_ub &&
+            pb4_fixture.header.sequence_length == scan_state.sequence_length &&
+            pb4_fixture.header.next_no == scan_state.next_no &&
+            pb4_fixture.header.seq1 == state.sequences[0] &&
+            pb4_fixture.header.seq2 == state.sequences[1] &&
+            pb4_fixture.header.seq3 == state.sequences[2] &&
+            pb4_fixture.header.xover_sequence_ub ==
+                state.xover_sequence_ub &&
+            pb4_ah_before == expected_pb4_ah_in &&
+            scan_state.compressed_sequence == expected_pb4_compressed &&
+            pb4_xover_before == expected_pb4_xover_in &&
+            zero_positions == expected_xdiffpos_in &&
+            zero_positions == expected_xposdiff_in &&
+            fss_rdp == expected_pb4_fss;
+        build_rdp_first_position_maps(
+            state, scan_state, alist_header.fss_rdp_ub,
+            pb3_fixture.header.xover_window, fss_rdp, xover_api);
+        const std::vector<int> pb4_ah_after(
+            state.agreement_counts.begin(), state.agreement_counts.end());
+        const bool pb4_matches = pb4_inputs_match &&
+            expected_pb4_result.size() == 1 &&
+            state.position_map_result == expected_pb4_result[0] &&
+            pb4_ah_after == expected_pb4_ah &&
+            state.xover_sequence == expected_pb4_xover &&
+            state.xdiffpos == expected_xdiffpos &&
+            state.xposdiff == expected_xposdiff;
+        if (!pb4_matches) {
+            std::cerr << "FASTA first-XOver PB4 parity: FAIL inputs="
+                      << pb4_inputs_match << " result="
+                      << state.position_map_result << '/'
+                      << (expected_pb4_result.empty()
+                              ? -1
+                              : expected_pb4_result[0])
+                      << '\n';
+            return 1;
+        }
+    }
     std::cout << "FASTA first-XOver walk parity: PASS (FindSubSeqPB3 -> "
                  "XOHomologyP -> role ranking -> FindNextP -> "
-                 "DefineEventP2 -> ProbCalcP/P2)\n";
+                 "DefineEventP2 -> ProbCalcP/P2; significant-in-role="
+              << reached_significant_event
+              << (reached_significant_event ? " -> FindSubSeqPB4" : "")
+              << ")\n";
     return 0;
 }
 
@@ -877,11 +977,11 @@ int main(int argc, char** argv) {
         std::string_view(argv[1]) == "fasta-first-xover-fixture") {
         return fasta_first_xover_fixture(argv[2], argv[3], argv[4]);
     }
-    if (argc == 10 &&
+    if (argc == 11 &&
         std::string_view(argv[1]) == "fasta-first-xover-walk-fixture") {
         return fasta_first_xover_walk_fixture(
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
-            argv[9]);
+            argv[9], argv[10]);
     }
     if (argc == 3 && std::string_view(argv[1]) == "alist-rdp4-fixture") {
         return alist_rdp4_fixture(argv[2]);
@@ -955,7 +1055,7 @@ int main(int argc, char** argv) {
         << "       rdp-core fasta-tree-distance-fixture <alignment.fasta> <alist-capture.bin>\n"
         << "       rdp-core fasta-alist-rdp4-fixture <alignment.fasta> <alist-capture.bin>\n"
         << "       rdp-core fasta-first-xover-fixture <alignment.fasta> <alist-capture.bin> <find-subseq-pb3-capture.bin>\n"
-        << "       rdp-core fasta-first-xover-walk-fixture <alignment.fasta> <alist-capture.bin> <find-subseq-pb3-capture.bin> <xohomology-capture.bin> <find-next-capture.bin> <define-event-capture.bin> <prob-calc-p2-capture.bin> <prob-calc-p-capture.bin>\n"
+        << "       rdp-core fasta-first-xover-walk-fixture <alignment.fasta> <alist-capture.bin> <find-subseq-pb3-capture.bin> <xohomology-capture.bin> <find-next-capture.bin> <define-event-capture.bin> <prob-calc-p2-capture.bin> <prob-calc-p-capture.bin> <find-subseq-pb4-capture.bin>\n"
         << "       rdp-core alist-rdp4-fixture <capture.bin>\n"
         << "       rdp-core find-subseq-pb3-fixture <capture.bin>\n"
         << "       rdp-core find-subseq-pb4-fixture <capture.bin>\n"

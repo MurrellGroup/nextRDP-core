@@ -9,7 +9,7 @@ export PATH="$workspace_dir/software/cmake/usr/bin:$PATH"
 export LD_LIBRARY_PATH="$workspace_dir/software/cmake/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
 cmake --build "$project_dir/build/wasm" --parallel 1 >/dev/null
 
-printf '| Dataset | FASTA state | Distance | Tree distance | AlistRDP4 | First XOver walk |\n'
+printf '| Dataset | FASTA state | Distance | Tree distance | AlistRDP4 | First significant/PB4 |\n'
 printf '|---|---:|---:|---:|---:|---:|\n'
 for number in {0..9}; do
   dataset="Dataset$number"
@@ -36,6 +36,7 @@ for number in {0..9}; do
     "$fixture_dir/find-next-p-v1.bin" \
     "$fixture_dir/define-event-p2-v1.bin" \
     "$fixture_dir/prob-calc-p2-v1.bin" \
-    "$fixture_dir/prob-calc-p-v1.bin" >/dev/null
+    "$fixture_dir/prob-calc-p-v1.bin" \
+    "$fixture_dir/find-subseq-pb4-v1.bin" >/dev/null
   printf '| %s | PASS | PASS | PASS | PASS | PASS |\n' "$dataset"
 done

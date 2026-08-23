@@ -70,9 +70,10 @@ node build/wasm/rdp-core.js fasta-tree-distance-fixture \
 The generated states are then wired into the actual `AlistRDP4` call and the
 first selected `XOver` path through `FindSubSeqPB3`, `XOHomologyP`, the VB role
 ranking block, `FindNextP`, circular-start handling, `DefineEventP2`, the
-`ProbEstimate` prefilter, and the first `ProbCalcP`/`ProbCalcP2` call. The redo
-list used by this walk is produced by the generated `AlistRDP4` call in the
-same process. Run the all-dataset matrix for this connected prefix with:
+`ProbEstimate` prefilter, `ProbCalcP`/`ProbCalcP2`, the source role cycles, and
+the first significant event's `FindSubSeqPB4` position-map reconstruction. The
+redo list used by this walk is produced by the generated `AlistRDP4` call in
+the same process. Run the all-dataset matrix for this connected prefix with:
 
 ```sh
 ./tools/check-all-pre-scan-parity.sh

@@ -28,6 +28,9 @@ struct Dna5XoverApi {
     double(RDP_XOVER_CALL* probability_p2)(
         double*, int, int, int, double, int);
     double(RDP_XOVER_CALL* probability_p)(double*, int, int, double, int);
+    int(RDP_XOVER_CALL* find_subsequence_with_positions)(
+        int*, int, int, int, int, int, int, int, int, unsigned char*, int,
+        char*, int*, int*, unsigned char*);
 };
 
 struct RdpXoverSettings {
@@ -39,6 +42,8 @@ struct RdpXoverSettings {
 
 struct RdpProbabilitySettings {
     int circular = 0;
+    int mc_correction = 1;
+    int mc_flag = 0;
     int probability_file_flag = 0;
     int probability_one_ub = 0;
     int probability_two_ub = 0;
@@ -60,6 +65,8 @@ struct RdpFirstXoverState {
     int next_position = -1;
     int define_input_position = -1;
     int event_position = -1;
+    int old_find_position = -1;
+    int find_cycle = 0;
     int end_flag = 0;
     int event_begin = 0;
     int event_end = 0;
@@ -75,6 +82,9 @@ struct RdpFirstXoverState {
     double individual_probability = 0.0;
     double probability_prefilter_value = 0.0;
     double event_probability = 0.0;
+    double adjusted_event_probability = 0.0;
+    bool significant_event = false;
+    int position_map_result = 0;
     int active_sequence = -1;
     int active_major_parent = -1;
     int active_minor_parent = -1;
@@ -87,6 +97,8 @@ struct RdpFirstXoverState {
     std::vector<int> homology;
     std::vector<char> xover_sequence_at_define;
     std::vector<int> homology_at_define;
+    std::vector<int> xdiffpos;
+    std::vector<int> xposdiff;
 };
 
 RdpFirstXoverState build_rdp_first_xover_state(
@@ -107,6 +119,24 @@ void calculate_rdp_first_xover_probability(
     const Dna5XoverApi& api);
 
 void continue_rdp_xover_to_first_probability(
+    RdpFirstXoverState& state, const RdpScanState& scan_state,
+    int xover_window, const RdpXoverSettings& xover_settings,
+    const RdpProbabilitySettings& probability_settings,
+    std::vector<double>& probability_estimate,
+    std::vector<double>& fact_three, std::vector<double>& fact,
+    const Dna5XoverApi& api);
+
+bool apply_rdp_probability_cutoff(
+    RdpFirstXoverState& state, const RdpProbabilitySettings& settings);
+
+void build_rdp_first_position_maps(
+    RdpFirstXoverState& state, const RdpScanState& scan_state, int fss_ub,
+    int xover_window, std::vector<unsigned char>& fss_rdp,
+    const Dna5XoverApi& api);
+
+bool advance_rdp_role_cycle(RdpFirstXoverState& state, int do_all);
+
+void scan_rdp_current_roles_to_first_probability(
     RdpFirstXoverState& state, const RdpScanState& scan_state,
     int xover_window, const RdpXoverSettings& xover_settings,
     const RdpProbabilitySettings& probability_settings,

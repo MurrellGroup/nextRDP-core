@@ -4,6 +4,53 @@
 #include <cmath>
 #include <stdexcept>
 
+namespace {
+
+void assign_active_roles(RdpFirstXoverState& state) {
+    const int first = state.sequences[0];
+    const int second = state.sequences[1];
+    const int third = state.sequences[2];
+    if (state.high_homology == 1 && state.med_homology == 2) {
+        state.active_sequence = first;
+        state.active_major_parent = second;
+        state.active_minor_parent = third;
+        state.sequence_daughter = 0;
+        state.sequence_minor = 2;
+    } else if (state.high_homology == 1 && state.med_homology == 3) {
+        state.active_sequence = second;
+        state.active_major_parent = first;
+        state.active_minor_parent = third;
+        state.sequence_daughter = 1;
+        state.sequence_minor = 2;
+    } else if (state.high_homology == 2 && state.med_homology == 1) {
+        state.active_sequence = first;
+        state.active_major_parent = third;
+        state.active_minor_parent = second;
+        state.sequence_daughter = 0;
+        state.sequence_minor = 1;
+    } else if (state.high_homology == 2 && state.med_homology == 3) {
+        state.active_sequence = third;
+        state.active_major_parent = first;
+        state.active_minor_parent = second;
+        state.sequence_daughter = 2;
+        state.sequence_minor = 1;
+    } else if (state.high_homology == 3 && state.med_homology == 1) {
+        state.active_sequence = second;
+        state.active_major_parent = third;
+        state.active_minor_parent = first;
+        state.sequence_daughter = 1;
+        state.sequence_minor = 0;
+    } else if (state.high_homology == 3 && state.med_homology == 2) {
+        state.active_sequence = third;
+        state.active_major_parent = second;
+        state.active_minor_parent = first;
+        state.sequence_daughter = 2;
+        state.sequence_minor = 0;
+    }
+}
+
+}  // namespace
+
 RdpFirstXoverState build_rdp_first_xover_state(
     const RdpScanState& scan_state,
     const RdpDistanceState& distance_state,
@@ -219,6 +266,8 @@ void define_rdp_first_xover_event(
     int old_position = -1;
     while (position > -1 && position != old_position) {
         old_position = position;
+        if (position == state.old_find_position) return;
+        state.old_find_position = position;
         if (settings.circular == 1 && position == 1 &&
             state.homology[position + med_offset] >
                 state.homology[position + high_offset]) {
@@ -269,6 +318,15 @@ void calculate_rdp_first_xover_probability(
     std::vector<double>& probability_estimate,
     std::vector<double>& fact_three, std::vector<double>& fact,
     const Dna5XoverApi& api) {
+    state.probability_tested = false;
+    state.used_probability_p2 = false;
+    state.probability_length = 0;
+    state.probability_same = 0;
+    state.probability_different = 0;
+    state.probability_scale = 1.0;
+    state.individual_probability = 0.0;
+    state.probability_prefilter_value = 0.0;
+    state.event_probability = 0.0;
     if (state.define_input_position < 0 || state.event_length <= 2 ||
         state.event_end == state.event_begin ||
         (state.event_end <= state.event_begin && settings.circular != 1)) {
@@ -349,6 +407,8 @@ void continue_rdp_xover_to_first_probability(
             state.med_homology, state.low_homology, state.homology_length,
             xover_window, state.homology.data());
         if (position < 0) return;
+        if (position == state.old_find_position) return;
+        state.old_find_position = position;
 
         state.number_in_common = 0;
         state.event_length = 0;
@@ -366,5 +426,136 @@ void continue_rdp_xover_to_first_probability(
         calculate_rdp_first_xover_probability(
             state, probability_settings, probability_estimate, fact_three,
             fact, api);
+    }
+}
+
+bool apply_rdp_probability_cutoff(
+    RdpFirstXoverState& state, const RdpProbabilitySettings& settings) {
+    state.significant_event = false;
+    state.adjusted_event_probability = state.event_probability;
+    if (!state.probability_tested || state.event_probability >= 0.5) {
+        return false;
+    }
+    if (state.probability_scale != 1.0) {
+        if (state.adjusted_event_probability > 0.0) {
+            state.adjusted_event_probability = std::pow(
+                state.adjusted_event_probability, state.probability_scale);
+        } else {
+            state.adjusted_event_probability = 0.05;
+        }
+    }
+    const double minimum_probability = std::pow(10.0, -300.0);
+    if (state.adjusted_event_probability < minimum_probability) {
+        state.adjusted_event_probability = minimum_probability;
+    }
+    if (settings.mc_flag == 0) {
+        state.adjusted_event_probability *= settings.mc_correction;
+    }
+    state.significant_event = state.adjusted_event_probability <
+            settings.lowest_probability &&
+        state.adjusted_event_probability > 0.0;
+    return state.significant_event;
+}
+
+void build_rdp_first_position_maps(
+    RdpFirstXoverState& state, const RdpScanState& scan_state,
+    const int fss_ub, const int xover_window,
+    std::vector<unsigned char>& fss_rdp, const Dna5XoverApi& api) {
+    if (!state.significant_event) return;
+    state.xdiffpos.assign(
+        static_cast<std::size_t>(scan_state.sequence_length + 201), 0);
+    state.xposdiff.assign(
+        static_cast<std::size_t>(scan_state.sequence_length + 201), 0);
+    state.position_map_result = api.find_subsequence_with_positions(
+        state.agreement_counts.data(), fss_ub, xover_window,
+        scan_state.compressed_sequence_ub, scan_state.sequence_length,
+        scan_state.next_no, state.sequences[0], state.sequences[1],
+        state.sequences[2],
+        const_cast<unsigned char*>(scan_state.compressed_sequence.data()),
+        state.xover_sequence_ub, state.xover_sequence.data(),
+        state.xdiffpos.data(), state.xposdiff.data(), fss_rdp.data());
+}
+
+bool advance_rdp_role_cycle(RdpFirstXoverState& state, const int do_all) {
+    if (state.find_cycle == 0) {
+        const int temp = state.med_homology;
+        state.med_homology = state.low_homology;
+        state.low_homology = temp;
+    } else if (state.find_cycle == 1) {
+        if (state.average_homology[state.high_homology - 1] >= 0.7 &&
+            do_all != 1) {
+            return false;
+        }
+        const int temp = state.high_homology;
+        state.high_homology = state.low_homology;
+        state.low_homology = state.med_homology;
+        state.med_homology = temp;
+    } else {
+        return false;
+    }
+    assign_active_roles(state);
+    ++state.find_cycle;
+    return true;
+}
+
+void scan_rdp_current_roles_to_first_probability(
+    RdpFirstXoverState& state, const RdpScanState& scan_state,
+    const int xover_window, const RdpXoverSettings& xover_settings,
+    const RdpProbabilitySettings& probability_settings,
+    std::vector<double>& probability_estimate,
+    std::vector<double>& fact_three, std::vector<double>& fact,
+    const Dna5XoverApi& api) {
+    state.probability_tested = false;
+    int search_start = 1;
+    int position = api.find_next(
+        state.homology_ub, search_start, state.high_homology,
+        state.med_homology, state.low_homology, state.homology_length,
+        xover_window, state.homology.data());
+    while (position > -1 && position != state.old_find_position) {
+        state.old_find_position = position;
+        const int stride = state.homology_ub + 1;
+        if (xover_settings.circular == 1 && position == 1 &&
+            state.homology[position + (state.med_homology - 1) * stride] >
+                state.homology[position +
+                    (state.high_homology - 1) * stride]) {
+            position = api.find_first(
+                position, state.med_homology, state.high_homology,
+                state.homology_length, state.homology_ub,
+                state.homology.data());
+            if (position < state.homology_length + 1 &&
+                position > search_start) {
+                search_start = position + 1;
+                position = api.find_next(
+                    state.homology_ub, search_start, state.high_homology,
+                    state.med_homology, state.low_homology,
+                    state.homology_length, xover_window,
+                    state.homology.data());
+                continue;
+            }
+            return;
+        }
+
+        state.number_in_common = 0;
+        state.event_length = 0;
+        state.define_input_position = position;
+        state.event_position = api.define_event(
+            state.homology_ub, xover_settings.short_output,
+            xover_settings.long_winded, state.med_homology,
+            state.high_homology, state.low_homology, xover_settings.target,
+            xover_settings.circular, position, xover_window,
+            scan_state.sequence_length, state.homology_length,
+            state.sequence_minor, state.sequence_daughter, &state.end_flag,
+            &state.event_begin, &state.event_end, &state.number_in_common,
+            &state.event_length, state.xover_sequence.data(),
+            state.homology.data());
+        calculate_rdp_first_xover_probability(
+            state, probability_settings, probability_estimate, fact_three,
+            fact, api);
+        if (state.probability_tested) return;
+        continue_rdp_xover_to_first_probability(
+            state, scan_state, xover_window, xover_settings,
+            probability_settings, probability_estimate, fact_three, fact,
+            api);
+        return;
     }
 }
