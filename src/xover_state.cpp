@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 namespace {
@@ -47,6 +48,151 @@ void assign_active_roles(RdpFirstXoverState& state) {
         state.sequence_daughter = 2;
         state.sequence_minor = 0;
     }
+}
+
+int vb_clng(const double value) {
+    return static_cast<int>(std::nearbyint(value));
+}
+
+void map_and_centre_breakpoints(
+    RdpFirstXoverState& state, const RdpScanState& scan_state,
+    const int xover_window, const RdpXoverSettings& settings,
+    int& beginning, int& ending, int& beginning_warning,
+    int& ending_warning) {
+    const int original_beginning = beginning;
+    int original_ending = ending;
+    if (settings.circular == 0) {
+        if (beginning == 1) {
+            if (state.xdiffpos[beginning] < settings.target) {
+                beginning = 1;
+            } else {
+                beginning = state.xdiffpos[beginning];
+            }
+        } else {
+            beginning = state.xdiffpos[beginning];
+        }
+    } else {
+        beginning = state.xdiffpos[beginning];
+    }
+
+    if (ending == state.homology_length && settings.circular == 0) {
+        if (settings.short_output == 0 || settings.short_output == 6 ||
+            settings.short_output == 10) {
+            ending = scan_state.sequence_length;
+        } else {
+            ending = state.xdiffpos[state.homology_length];
+        }
+        original_ending = state.homology_length;
+    } else {
+        if (ending >= state.homology_length) {
+            if (settings.long_winded == 0) {
+                state.xdiffpos[ending] = 0;
+            } else {
+                ending = state.homology_length + 1;
+            }
+        } else if (ending < 1) {
+            ending = state.homology_length + 1;
+        }
+        original_ending = ending;
+        ending = state.xdiffpos[ending];
+    }
+    if (ending == 0) {
+        if (settings.short_output == 0 || settings.short_output == 6 ||
+            settings.short_output == 10) {
+            ending = scan_state.sequence_length;
+        } else {
+            ending = state.xdiffpos[state.homology_length];
+        }
+        original_ending = state.homology_length;
+    }
+
+    // The compressed PB3 path sets XPDDone before the scan. Consequently the
+    // source calls CentreBP with OBE=oEN=0, not the saved variable-site
+    // coordinates. SEventNumber is zero during this initial scan, so the
+    // missing-data branches are intentionally absent here.
+    const int mapped_beginning = beginning;
+    if (state.xposdiff[beginning] - 1 > 0) {
+        beginning -= vb_clng(
+            ((beginning - state.xdiffpos[state.xposdiff[beginning] - 1]) /
+                2.0) -
+            0.1);
+    } else {
+        beginning -= vb_clng(
+            ((beginning + scan_state.sequence_length -
+                 state.xdiffpos[state.homology_length]) /
+                2.0) -
+            0.1);
+    }
+    if (beginning == 0) {
+        beginning = 1;
+    } else if (beginning < 1) {
+        beginning = settings.circular == 0 ?
+            1 : scan_state.sequence_length + beginning;
+    }
+    if (settings.circular == 0 &&
+        state.xposdiff[beginning] < xover_window) {
+        beginning_warning = 1;
+    }
+
+    state.xposdiff[scan_state.sequence_length] = state.homology_length;
+    if (state.xposdiff[ending] + 1 <= state.homology_length) {
+        ending += vb_clng(
+            ((state.xdiffpos[state.xposdiff[ending] + 1] - ending) / 2.0) -
+            0.1);
+    } else {
+        ending += vb_clng(
+            ((state.xdiffpos[1] +
+                 (scan_state.sequence_length - ending)) /
+                2.0) -
+            0.1);
+    }
+    if (ending > scan_state.sequence_length) {
+        ending = settings.circular == 0 ?
+            scan_state.sequence_length : ending - scan_state.sequence_length;
+    }
+    if (settings.circular == 0 &&
+        state.xposdiff[ending] > state.homology_length - xover_window) {
+        ending_warning = 1;
+    }
+
+    (void)original_beginning;
+    (void)original_ending;
+    (void)mapped_beginning;
+}
+
+std::array<int, 3> choose_storage_roles(
+    const RdpFirstXoverState& state, const RdpRawEventState& events,
+    const std::vector<double>& store_lpv, const int store_lpv_ub) {
+    const int first = state.sequences[0];
+    const int second = state.sequences[1];
+    const int third = state.sequences[2];
+    const auto count = [&events](const int sequence) {
+        return events.current_xover[sequence];
+    };
+    if (count(first) < count(second) && count(first) < count(third)) {
+        return {first, second, third};
+    }
+    if (count(second) < count(first) && count(second) < count(third)) {
+        return {second, first, third};
+    }
+    if (count(third) < count(first) && count(third) < count(second)) {
+        return {third, first, second};
+    }
+    const auto lpv = [&store_lpv, store_lpv_ub](const int sequence) {
+        const auto index = static_cast<std::size_t>(sequence) *
+            static_cast<std::size_t>(store_lpv_ub + 1);
+        if (index >= store_lpv.size()) {
+            throw std::runtime_error("StoreLPV lookup exceeds its bounds");
+        }
+        return store_lpv[index];
+    };
+    if (lpv(first) >= lpv(second) && lpv(first) >= lpv(third)) {
+        return {first, second, third};
+    }
+    if (lpv(second) >= lpv(first) && lpv(second) >= lpv(third)) {
+        return {second, first, third};
+    }
+    return {third, first, second};
 }
 
 }  // namespace
@@ -558,4 +704,141 @@ void scan_rdp_current_roles_to_first_probability(
             api);
         return;
     }
+}
+
+RdpRawEventState scan_rdp_redo_triplets(
+    const RdpScanState& scan_state, const RdpDistanceState& distance_state,
+    const RdpTreeState& tree_state, const std::vector<unsigned char>& redo,
+    std::vector<unsigned char>& fss_rdp, const std::vector<double>& store_lpv,
+    const int store_lpv_ub, const int fss_ub, const int xover_window,
+    const short xover_window_x, const RdpXoverSettings& xover_settings,
+    const RdpProbabilitySettings& probability_settings,
+    std::vector<double>& probability_estimate,
+    std::vector<double>& fact_three, std::vector<double>& fact,
+    const Dna5XoverApi& api) {
+    RdpRawEventState events;
+    events.current_xover.assign(scan_state.next_no + 1, 0);
+    events.xover_list.resize(scan_state.next_no + 1);
+    for (int triplet = 0; triplet <= scan_state.analysis_list_last;
+         ++triplet) {
+        if (static_cast<std::size_t>(triplet) >= redo.size() ||
+            redo[triplet] != 1) {
+            continue;
+        }
+        ++events.scanned_triplets;
+        auto state = build_rdp_first_xover_state(
+            scan_state, distance_state, tree_state, triplet, fss_ub, fss_rdp,
+            xover_window, xover_window_x, api);
+        if (state.informative_length < xover_window * 2 ||
+            state.agreement_counts[0] < xover_window / 3 ||
+            state.agreement_counts[1] < xover_window / 3 ||
+            state.agreement_counts[2] < xover_window / 3) {
+            api.clean_xover_sequence(
+                state.homology_length + xover_window * 2, xover_window,
+                state.xover_sequence_ub, state.xover_sequence.data());
+            continue;
+        }
+
+        bool position_maps_built = false;
+        int old_x = -1;
+        for (int role_cycle = 0; role_cycle < 3; ++role_cycle) {
+            int next_position = 1;
+            while (true) {
+                int position = api.find_next(
+                    state.homology_ub, next_position, state.high_homology,
+                    state.med_homology, state.low_homology,
+                    state.homology_length, xover_window,
+                    state.homology.data());
+                if (position <= -1 || position == old_x) break;
+                old_x = position;
+                const int stride = state.homology_ub + 1;
+                if (xover_settings.circular == 1 && position == 1 &&
+                    state.homology[position +
+                        (state.med_homology - 1) * stride] >
+                        state.homology[position +
+                            (state.high_homology - 1) * stride]) {
+                    position = api.find_first(
+                        position, state.med_homology, state.high_homology,
+                        state.homology_length, state.homology_ub,
+                        state.homology.data());
+                } else {
+                    state.number_in_common = 0;
+                    state.event_length = 0;
+                    state.define_input_position = position;
+                    state.event_position = api.define_event(
+                        state.homology_ub, xover_settings.short_output,
+                        xover_settings.long_winded, state.med_homology,
+                        state.high_homology, state.low_homology,
+                        xover_settings.target, xover_settings.circular,
+                        position, xover_window, scan_state.sequence_length,
+                        state.homology_length, state.sequence_minor,
+                        state.sequence_daughter, &state.end_flag,
+                        &state.event_begin, &state.event_end,
+                        &state.number_in_common, &state.event_length,
+                        state.xover_sequence.data(), state.homology.data());
+                    position = state.event_position;
+                    calculate_rdp_first_xover_probability(
+                        state, probability_settings, probability_estimate,
+                        fact_three, fact, api);
+                    if (apply_rdp_probability_cutoff(
+                            state, probability_settings)) {
+                        ++events.significant_candidates;
+                        if (!position_maps_built) {
+                            build_rdp_first_position_maps(
+                                state, scan_state, fss_ub, xover_window,
+                                fss_rdp, api);
+                            position_maps_built = true;
+                        }
+                        int beginning = state.event_begin;
+                        int ending = state.event_end;
+                        int beginning_warning = 0;
+                        int ending_warning = 0;
+                        map_and_centre_breakpoints(
+                            state, scan_state, xover_window, xover_settings,
+                            beginning, ending, beginning_warning,
+                            ending_warning);
+                        const auto storage = choose_storage_roles(
+                            state, events, store_lpv, store_lpv_ub);
+                        RdpRawEvent event;
+                        event.beginning = beginning;
+                        event.ending = ending;
+                        event.major_parent =
+                            static_cast<std::int16_t>(storage[1]);
+                        event.minor_parent =
+                            static_cast<std::int16_t>(storage[2]);
+                        event.daughter =
+                            static_cast<std::int16_t>(storage[0]);
+                        event.program_flag = 0;
+                        event.probability = state.adjusted_event_probability;
+                        if (beginning_warning == 1 && ending_warning == 1) {
+                            event.sbp_flag = 3;
+                        } else if (beginning_warning == 1) {
+                            event.sbp_flag = 1;
+                        } else if (ending_warning == 1) {
+                            event.sbp_flag = 2;
+                        }
+                        events.xover_list[storage[0]].push_back(event);
+                        events.current_xover[storage[0]] =
+                            static_cast<std::int16_t>(
+                                events.xover_list[storage[0]].size());
+                    }
+                }
+                if (state.end_flag == 1) {
+                    state.end_flag = 0;
+                    position = state.homology_length;
+                }
+                if (position < state.homology_length + 1 &&
+                    position > next_position) {
+                    next_position = position + 1;
+                } else {
+                    break;
+                }
+            }
+            if (!advance_rdp_role_cycle(state, 0)) break;
+        }
+        api.clean_xover_sequence(
+            state.homology_length + xover_window * 2, xover_window,
+            state.xover_sequence_ub, state.xover_sequence.data());
+    }
+    return events;
 }

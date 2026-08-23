@@ -5,6 +5,7 @@
 #include "tree_state.hpp"
 
 #include <array>
+#include <cstdint>
 #include <vector>
 
 #if defined(_WIN32)
@@ -102,6 +103,33 @@ struct RdpFirstXoverState {
     std::vector<int> xposdiff;
 };
 
+struct RdpRawEvent {
+    std::uint8_t outside_flag = 0;
+    std::uint8_t misidentify_flag = 0;
+    std::uint8_t program_flag = 0;
+    std::uint8_t sbp_flag = 0;
+    std::uint8_t accept = 0;
+    std::int16_t major_parent = 0;
+    std::int16_t minor_parent = 0;
+    std::int16_t daughter = 0;
+    std::int32_t beginning = 0;
+    std::int32_t ending = 0;
+    std::int32_t length_holder = 0;
+    std::int32_t event_number = 0;
+    float permutation_pvalue = 0.0F;
+    std::int32_t begin_parent = 0;
+    std::int32_t end_parent = 0;
+    double probability = 0.0;
+    double distance_holder = 0.0;
+};
+
+struct RdpRawEventState {
+    std::vector<std::int16_t> current_xover;
+    std::vector<std::vector<RdpRawEvent>> xover_list;
+    int scanned_triplets = 0;
+    int significant_candidates = 0;
+};
+
 RdpFirstXoverState build_rdp_first_xover_state(
     const RdpScanState& scan_state, const RdpDistanceState& distance_state,
     const RdpTreeState& tree_state, int triplet_index, int fss_ub,
@@ -140,6 +168,17 @@ bool advance_rdp_role_cycle(RdpFirstXoverState& state, int do_all);
 void scan_rdp_current_roles_to_first_probability(
     RdpFirstXoverState& state, const RdpScanState& scan_state,
     int xover_window, const RdpXoverSettings& xover_settings,
+    const RdpProbabilitySettings& probability_settings,
+    std::vector<double>& probability_estimate,
+    std::vector<double>& fact_three, std::vector<double>& fact,
+    const Dna5XoverApi& api);
+
+RdpRawEventState scan_rdp_redo_triplets(
+    const RdpScanState& scan_state, const RdpDistanceState& distance_state,
+    const RdpTreeState& tree_state, const std::vector<unsigned char>& redo,
+    std::vector<unsigned char>& fss_rdp, const std::vector<double>& store_lpv,
+    int store_lpv_ub, int fss_ub, int xover_window,
+    short xover_window_x, const RdpXoverSettings& xover_settings,
     const RdpProbabilitySettings& probability_settings,
     std::vector<double>& probability_estimate,
     std::vector<double>& fact_three, std::vector<double>& fact,

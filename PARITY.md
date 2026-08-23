@@ -75,6 +75,20 @@ matches the complete `XoverSeqNumW` input and cleared output at the final
 `CleanXOSNW` call on all ten datasets; run
 `tools/check-all-pre-scan-parity.sh` for that table.
 
+The same source-order walk now runs every triplet selected by the generated
+`AlistRDP4` redo list. It ports the late `FindSubSeqPB4` map construction,
+compressed-coordinate conversion, the `XPDDone` branch of `CentreBP`, RDP's
+`CurrentXOver`/`StoreLPV` event-owner choice, and `UpdateXOList3`'s ordinary
+append path. Across all ten datasets, all 16,431 generated active records have
+the exact native daughter, parents, centered breakpoints, program/SBP flags,
+and zero-initialized metadata at the first `MakeTestPVs` boundary. Every
+per-sequence `CurrentXOver` count also matches. The generated arrays then pass
+through the exact `MakeTestPVs` and `FindBestRecSignalP2` routines and select
+the same first event on all ten datasets. Run
+`tools/check-all-event-state-parity.sh` for the current table. Probability
+cells retain the accepted Windows/WASM final-rounding differences and are not
+part of the structural identity gate.
+
 The orchestration preserves two otherwise easy-to-collapse state values:
 RDP passes the FASTA length to `FindSubSeqPB3` but the FASTA length plus one to
 `XOHomologyP`, and its initial tree-selected `HighHomol` can differ from the

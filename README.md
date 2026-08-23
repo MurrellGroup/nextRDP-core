@@ -80,3 +80,9 @@ matrix for this connected prefix with:
 ```sh
 ./tools/check-all-pre-scan-parity.sh
 ```
+
+Run the all-redo event-state and first-selection parity table with:
+
+```sh
+./tools/check-all-event-state-parity.sh
+```

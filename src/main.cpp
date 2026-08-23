@@ -855,6 +855,243 @@ int fasta_first_xover_walk_fixture(
     return 0;
 }
 
+int fasta_all_redo_events_fixture(
+    const std::string& fasta_path, const std::string& alist_fixture_path,
+    const std::string& define_event_fixture_path,
+    const std::string& make_test_fixture_path,
+    const std::string& find_best_fixture_path) {
+    const Dna5ScanPreprocessApi preprocess_api{
+        &MathFuncs::MyMathFuncs::MakeAListP2,
+        &MathFuncs::MyMathFuncs::CountNucs,
+        &MathFuncs::MyMathFuncs::RecodeNucs,
+        &MathFuncs::MyMathFuncs::DoRecodeP,
+        &MathFuncs::MyMathFuncs::MakeCompressSeqP,
+    };
+    const Dna5XoverApi xover_api{
+        &MathFuncs::MyMathFuncs::FindSubSeqPB3,
+        &MathFuncs::MyMathFuncs::XOHomologyP,
+        &MathFuncs::MyMathFuncs::FindNextP,
+        &MathFuncs::MyMathFuncs::FindFirstCOP,
+        &MathFuncs::MyMathFuncs::DefineEventP2,
+        &MathFuncs::MyMathFuncs::ProbCalcP2,
+        &MathFuncs::MyMathFuncs::ProbCalcP,
+        &MathFuncs::MyMathFuncs::FindSubSeqPB4,
+        &MathFuncs::MyMathFuncs::CleanXOSNW,
+    };
+    auto scan_state =
+        build_rdp_scan_state_from_fasta(fasta_path, preprocess_api);
+    auto distance_state = build_rdp_distance_state(
+        scan_state, 1, scan_state.sequence_length);
+    auto tree_state =
+        build_rdp_upgma_tree_state(scan_state.next_no, distance_state);
+    const auto alist_fixture = load_alist_rdp4_fixture(alist_fixture_path);
+    const auto& h = alist_fixture.header;
+    auto store_lpv = alist_rdp4_typed_section<double>(
+        alist_fixture, AlistRdp4Section::store_lpv_in);
+    auto redo = alist_rdp4_typed_section<unsigned char>(
+        alist_fixture, AlistRdp4Section::redo_list_in);
+    auto fss_rdp = alist_rdp4_typed_section<unsigned char>(
+        alist_fixture, AlistRdp4Section::fss_rdp_in);
+    auto probability_estimate = alist_rdp4_typed_section<double>(
+        alist_fixture, AlistRdp4Section::probability_estimate_in);
+    auto fact_three = alist_rdp4_typed_section<double>(
+        alist_fixture, AlistRdp4Section::fact_three_in);
+    auto fact = alist_rdp4_typed_section<double>(
+        alist_fixture, AlistRdp4Section::fact_in);
+    const int redo_count = MathFuncs::MyMathFuncs::AlistRDP4(
+        h.store_lpv_ub, store_lpv.data(), scan_state.analysis_list.data(),
+        h.list_length, h.start, h.end, h.next_no, h.sub_threshold,
+        redo.data(), h.circular, h.mc_correction, h.mc_flag,
+        h.lowest_probability, h.target_x, h.sequence_length, h.short_output,
+        h.distance_ub, distance_state.distance.data(), h.tree_distance_ub,
+        tree_state.tree_distance.data(), h.fss_rdp_ub,
+        h.compressed_sequence_ub, scan_state.compressed_sequence.data(),
+        scan_state.sequence_data.data(), h.xover_window, h.xover_window_x,
+        fss_rdp.data(), h.probability_file_flag, h.probability_one_ub,
+        h.probability_two_ub, probability_estimate.data(), h.fact_three_ub,
+        fact_three.data(), fact.data());
+
+    const char define_magic[8] = {
+        'D', 'E', 'F', 'E', 'V', 'P', '2', '\0'};
+    const auto define_fixture =
+        load_rdp_sectioned_fixture<DefineEventP2CaptureHeader>(
+            define_event_fixture_path, define_magic);
+    const RdpXoverSettings xover_settings{
+        define_fixture.header.short_output,
+        define_fixture.header.long_winded,
+        define_fixture.header.target_x,
+        define_fixture.header.circular,
+    };
+    const RdpProbabilitySettings probability_settings{
+        h.circular,
+        h.mc_correction,
+        h.mc_flag,
+        h.probability_file_flag,
+        h.probability_one_ub,
+        h.probability_two_ub,
+        h.fact_three_ub,
+        h.lowest_probability,
+    };
+    auto events = scan_rdp_redo_triplets(
+        scan_state, distance_state, tree_state, redo, fss_rdp, store_lpv,
+        h.store_lpv_ub, h.fss_rdp_ub, h.xover_window, h.xover_window_x,
+        xover_settings, probability_settings, probability_estimate,
+        fact_three, fact, xover_api);
+
+    const char make_test_magic[8] = {
+        'M', 'K', 'T', 'E', 'S', 'T', 'P', 'V'};
+    const auto make_test_fixture =
+        load_rdp_sectioned_fixture<MakeTestPVsCaptureHeader>(
+            make_test_fixture_path, make_test_magic);
+    const auto native_current =
+        rdp_fixture_section<short>(make_test_fixture, 2);
+    const auto native_events =
+        rdp_fixture_section<XOVERDEFINE>(make_test_fixture, 3);
+    int raw_total = 0;
+    int native_total = 0;
+    int matching_rows = 0;
+    int matching_event_identity = 0;
+    int matching_event_probability = 0;
+    int compared_events = 0;
+    for (int sequence = 0; sequence <= scan_state.next_no; ++sequence) {
+        raw_total += events.current_xover[sequence];
+        native_total += native_current[sequence];
+        if (events.current_xover[sequence] == native_current[sequence]) {
+            ++matching_rows;
+        }
+        const int common = std::min<int>(
+            events.current_xover[sequence], native_current[sequence]);
+        for (int slot = 1; slot <= common; ++slot) {
+            const auto& actual = events.xover_list[sequence][slot - 1];
+            const auto native_index = static_cast<std::size_t>(sequence) +
+                static_cast<std::size_t>(slot) *
+                    static_cast<std::size_t>(
+                        make_test_fixture.header.xover_rows_ub + 1);
+            if (native_index >= native_events.size()) {
+                throw std::runtime_error(
+                    "native XOverList lookup exceeds its bounds");
+            }
+            const auto& expected = native_events[native_index];
+            const bool identity_matches =
+                actual.outside_flag == expected.OutsideFlag &&
+                actual.misidentify_flag == expected.MissIdentifyFlag &&
+                actual.program_flag == expected.ProgramFlag &&
+                actual.sbp_flag == expected.SBPFlag &&
+                actual.accept == expected.Accept &&
+                actual.major_parent == expected.MajorP &&
+                actual.minor_parent == expected.MinorP &&
+                actual.daughter == expected.Daughter &&
+                actual.beginning == expected.Beginning &&
+                actual.ending == expected.Ending &&
+                actual.length_holder == expected.LHolder &&
+                actual.event_number == expected.Eventnumber &&
+                actual.permutation_pvalue == expected.PermPVal &&
+                actual.begin_parent == expected.BeginP &&
+                actual.end_parent == expected.EndP &&
+                actual.distance_holder == expected.DHolder;
+            if (identity_matches) ++matching_event_identity;
+            if (actual.probability == expected.Probability) {
+                ++matching_event_probability;
+            }
+            ++compared_events;
+        }
+    }
+    const bool raw_structure_matches = raw_total == native_total &&
+        matching_rows == scan_state.next_no + 1 &&
+        matching_event_identity == compared_events &&
+        compared_events == raw_total;
+    if (!raw_structure_matches) {
+        std::cerr << "RDP all-redo raw event structural parity: FAIL\n";
+        return 1;
+    }
+
+    const int row_count = make_test_fixture.header.xover_rows_ub + 1;
+    const int slot_count = make_test_fixture.header.xover_slots_ub + 1;
+    std::vector<XOVERDEFINE> generated_xovers(
+        static_cast<std::size_t>(row_count) * slot_count);
+    for (int sequence = 0; sequence <= scan_state.next_no; ++sequence) {
+        for (int slot = 1; slot <= events.current_xover[sequence]; ++slot) {
+            const auto& source = events.xover_list[sequence][slot - 1];
+            auto& destination = generated_xovers[
+                static_cast<std::size_t>(sequence) +
+                static_cast<std::size_t>(slot) * row_count];
+            destination.OutsideFlag = source.outside_flag;
+            destination.MissIdentifyFlag = source.misidentify_flag;
+            destination.ProgramFlag = source.program_flag;
+            destination.SBPFlag = source.sbp_flag;
+            destination.Accept = source.accept;
+            destination.MajorP = source.major_parent;
+            destination.MinorP = source.minor_parent;
+            destination.Daughter = source.daughter;
+            destination.Beginning = source.beginning;
+            destination.Ending = source.ending;
+            destination.LHolder = source.length_holder;
+            destination.Eventnumber = source.event_number;
+            destination.PermPVal = source.permutation_pvalue;
+            destination.BeginP = source.begin_parent;
+            destination.EndP = source.end_parent;
+            destination.Probability = source.probability;
+            destination.DHolder = source.distance_holder;
+        }
+    }
+    auto generated_done =
+        rdp_fixture_section<unsigned char>(make_test_fixture, 1);
+    auto generated_test_pvs =
+        rdp_fixture_section<double>(make_test_fixture, 4);
+    const int make_test_result = MathFuncs::MyMathFuncs::MakeTestPVs(
+        make_test_fixture.header.done_sequence_ub, generated_done.data(),
+        scan_state.next_no, make_test_fixture.header.xover_rows_ub,
+        make_test_fixture.header.xover_slots_ub,
+        events.current_xover.data(), generated_xovers.data(),
+        generated_test_pvs.data());
+    const auto native_done_out =
+        rdp_fixture_section<unsigned char>(make_test_fixture, 101);
+    const auto native_make_test_result =
+        rdp_fixture_section<int>(make_test_fixture, 105);
+    const bool make_test_structure_matches =
+        native_make_test_result.size() == 1 &&
+        make_test_result == native_make_test_result[0] &&
+        generated_done == native_done_out;
+
+    const char find_best_magic[8] = {
+        'F', 'B', 'R', 'S', 'I', 'G', '2', '\0'};
+    const auto find_best_fixture =
+        load_rdp_sectioned_fixture<FindBestRecSignalP2CaptureHeader>(
+            find_best_fixture_path, find_best_magic);
+    auto low_probability =
+        rdp_fixture_section<double>(find_best_fixture, 1);
+    auto trace = rdp_fixture_section<int>(find_best_fixture, 3);
+    const int find_best_result = MathFuncs::MyMathFuncs::FindBestRecSignalP2(
+        find_best_fixture.header.done_target, scan_state.next_no,
+        find_best_fixture.header.probability_rows_ub,
+        find_best_fixture.header.probability_columns_ub,
+        low_probability.data(),
+        reinterpret_cast<char*>(generated_done.data()), trace.data(),
+        events.current_xover.data(), generated_test_pvs.data());
+    const auto native_trace =
+        rdp_fixture_section<int>(find_best_fixture, 103);
+    const auto native_find_best_result =
+        rdp_fixture_section<int>(find_best_fixture, 106);
+    const bool first_selection_matches =
+        native_find_best_result.size() == 1 &&
+        find_best_result == native_find_best_result[0] &&
+        trace == native_trace;
+    std::cout << "RDP all-redo raw event scan: " << events.scanned_triplets
+              << " triplets (Alist return " << redo_count << "), "
+              << events.significant_candidates << " significant intervals, "
+              << raw_total << " stored candidates; native MakeTestPVs boundary "
+              << native_total << " candidates, " << matching_rows << '/'
+              << (scan_state.next_no + 1) << " row counts equal, "
+              << matching_event_identity << '/' << compared_events
+              << " event identities exact, " << matching_event_probability
+              << '/' << compared_events << " probabilities exact; MakeTestPVs "
+              << (make_test_structure_matches ? "PASS" : "FAIL")
+              << ", first selection "
+              << (first_selection_matches ? "PASS" : "FAIL") << " ("
+              << trace[0] << ',' << trace[1] << ")\n";
+    return make_test_structure_matches && first_selection_matches ? 0 : 1;
+}
+
 int alist_rdp4_fixture(const std::string& path) {
     return run_alist_rdp4_fixture(
         &MathFuncs::MyMathFuncs::AlistRDP4, path, std::cout, std::cerr);
@@ -1036,6 +1273,11 @@ int main(int argc, char** argv) {
         return fasta_first_xover_walk_fixture(
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
             argv[9], argv[10], argv[11]);
+    }
+    if (argc == 7 &&
+        std::string_view(argv[1]) == "fasta-all-redo-events-fixture") {
+        return fasta_all_redo_events_fixture(
+            argv[2], argv[3], argv[4], argv[5], argv[6]);
     }
     if (argc == 3 && std::string_view(argv[1]) == "alist-rdp4-fixture") {
         return alist_rdp4_fixture(argv[2]);
