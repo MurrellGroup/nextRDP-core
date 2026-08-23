@@ -44,6 +44,7 @@ outputs use the user's accepted platform-math tolerance when Windows and WASM
 | 35 | `MakeDoneThis3` / `MakePhPrScore` | all first-event score calls from fresh local-RDP runs on all ten datasets | exact filter/trace state and numerically equivalent correlation/subscores |
 | 36 | `MakeTrpGroups2` / `MakeTrpScore2` | all three role calls from fresh local-RDP runs on all ten datasets | byte-identical group membership/counts and numerically equivalent triplet tree scores |
 | 37 | `FindSets` and pre-retrim compatibility orchestration | complete first-event path from fresh local-RDP runs on all ten datasets | exact alternate candidate sets and exact conditional 6-, 9-, or 24-call `FAMat`/`FCMat`/`SAMat`/`SCMat` family order |
+| 38 | `CheckPatternX` / `CheckPattern` score panel | first live call from each of ten fresh local-RDP runs | byte-identical per-sequence pattern counts and completion mask; integrated VB proportion-panel update |
 
 The live `AlistRDP4` fixture covers 2,300 triplets and changes 709 redo states.
 Because the exact C++ implementation calls `FastRecCheckPB` internally, that

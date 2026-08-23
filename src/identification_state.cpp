@@ -2159,6 +2159,130 @@ RdpTreeCompatibilityFlowState run_rdp_tree_compatibility_flow(
     return output;
 }
 
+RdpPatternState check_rdp_sequence_patterns(
+    const int sequence_length, const int next_no,
+    const std::array<int, 3>& sequences,
+    const std::array<int, 3>& starts,
+    const std::array<int, 3>& ends,
+    const std::array<int, 6>& comparison_matrix,
+    const std::vector<short>& sequence_data,
+    const std::vector<double>& acceptable_sequences) {
+    const int count = next_no + 1;
+    const int positions = sequence_length + 1;
+    if (sequence_data.size() <
+            static_cast<std::size_t>(positions) * count ||
+        acceptable_sequences.size() != static_cast<std::size_t>(57) * count) {
+        throw std::runtime_error("CheckPattern input dimensions differ");
+    }
+    const auto nucleotide = [&](const int position, const int sequence) {
+        return sequence_data[position +
+            static_cast<std::size_t>(sequence) * positions];
+    };
+    const auto pattern_cell = [](const int role, const int region,
+                                 const int sequence) {
+        return static_cast<std::size_t>(role) + region * 3 + sequence * 9;
+    };
+    const auto done_cell = [](const int region, const int sequence) {
+        return static_cast<std::size_t>(region) + sequence * 3;
+    };
+    const auto acceptable_cell = [](const int role, const int category,
+                                    const int sequence) {
+        return static_cast<std::size_t>(role) + category * 3 + sequence * 57;
+    };
+
+    RdpPatternState output;
+    output.pattern.assign(static_cast<std::size_t>(9) * count, 0.0);
+    output.done.assign(static_cast<std::size_t>(3) * count, 0);
+    output.acceptable_sequences = acceptable_sequences;
+
+    // Literal DNA!CheckPatternX traversal. G is mostly redundant because
+    // DonePattern makes each (region, sequence) cell execute only once, but
+    // retaining the loop also retains the selected-sequence skip order.
+    const auto score_position = [&](const int position, const int target,
+                                    const int region) {
+        const short target_nucleotide = nucleotide(position, target);
+        const short first = nucleotide(position, sequences[0]);
+        const short second = nucleotide(position, sequences[1]);
+        const short third = nucleotide(position, sequences[2]);
+        if (target_nucleotide == 46 || first == 46 || second == 46 ||
+            third == 46 || (first == second && first == third)) {
+            return;
+        }
+        if (target_nucleotide == first) {
+            if (target_nucleotide != second) {
+                if (second == third) {
+                    output.pattern[pattern_cell(0, region, target)] += 1.0;
+                } else if (target_nucleotide != third) {
+                    output.pattern[pattern_cell(0, region, target)] += 0.5;
+                }
+            }
+        } else if (target_nucleotide == second) {
+            if (first == third) {
+                output.pattern[pattern_cell(1, region, target)] += 1.0;
+            } else if (target_nucleotide != third) {
+                output.pattern[pattern_cell(1, region, target)] += 0.5;
+            }
+        } else if (target_nucleotide == third) {
+            if (first == second) {
+                output.pattern[pattern_cell(2, region, target)] += 1.0;
+            } else if (target_nucleotide != second) {
+                output.pattern[pattern_cell(2, region, target)] += 0.5;
+            }
+        }
+    };
+    for (int selected_role = 0; selected_role < 3; ++selected_role) {
+        for (int target = 0; target <= next_no; ++target) {
+            if (target == sequences[selected_role]) continue;
+            for (int region = 0; region < 3; ++region) {
+                const auto done_index = done_cell(region, target);
+                if (output.done[done_index] != 0) continue;
+                output.done[done_index] = 1;
+                if (starts[region] < ends[region]) {
+                    for (int position = starts[region];
+                         position <= ends[region]; ++position) {
+                        score_position(position, target, region);
+                    }
+                } else {
+                    for (int position = 1; position <= ends[region];
+                         ++position) {
+                        score_position(position, target, region);
+                    }
+                    for (int position = starts[region];
+                         position <= sequence_length; ++position) {
+                        score_position(position, target, region);
+                    }
+                }
+            }
+        }
+    }
+
+    // The active VB CheckPattern analysis block never removes a candidate;
+    // its only surviving state change is this per-role proportion panel.
+    for (int role = 0; role < 3; ++role) {
+        for (int target = 0; target <= next_no; ++target) {
+            const auto destination = acceptable_cell(role, 3, target);
+            if (target == sequences[role]) {
+                output.acceptable_sequences[destination] = 3.0;
+                continue;
+            }
+            for (int region = 0; region < 3; ++region) {
+                const double total =
+                    output.pattern[pattern_cell(role, region, target)] +
+                    output.pattern[pattern_cell(
+                        comparison_matrix[role], region, target)] +
+                    output.pattern[pattern_cell(
+                        comparison_matrix[role + 3], region, target)];
+                if (total > 0.0) {
+                    output.acceptable_sequences[destination] +=
+                        output.pattern[pattern_cell(role, region, target)] /
+                        total;
+                }
+            }
+        }
+    }
+    return output;
+}
+
 RdpPhylProScoreState make_rdp_phylpro_scores(
     const int next_no, const double minimum_offset,
     const std::vector<int>& done_this,

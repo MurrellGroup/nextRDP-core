@@ -137,6 +137,13 @@ struct ScoreSupportCaptureHeader {
     std::uint32_t group_calls;
     std::uint32_t score_calls;
 };
+
+struct CheckPatternCaptureHeader {
+    char magic[8];
+    std::uint32_t version;
+    std::int32_t next_no;
+    std::int32_t sequence_length;
+};
 #pragma pack(pop)
 
 static_assert(sizeof(UFDistCaptureHeader) == 32);
@@ -153,6 +160,7 @@ static_assert(sizeof(StripDupInvCaptureHeader) == 16);
 static_assert(sizeof(RCompatCaptureHeader) == 20);
 static_assert(sizeof(PhPrScoreCaptureHeader) == 20);
 static_assert(sizeof(ScoreSupportCaptureHeader) == 28);
+static_assert(sizeof(CheckPatternCaptureHeader) == 20);
 
 template <typename UFDistFn>
 inline int run_ufdist_fixture(

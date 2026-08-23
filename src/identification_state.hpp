@@ -217,6 +217,21 @@ RdpTreeCompatibilityFlowState run_rdp_tree_compatibility_flow(
     const std::vector<float>& region_secondary_matrix,
     const RdpRawEventState& events);
 
+struct RdpPatternState {
+    std::vector<double> pattern;
+    std::vector<unsigned char> done;
+    std::vector<double> acceptable_sequences;
+};
+
+RdpPatternState check_rdp_sequence_patterns(
+    int sequence_length, int next_no,
+    const std::array<int, 3>& sequences,
+    const std::array<int, 3>& starts,
+    const std::array<int, 3>& ends,
+    const std::array<int, 6>& comparison_matrix,
+    const std::vector<short>& sequence_data,
+    const std::vector<double>& acceptable_sequences);
+
 RdpTreeCompatibilityCallState make_rdp_tree_compatibility_call(
     int next_no, const std::array<int, 3>& sequences,
     const std::array<int, 6>& comparison_matrix, int role,

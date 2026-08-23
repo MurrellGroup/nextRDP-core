@@ -874,7 +874,8 @@ int fasta_all_redo_events_fixture(
     const std::string& strip_dup_inv_fixture_path,
     const std::string& rcompat_fixture_path,
     const std::string& phpr_fixture_path,
-    const std::string& score_support_fixture_path) {
+    const std::string& score_support_fixture_path,
+    const std::string& check_pattern_fixture_path) {
     const Dna5ScanPreprocessApi preprocess_api{
         &MathFuncs::MyMathFuncs::MakeAListP2,
         &MathFuncs::MyMathFuncs::CountNucs,
@@ -2526,42 +2527,9 @@ int fasta_all_redo_events_fixture(
         rcompat_matches = rcompat_matches && call_matches;
     }
     if (!rcompat_flow_matches) {
-        const auto diagnostic_matrix = rdp_fixture_section<float>(
-            rcompat_fixture, 6013);
-        const auto diagnostic_last = rdp_fixture_section<int>(
-            rcompat_fixture, 6007);
-        const auto diagnostic_list = rdp_fixture_section<int>(
-            rcompat_fixture, 6011);
         std::cerr << "RDP compatibility flow mismatch: generated "
                   << tree_compatibility_flow.calls.size() << " of "
-                  << rcompat_fixture.header.calls << " captured calls; F="
-                  << tree_compatibility_flow.background[0] << ','
-                  << tree_compatibility_flow.background[1] << ','
-                  << tree_compatibility_flow.background[2] << " S="
-                  << tree_compatibility_flow.region[0] << ','
-                  << tree_compatibility_flow.region[1] << ','
-                  << tree_compatibility_flow.region[2] << " FC="
-                  << tree_compatibility_flow.background_secondary[0] << ','
-                  << tree_compatibility_flow.background_secondary[1] << ','
-                  << tree_compatibility_flow.background_secondary[2] << " SC="
-                  << tree_compatibility_flow.region_secondary[0] << ','
-                  << tree_compatibility_flow.region_secondary[1] << ','
-                  << tree_compatibility_flow.region_secondary[2]
-                  << "; call6 matrix F/FC/S/SC="
-                  << (diagnostic_matrix == background_adjusted) << '/'
-                  << (diagnostic_matrix == temporary_background) << '/'
-                  << (diagnostic_matrix == region_adjusted) << '/'
-                  << (diagnostic_matrix == temporary_region)
-                  << " lists primary/sets="
-                  << (diagnostic_last ==
-                      as_vector(actual_resolution.candidates.last) &&
-                      diagnostic_list == actual_resolution.candidates.list)
-                  << '/'
-                  << (diagnostic_last ==
-                      as_vector(tree_compatibility_flow.event_sets.candidate_last) &&
-                      diagnostic_list ==
-                          tree_compatibility_flow.event_sets.candidate_list)
-                  << '\n';
+                  << rcompat_fixture.header.calls << " captured calls\n";
     }
     const char phpr_magic[8] = {
         'P', 'H', 'P', 'R', 'S', 'C', 'O', '1'};
@@ -2814,6 +2782,63 @@ int fasta_all_redo_events_fixture(
         }
         score_support_matches = score_support_matches && call_matches;
     }
+    const char check_pattern_magic[8] = {
+        'C', 'H', 'K', 'P', 'A', 'T', '1', '\0'};
+    const auto check_pattern_fixture =
+        load_rdp_sectioned_fixture<CheckPatternCaptureHeader>(
+            check_pattern_fixture_path, check_pattern_magic);
+    const std::array<int, 3> pattern_starts{
+        actual_starts[0], actual_starts[2], actual_starts[4]};
+    const std::array<int, 3> pattern_ends{
+        actual_ends[1], actual_ends[3], actual_ends[4]};
+    const auto expected_pattern_before =
+        rdp_fixture_section<double>(check_pattern_fixture, 5);
+    const auto expected_done_before =
+        rdp_fixture_section<unsigned char>(check_pattern_fixture, 6);
+    const auto expected_pattern =
+        rdp_fixture_section<double>(check_pattern_fixture, 102);
+    const auto expected_pattern_done =
+        rdp_fixture_section<unsigned char>(check_pattern_fixture, 103);
+    const auto expected_pattern_sequences =
+        rdp_fixture_section<short>(check_pattern_fixture, 4);
+    const bool pattern_sequences_match =
+        scan_state.sequence_data.size() >= expected_pattern_sequences.size() &&
+        std::equal(expected_pattern_sequences.begin(),
+                   expected_pattern_sequences.end(),
+                   scan_state.sequence_data.begin());
+    const auto pattern_state = check_rdp_sequence_patterns(
+        scan_state.sequence_length, scan_state.next_no,
+        correlation_sequences, pattern_starts, pattern_ends,
+        correlation_comparison, scan_state.sequence_data,
+        actual_resolution.acceptable_sequences);
+    const bool check_pattern_matches =
+        check_pattern_fixture.header.next_no == scan_state.next_no &&
+        check_pattern_fixture.header.sequence_length ==
+            scan_state.sequence_length &&
+        as_vector(correlation_sequences) ==
+            rdp_fixture_section<int>(check_pattern_fixture, 1) &&
+        as_vector(pattern_starts) ==
+            rdp_fixture_section<int>(check_pattern_fixture, 2) &&
+        as_vector(pattern_ends) ==
+            rdp_fixture_section<int>(check_pattern_fixture, 3) &&
+        pattern_sequences_match &&
+        std::all_of(expected_pattern_before.begin(),
+                    expected_pattern_before.end(),
+                    [](const double value) { return value == 0.0; }) &&
+        std::all_of(expected_done_before.begin(), expected_done_before.end(),
+                    [](const unsigned char value) { return value == 0; }) &&
+        rdp_fixture_section<int>(check_pattern_fixture, 101) ==
+            std::vector<int>{1} &&
+        pattern_state.pattern == expected_pattern &&
+        pattern_state.done == expected_pattern_done;
+    if (!check_pattern_matches) {
+        std::cerr << "CheckPatternX mismatch: inputs="
+                  << pattern_sequences_match
+                  << " pattern="
+                  << (pattern_state.pattern == expected_pattern)
+                  << " done="
+                  << (pattern_state.done == expected_pattern_done) << '\n';
+    }
     std::cout << "RDP all-redo raw event scan: " << events.scanned_triplets
               << " triplets (Alist return " << redo_count << "), "
               << events.significant_candidates << " significant intervals, "
@@ -2852,7 +2877,9 @@ int fasta_all_redo_events_fixture(
               << ", MakePhPrScore "
               << (phpr_matches ? "PASS" : "FAIL")
               << ", score support "
-              << (score_support_matches ? "PASS" : "FAIL") << "\n";
+              << (score_support_matches ? "PASS" : "FAIL")
+              << ", CheckPatternX "
+              << (check_pattern_matches ? "PASS" : "FAIL") << "\n";
 
     return make_test_structure_matches && first_selection_matches &&
             ufdist_matches && region_distance_matches &&
@@ -2860,7 +2887,7 @@ int fasta_all_redo_events_fixture(
         (make_sdmp_matches && fill_rmat_matches && calcr_matches &&
          make_rlist_matches && find_actual_matches && strip_dup_matches &&
              rcompat_matches && rcompat_flow_matches && phpr_matches &&
-             score_support_matches
+             score_support_matches && check_pattern_matches
              ? 0 : 1) : 1;
 }
 
@@ -3046,13 +3073,13 @@ int main(int argc, char** argv) {
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
             argv[9], argv[10], argv[11]);
     }
-    if (argc == 22 &&
+    if (argc == 23 &&
         std::string_view(argv[1]) == "fasta-all-redo-events-fixture") {
         return fasta_all_redo_events_fixture(
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
             argv[9], argv[10], argv[11], {argv[12], argv[13], argv[14]},
             argv[15], argv[16], argv[17], argv[18], argv[19], argv[20],
-            argv[21]);
+            argv[21], argv[22]);
     }
     if (argc == 3 && std::string_view(argv[1]) == "alist-rdp4-fixture") {
         return alist_rdp4_fixture(argv[2]);
