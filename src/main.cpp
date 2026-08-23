@@ -866,7 +866,8 @@ int fasta_all_redo_events_fixture(
     const std::string& check_matrix_fixture_path,
     const std::string& make_nj_fixture_path,
     const std::string& make_sdmp_fixture_path,
-    const std::array<std::string, 3>& fill_rmat_fixture_paths) {
+    const std::array<std::string, 3>& fill_rmat_fixture_paths,
+    const std::string& calcr_fixture_path) {
     const Dna5ScanPreprocessApi preprocess_api{
         &MathFuncs::MyMathFuncs::MakeAListP2,
         &MathFuncs::MyMathFuncs::CountNucs,
@@ -1735,6 +1736,7 @@ int fasta_all_redo_events_fixture(
 
     bool fill_rmat_matches = make_sdmp_matches;
     std::vector<unsigned char> correlation_positions(2, 0);
+    std::array<std::vector<double>, 3> correlation_matrices;
     for (int target = 0; target < 3; ++target) {
         const char fill_rmat_magic[8] = {
             'F', 'I', 'L', 'L', 'R', 'M', 'A', 'T'};
@@ -1742,7 +1744,8 @@ int fasta_all_redo_events_fixture(
             load_rdp_sectioned_fixture<FillRmatCaptureHeader>(
                 fill_rmat_fixture_paths[target], fill_rmat_magic);
         const auto& fill_header = fill_fixture.header;
-        std::vector<double> correlation_matrix(
+        auto& correlation_matrix = correlation_matrices[target];
+        correlation_matrix.assign(
             static_cast<std::size_t>(3) * 6 * matrix_stride, 0.0);
         const bool fill_inputs_match = fill_header.y == target &&
             fill_header.next_no == scan_state.next_no &&
@@ -1784,6 +1787,114 @@ int fasta_all_redo_events_fixture(
         }
         fill_rmat_matches = fill_rmat_matches && target_matches;
     }
+    const char calcr_magic[8] = {
+        'C', 'A', 'L', 'C', 'R', '3', '\0', '\0'};
+    const auto calcr_fixture =
+        load_rdp_sectioned_fixture<CalCRChainCaptureHeader>(
+            calcr_fixture_path, calcr_magic);
+    const std::array<int, 3> correlation_sequences{
+        selected_sequences[0], selected_sequences[1], selected_sequences[2]};
+    const std::array<int, 6> correlation_comparison{1, 0, 0, 2, 2, 1};
+    const auto correlation_state = calculate_rdp_correlations(
+        scan_state.next_no, correlation_sequences, correlation_comparison,
+        correlation_matrices);
+    const bool calcr_matches = fill_rmat_matches &&
+        calcr_fixture.header.next_no == scan_state.next_no &&
+        std::vector<int>(correlation_sequences.begin(),
+                         correlation_sequences.end()) ==
+            rdp_fixture_section<int>(calcr_fixture, 1) &&
+        std::vector<int>(correlation_comparison.begin(),
+                         correlation_comparison.end()) ==
+            rdp_fixture_section<int>(calcr_fixture, 2) &&
+        correlation_matrices[0] ==
+            rdp_fixture_section<double>(calcr_fixture, 3) &&
+        correlation_matrices[1] ==
+            rdp_fixture_section<double>(calcr_fixture, 4) &&
+        correlation_matrices[2] ==
+            rdp_fixture_section<double>(calcr_fixture, 5) &&
+        correlation_state.correlation ==
+            rdp_fixture_section<float>(calcr_fixture, 101) &&
+        correlation_state.inversion ==
+            rdp_fixture_section<float>(calcr_fixture, 102) &&
+        correlation_state.tested_correlation ==
+            rdp_fixture_section<float>(calcr_fixture, 103) &&
+        std::vector<double>(correlation_state.intermediate.begin(),
+                            correlation_state.intermediate.end()) ==
+            rdp_fixture_section<double>(calcr_fixture, 104) &&
+        std::vector<double>(correlation_state.results.begin(),
+                            correlation_state.results.end()) ==
+            rdp_fixture_section<double>(calcr_fixture, 105);
+    if (!calcr_matches) {
+        const auto report_calcr_difference = [&](const char* name,
+                                                 const auto& actual,
+                                                 const auto& expected) {
+            std::size_t count = 0;
+            std::size_t first = 0;
+            for (std::size_t index = 0;
+                 index < std::min(actual.size(), expected.size()); ++index) {
+                if (actual[index] != expected[index]) {
+                    if (count == 0) first = index;
+                    ++count;
+                }
+            }
+            std::cerr << ' ' << name << '=' << count;
+            if (count != 0) {
+                std::cerr << '@' << first << ':' << actual[first] << '/'
+                          << expected[first];
+            }
+        };
+        const auto native_calcr_correlation =
+            rdp_fixture_section<float>(calcr_fixture, 101);
+        const auto native_calcr_inversion =
+            rdp_fixture_section<float>(calcr_fixture, 102);
+        const auto native_calcr_tested =
+            rdp_fixture_section<float>(calcr_fixture, 103);
+        std::cerr << "CalCR chain integration mismatch: correlation="
+                  << (correlation_state.correlation ==
+                      rdp_fixture_section<float>(calcr_fixture, 101))
+                  << " inversion="
+                  << (correlation_state.inversion ==
+                      rdp_fixture_section<float>(calcr_fixture, 102))
+                  << " tested="
+                  << (correlation_state.tested_correlation ==
+                      rdp_fixture_section<float>(calcr_fixture, 103))
+                  << " intermediate="
+                  << (std::vector<double>(
+                          correlation_state.intermediate.begin(),
+                          correlation_state.intermediate.end()) ==
+                      rdp_fixture_section<double>(calcr_fixture, 104))
+                  << ';';
+        report_calcr_difference(
+            "correlation", correlation_state.correlation,
+            native_calcr_correlation);
+        report_calcr_difference(
+            "inversion", correlation_state.inversion,
+            native_calcr_inversion);
+        report_calcr_difference(
+            "tested", correlation_state.tested_correlation,
+            native_calcr_tested);
+        for (std::size_t index = 0;
+             index < correlation_state.inversion.size(); ++index) {
+            if (correlation_state.inversion[index] !=
+                native_calcr_inversion[index]) {
+                const int sequence = static_cast<int>(index / 9);
+                const int remainder = static_cast<int>(index % 9);
+                const int region = remainder / 3;
+                const int target = remainder % 3;
+                std::cerr << " inv-first-context=" << target << ',' << region
+                          << ',' << sequence << " tested";
+                for (int permutation = 0; permutation < 5; ++permutation) {
+                    const auto tested_index = static_cast<std::size_t>(target) +
+                        region * 3 + permutation * 9 + sequence * 45;
+                    std::cerr << ':'
+                              << correlation_state.tested_correlation[
+                                     tested_index];
+                }
+                break;
+            }
+        }
+        std::cerr << '\n';
+    }
     std::cout << "RDP all-redo raw event scan: " << events.scanned_triplets
               << " triplets (Alist return " << redo_count << "), "
               << events.significant_candidates << " significant intervals, "
@@ -1807,11 +1918,12 @@ int fasta_all_redo_events_fixture(
               << ", MakeSDMP2 "
               << (make_sdmp_matches ? "PASS" : "FAIL")
               << ", FillRmat "
-              << (fill_rmat_matches ? "PASS" : "FAIL") << "\n";
+              << (fill_rmat_matches ? "PASS" : "FAIL")
+              << ", CalCR " << (calcr_matches ? "PASS" : "FAIL") << "\n";
     return make_test_structure_matches && first_selection_matches &&
             ufdist_matches && region_distance_matches &&
             check_matrix_matches && make_nj_matches ?
-        (make_sdmp_matches && fill_rmat_matches ? 0 : 1) : 1;
+        (make_sdmp_matches && fill_rmat_matches && calcr_matches ? 0 : 1) : 1;
 }
 
 int alist_rdp4_fixture(const std::string& path) {
@@ -1996,11 +2108,12 @@ int main(int argc, char** argv) {
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
             argv[9], argv[10], argv[11]);
     }
-    if (argc == 15 &&
+    if (argc == 16 &&
         std::string_view(argv[1]) == "fasta-all-redo-events-fixture") {
         return fasta_all_redo_events_fixture(
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
-            argv[9], argv[10], argv[11], {argv[12], argv[13], argv[14]});
+            argv[9], argv[10], argv[11], {argv[12], argv[13], argv[14]},
+            argv[15]);
     }
     if (argc == 3 && std::string_view(argv[1]) == "alist-rdp4-fixture") {
         return alist_rdp4_fixture(argv[2]);

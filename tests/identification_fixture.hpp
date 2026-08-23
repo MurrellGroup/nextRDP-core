@@ -88,6 +88,12 @@ struct FillRmatCaptureHeader {
     std::int32_t distance_matrix_ub2;
     std::int32_t distance_matrix_ub3;
 };
+
+struct CalCRChainCaptureHeader {
+    char magic[8];
+    std::uint32_t version;
+    std::int32_t next_no;
+};
 #pragma pack(pop)
 
 static_assert(sizeof(UFDistCaptureHeader) == 32);
@@ -97,6 +103,7 @@ static_assert(sizeof(MakeNJTreesP2CaptureHeader) == 56);
 static_assert(sizeof(MarkOutsidesCaptureHeader) == 32);
 static_assert(sizeof(MakeSDMP2CaptureHeader) == 20);
 static_assert(sizeof(FillRmatCaptureHeader) == 40);
+static_assert(sizeof(CalCRChainCaptureHeader) == 16);
 
 template <typename UFDistFn>
 inline int run_ufdist_fixture(

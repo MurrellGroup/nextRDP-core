@@ -1,5 +1,6 @@
 #include "identification_state.hpp"
 
+#include <cmath>
 #include <stdexcept>
 
 RdpBreakpointFlanks make_rdp_breakpoint_flanks(
@@ -73,3 +74,210 @@ RdpBreakpointFlanks make_rdp_breakpoint_flanks(
     return result;
 }
 
+RdpCorrelationState calculate_rdp_correlations(
+    const int next_no, const std::array<int, 3>& sequences,
+    const std::array<int, 6>& comparison_matrix,
+    const std::array<std::vector<double>, 3>& regional_matrices,
+    const double minimum_offset) {
+    const int sequence_count = next_no + 1;
+    const auto regional_size = static_cast<std::size_t>(18) * sequence_count;
+    for (const auto& matrix : regional_matrices) {
+        if (matrix.size() != regional_size) {
+            throw std::runtime_error("CalCR regional matrix dimensions differ");
+        }
+    }
+    RdpCorrelationState state;
+    state.correlation.assign(static_cast<std::size_t>(9) * sequence_count, 0);
+    state.inversion.assign(static_cast<std::size_t>(9) * sequence_count, 0);
+    state.tested_correlation.assign(
+        static_cast<std::size_t>(45) * sequence_count, 0);
+
+    for (int target = 0; target < 3; ++target) {
+        const auto& regional = regional_matrices[target];
+        for (int region = 0; region < 3; ++region) {
+            const int region_offset = region * 3;
+            state.correlation[target + region_offset +
+                sequences[target] * 9] = 1.0F;
+            state.correlation[target + region_offset +
+                sequences[comparison_matrix[target]] * 9] = 0.0F;
+            state.correlation[target + region_offset +
+                sequences[comparison_matrix[target + 3]] * 9] = 0.0F;
+        }
+
+        const int target_offset = sequences[target] * 18;
+        for (int region = 0; region < 3; ++region) {
+            for (int sequence = 0; sequence <= next_no; ++sequence) {
+                const int sequence_offset = sequence * 9;
+                const int regional_sequence_offset = sequence * 18;
+                state.correlation[target + region * 3 + sequence_offset] = 0;
+                state.inversion[target + region * 3 + sequence_offset] = 0;
+                if (sequence == sequences[target]) {
+                    state.tested_correlation[
+                        target + region * 3 + sequence * 45] = 1;
+                    state.correlation[
+                        target + region * 3 + sequence_offset] = 1;
+                    continue;
+                }
+
+                for (int permutation = 0; permutation < 6; ++permutation) {
+                    double sum_x = 0;
+                    double sum_y = 0;
+                    double sum_xy = 0;
+                    double sum_x2 = 0;
+                    double sum_y2 = 0;
+                    const int stored_permutation =
+                        permutation == 5 ? 4 : permutation;
+                    const auto tested_index = static_cast<std::size_t>(target) +
+                        region * 3 + stored_permutation * 9 + sequence * 45;
+                    if (permutation <= 4) {
+                        state.tested_correlation[tested_index] = 0;
+                    }
+                    int sample_count = 6;
+                    for (int category = 0; category < 6; ++category) {
+                        int permuted_category = category;
+                        if (permutation == 1) {
+                            if (category == 0 || category == 3) {
+                                permuted_category = category + 1;
+                            } else if (category != 2 && category != 5) {
+                                permuted_category = category - 1;
+                            }
+                        } else if (permutation == 2) {
+                            if (category == 2 || category == 5) {
+                                permuted_category = category - 2;
+                            } else if (category == 0 || category == 3) {
+                                permuted_category = category + 2;
+                            }
+                        } else if (permutation == 3) {
+                            if (category == 2 || category == 5) {
+                                permuted_category = category - 1;
+                            } else if (category != 0 && category != 3) {
+                                permuted_category = category + 1;
+                            }
+                        } else if (permutation == 4) {
+                            if (category == 2 || category == 5) {
+                                permuted_category = category - 2;
+                            } else {
+                                permuted_category = category + 1;
+                            }
+                        } else if (permutation == 5) {
+                            if (category == 2 || category == 5) {
+                                permuted_category = category - 1;
+                            } else if (category == 0 || category == 3) {
+                                permuted_category = category + 2;
+                            } else {
+                                permuted_category = category - 1;
+                            }
+                        }
+                        state.intermediate[0] = regional[
+                            region + category * 3 + target_offset];
+                        state.intermediate[1] = regional[
+                            region + permuted_category * 3 +
+                            regional_sequence_offset];
+                        if (state.intermediate[0] > 4 ||
+                            state.intermediate[1] > 4) {
+                            --sample_count;
+                            break;
+                        }
+                        sum_x += state.intermediate[0];
+                        sum_y += state.intermediate[1];
+                        sum_xy +=
+                            state.intermediate[0] * state.intermediate[1];
+                        sum_x2 +=
+                            state.intermediate[0] * state.intermediate[0];
+                        sum_y2 +=
+                            state.intermediate[1] * state.intermediate[1];
+                    }
+
+                    bool calculated = false;
+                    if (sample_count == 6) {
+                        if (sum_x2 > 0 && sum_y2 > 0) {
+                            double denominator_x =
+                                6.0 * sum_x2 - sum_x * sum_x;
+                            if (denominator_x > 0.000000001) {
+                                denominator_x = std::pow(denominator_x, 0.5);
+                                double denominator_y =
+                                    6.0 * sum_y2 - sum_y * sum_y;
+                                if (denominator_y > 0.000000001) {
+                                    calculated = true;
+                                    denominator_y =
+                                        std::pow(denominator_y, 0.5);
+                                    const double denominator =
+                                        denominator_x * denominator_y;
+                                    const float stored_denominator =
+                                        static_cast<float>(denominator);
+                                    double extended_correlation;
+                                    if (stored_denominator > 0) {
+                                        extended_correlation =
+                                            (6.0 * sum_xy - sum_x * sum_y) /
+                                            stored_denominator;
+                                    } else {
+                                        extended_correlation = 0;
+                                    }
+                                    extended_correlation += minimum_offset;
+                                    const float correlation =
+                                        static_cast<float>(
+                                            extended_correlation);
+                                    if (permutation == 5) {
+                                        if (state.tested_correlation[
+                                                tested_index] <
+                                            extended_correlation) {
+                                            state.tested_correlation[
+                                                tested_index] = correlation;
+                                        }
+                                    } else {
+                                        state.tested_correlation[
+                                            tested_index] = correlation;
+                                    }
+                                    const auto result_index =
+                                        static_cast<std::size_t>(target) +
+                                        region * 3 + sequence_offset;
+                                    if (stored_permutation == 0) {
+                                        state.correlation[result_index] =
+                                            correlation;
+                                        state.inversion[result_index] = 0;
+                                    } else if (state.tested_correlation[
+                                                       target + region * 3 +
+                                                       sequence * 45] < 0.83F &&
+                                               state.correlation[result_index] <
+                                                   extended_correlation) {
+                                        state.correlation[result_index] =
+                                            correlation;
+                                        state.inversion[result_index] =
+                                            static_cast<float>(
+                                                stored_permutation);
+                                    }
+                                }
+                            }
+                        }
+                        if (!calculated) {
+                            const bool constant =
+                                6.0 * sum_y2 == sum_y * sum_y ||
+                                6.0 * sum_x2 == sum_x * sum_x;
+                            if (stored_permutation == 0) {
+                                const auto result_index =
+                                    static_cast<std::size_t>(target) +
+                                    region * 3 + sequence_offset;
+                                state.correlation[result_index] =
+                                    constant ? 1.0F : 0.0F;
+                                state.tested_correlation[tested_index] =
+                                    constant ? 1.0F : 0.0F;
+                                if (constant) state.inversion[result_index] = 0;
+                            } else {
+                                state.tested_correlation[tested_index] =
+                                    constant ? 1.0F : 0.0F;
+                            }
+                        }
+                    } else {
+                        state.tested_correlation[tested_index] = 0;
+                        if (stored_permutation == 0) {
+                            state.correlation[target + region * 3 +
+                                sequence_offset] = 0;
+                        }
+                    }
+                }
+            }
+        }
+        state.results[target] = 1.0;
+    }
+    return state;
+}

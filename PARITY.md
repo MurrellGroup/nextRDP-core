@@ -105,6 +105,10 @@ literal circular `MakeBPosLR` flank walk, constructs the five VB correlation
 regions and fixed triplet comparison matrix, and reaches `MakeSDMP2` with the
 exact native input state. Its complete `SDM` and `DistMat` outputs and the
 three sequential `FillRmat` branches are byte-identical on all ten datasets.
+The resulting matrices then pass through a direct port of all three `CalCR`
+calls. Its complete `RCorr`, `RInv`, and five-permutation `tRCorr` state is
+byte-identical to a reproducible installed-`DNA.dll` oracle capture on all ten
+datasets.
 
 The orchestration preserves two otherwise easy-to-collapse state values:
 RDP passes the FASTA length to `FindSubSeqPB3` but the FASTA length plus one to
