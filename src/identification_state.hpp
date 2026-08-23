@@ -190,6 +190,33 @@ struct RdpTreeCompatibilityState {
     std::array<RdpTreeCompatibilityCallState, 6> calls;
 };
 
+struct RdpTreeCompatibilityFlowState {
+    RdpEventSetState event_sets;
+    std::array<int, 3> background{};
+    std::array<int, 3> background_secondary{};
+    std::array<int, 3> background_sets{};
+    std::array<int, 3> background_secondary_sets{};
+    std::array<int, 3> region{};
+    std::array<int, 3> region_secondary{};
+    std::array<int, 3> region_sets{};
+    std::array<int, 3> region_secondary_sets{};
+    std::vector<RdpTreeCompatibilityCallState> calls;
+};
+
+RdpTreeCompatibilityFlowState run_rdp_tree_compatibility_flow(
+    int sequence_length, int next_no, int beginning, int ending,
+    const std::array<int, 3>& sequences,
+    const std::array<int, 6>& comparison_matrix,
+    const std::array<int, 3>& inversion_penalty,
+    const std::array<int, 3>& candidate_last,
+    const std::vector<int>& candidate_list,
+    const std::vector<int>& good_comparisons,
+    const std::vector<float>& background_ancestor_matrix,
+    const std::vector<float>& region_ancestor_matrix,
+    const std::vector<float>& background_secondary_matrix,
+    const std::vector<float>& region_secondary_matrix,
+    const RdpRawEventState& events);
+
 RdpTreeCompatibilityCallState make_rdp_tree_compatibility_call(
     int next_no, const std::array<int, 3>& sequences,
     const std::array<int, 6>& comparison_matrix, int role,

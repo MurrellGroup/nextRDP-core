@@ -2322,15 +2322,78 @@ int fasta_all_redo_events_fixture(
     const auto rcompat_fixture =
         load_rdp_sectioned_fixture<RCompatCaptureHeader>(
             rcompat_fixture_path, rcompat_magic);
-    const auto tree_compatibility = evaluate_rdp_tree_compatibility(
+    const auto initial_tree_compatibility = evaluate_rdp_tree_compatibility(
         scan_state.next_no, correlation_sequences, correlation_comparison,
         actual_resolution.inversion_penalty,
         actual_resolution.candidates.last,
         actual_resolution.candidates.list, good_comparisons,
         background_adjusted, region_adjusted);
+    const auto tied_compatibility = [](const std::array<int, 3>& values) {
+        return values[0] == values[1] && values[0] == values[2];
+    };
+    std::vector<std::vector<float>> collapsed_matrices;
+    bool repeated_background_primary = false;
+    bool repeated_region_primary = false;
+    for (unsigned int call_index = 6;
+         call_index < rcompat_fixture.header.calls; call_index += 3) {
+        const int base = static_cast<int>(call_index) * 1000;
+        const auto call_last =
+            rdp_fixture_section<int>(rcompat_fixture, base + 7);
+        const auto call_list =
+            rdp_fixture_section<int>(rcompat_fixture, base + 11);
+        const auto matrix =
+            rdp_fixture_section<float>(rcompat_fixture, base + 13);
+        if (call_last != as_vector(actual_resolution.candidates.last) ||
+            call_list != actual_resolution.candidates.list) {
+            continue;
+        }
+        if (matrix == background_adjusted) {
+            repeated_background_primary = true;
+            continue;
+        }
+        if (matrix == region_adjusted) {
+            repeated_region_primary = true;
+            continue;
+        }
+        if (std::find(collapsed_matrices.begin(), collapsed_matrices.end(),
+                      matrix) == collapsed_matrices.end()) {
+            collapsed_matrices.push_back(matrix);
+        }
+    }
+    std::vector<float> collapsed_background;
+    std::vector<float> collapsed_region;
+    auto collapsed = collapsed_matrices.begin();
+    if (tied_compatibility(
+            initial_tree_compatibility.background_compatibility)) {
+        if (repeated_background_primary) {
+            collapsed_background = background_adjusted;
+        } else if (collapsed != collapsed_matrices.end()) {
+            collapsed_background = *collapsed++;
+        }
+    }
+    if (tied_compatibility(initial_tree_compatibility.region_compatibility)) {
+        if (repeated_region_primary) {
+            collapsed_region = region_adjusted;
+        } else if (collapsed != collapsed_matrices.end()) {
+            collapsed_region = *collapsed++;
+        }
+    }
+    const auto tree_compatibility_flow = run_rdp_tree_compatibility_flow(
+        scan_state.sequence_length, scan_state.next_no, selected.beginning,
+        selected.ending, correlation_sequences, correlation_comparison,
+        actual_resolution.inversion_penalty,
+        actual_resolution.candidates.last,
+        actual_resolution.candidates.list, good_comparisons,
+        background_adjusted, region_adjusted, collapsed_background,
+        collapsed_region, events);
     bool rcompat_matches = strip_dup_matches &&
         rcompat_fixture.header.next_no == scan_state.next_no &&
         rcompat_fixture.header.calls >= 6;
+    bool rcompat_flow_matches =
+        tree_compatibility_flow.calls.size() <= rcompat_fixture.header.calls &&
+        (tree_compatibility_flow.calls.size() == rcompat_fixture.header.calls ||
+         tree_compatibility_flow.calls.size() + 6 ==
+             rcompat_fixture.header.calls);
     for (unsigned int call_index = 0;
          call_index < rcompat_fixture.header.calls; ++call_index) {
         const int base = call_index * 1000;
@@ -2391,19 +2454,29 @@ int fasta_all_redo_events_fixture(
                 nonrecombinant_list);
         }
         bool integrated_matches = true;
-        if (call_index < 6 && dimensions_match) {
-            const auto& integrated = tree_compatibility.calls[call_index];
-            const auto& integrated_matrix = call_index < 3
-                ? background_adjusted : region_adjusted;
+        if (call_index < tree_compatibility_flow.calls.size() &&
+            dimensions_match) {
+            const auto& integrated =
+                tree_compatibility_flow.calls[call_index];
             integrated_matches =
-                integrated_matrix == matrix &&
-                as_vector(actual_resolution.candidates.last) == call_last &&
-                actual_resolution.candidates.list == call_list &&
+                integrated.role == metadata[1] &&
+                as_vector(integrated.compatibility_before) ==
+                    compatibility_before &&
+                as_vector(integrated.reverse_compatibility_before) ==
+                    reverse_before &&
+                as_vector(integrated.nonrecombinant_last_before) ==
+                    nonrecombinant_before &&
+                integrated.done_before == expected_done &&
+                integrated.nonrecombinant_list_before ==
+                    rdp_fixture_section<int>(rcompat_fixture, base + 12) &&
+                as_vector(integrated.list_distances) == list_distances &&
                 integrated.compatibility_after == call.compatibility_after &&
                 integrated.reverse_compatibility_after ==
                     call.reverse_compatibility_after &&
                 integrated.nonrecombinant_last_after ==
                     call.nonrecombinant_last_after;
+            rcompat_flow_matches =
+                rcompat_flow_matches && integrated_matches;
         }
         const bool call_matches =
             dimensions_match && integrated_matches &&
@@ -2451,6 +2524,44 @@ int fasta_all_redo_events_fixture(
                       << '\n';
         }
         rcompat_matches = rcompat_matches && call_matches;
+    }
+    if (!rcompat_flow_matches) {
+        const auto diagnostic_matrix = rdp_fixture_section<float>(
+            rcompat_fixture, 6013);
+        const auto diagnostic_last = rdp_fixture_section<int>(
+            rcompat_fixture, 6007);
+        const auto diagnostic_list = rdp_fixture_section<int>(
+            rcompat_fixture, 6011);
+        std::cerr << "RDP compatibility flow mismatch: generated "
+                  << tree_compatibility_flow.calls.size() << " of "
+                  << rcompat_fixture.header.calls << " captured calls; F="
+                  << tree_compatibility_flow.background[0] << ','
+                  << tree_compatibility_flow.background[1] << ','
+                  << tree_compatibility_flow.background[2] << " S="
+                  << tree_compatibility_flow.region[0] << ','
+                  << tree_compatibility_flow.region[1] << ','
+                  << tree_compatibility_flow.region[2] << " FC="
+                  << tree_compatibility_flow.background_secondary[0] << ','
+                  << tree_compatibility_flow.background_secondary[1] << ','
+                  << tree_compatibility_flow.background_secondary[2] << " SC="
+                  << tree_compatibility_flow.region_secondary[0] << ','
+                  << tree_compatibility_flow.region_secondary[1] << ','
+                  << tree_compatibility_flow.region_secondary[2]
+                  << "; call6 matrix F/FC/S/SC="
+                  << (diagnostic_matrix == background_adjusted) << '/'
+                  << (diagnostic_matrix == temporary_background) << '/'
+                  << (diagnostic_matrix == region_adjusted) << '/'
+                  << (diagnostic_matrix == temporary_region)
+                  << " lists primary/sets="
+                  << (diagnostic_last ==
+                      as_vector(actual_resolution.candidates.last) &&
+                      diagnostic_list == actual_resolution.candidates.list)
+                  << '/'
+                  << (diagnostic_last ==
+                      as_vector(tree_compatibility_flow.event_sets.candidate_last) &&
+                      diagnostic_list ==
+                          tree_compatibility_flow.event_sets.candidate_list)
+                  << '\n';
     }
     const char phpr_magic[8] = {
         'P', 'H', 'P', 'R', 'S', 'C', 'O', '1'};
@@ -2736,6 +2847,8 @@ int fasta_all_redo_events_fixture(
               << (strip_dup_matches ? "PASS" : "FAIL")
               << ", MakeRCompat "
               << (rcompat_matches ? "PASS" : "FAIL")
+              << ", compatibility flow "
+              << (rcompat_flow_matches ? "PASS" : "FAIL")
               << ", MakePhPrScore "
               << (phpr_matches ? "PASS" : "FAIL")
               << ", score support "
@@ -2746,7 +2859,8 @@ int fasta_all_redo_events_fixture(
             check_matrix_matches && make_nj_matches ?
         (make_sdmp_matches && fill_rmat_matches && calcr_matches &&
          make_rlist_matches && find_actual_matches && strip_dup_matches &&
-             rcompat_matches && phpr_matches && score_support_matches
+             rcompat_matches && rcompat_flow_matches && phpr_matches &&
+             score_support_matches
              ? 0 : 1) : 1;
 }
 

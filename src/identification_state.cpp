@@ -1416,20 +1416,96 @@ RdpEventSetState find_rdp_event_sets(
     const int target_size = ending > beginning
         ? ending - beginning + 1
         : ending + sequence_length - beginning + 1;
-    const auto event_overlap = [&](const RdpRawEvent& event) {
+    std::vector<unsigned char> target_mask(
+        static_cast<std::size_t>(sequence_length + 1), 0);
+    int target_position = beginning;
+    while (target_position != ending) {
+        target_mask[target_position] = 1;
+        ++target_position;
+        if (target_position > sequence_length) target_position = 1;
+    }
+    target_mask[ending] = 1;
+    // DNA!DoSetsAP computes the initial overlap by walking the event through
+    // MakeOLSeqB's target mask. Preserve its begin==end full-circle behavior.
+    const auto initial_event_overlap = [&](const RdpRawEvent& event) {
         int overlap = 0;
         int event_size = 0;
-        int position = event.beginning;
-        while (true) {
-            ++event_size;
-            const bool in_target = beginning <= ending
-                ? position >= beginning && position <= ending
-                : position >= beginning || position <= ending;
-            if (in_target) ++overlap;
-            if (position == event.ending) break;
-            ++position;
-            if (position > sequence_length) position = 1;
-            if (event_size > sequence_length) break;
+        if (event.beginning < event.ending) {
+            event_size = event.ending - event.beginning + 1;
+            for (int position = event.beginning;
+                 position <= event.ending; ++position) {
+                overlap += target_mask[position];
+            }
+        } else {
+            event_size = event.ending + sequence_length -
+                event.beginning + 1;
+            for (int position = event.beginning;
+                 position <= sequence_length; ++position) {
+                overlap += target_mask[position];
+            }
+            for (int position = 1; position <= event.ending; ++position) {
+                overlap += target_mask[position];
+            }
+        }
+        return static_cast<float>(overlap) /
+            ((static_cast<float>(target_size) + event_size) / 2.0F) > 0.3F;
+    };
+    // DNA5!FillSetsP3 replaces the mask walk during closure with this
+    // hand-expanded branch table. It is intentionally not simplified: its
+    // wrapped-interval arithmetic is part of the reference execution path.
+    const auto closure_event_overlap = [&](const RdpRawEvent& event) {
+        int overlap = 0;
+        int event_size = 0;
+        if (beginning < ending) {
+            if (event.beginning < event.ending) {
+                event_size = event.ending - event.beginning + 1;
+                if (event.ending >= beginning && event.beginning <= ending) {
+                    if (ending >= event.ending &&
+                        beginning <= event.beginning) {
+                        overlap = event_size;
+                    } else if (ending <= event.ending &&
+                               beginning >= event.beginning) {
+                        overlap = target_size;
+                    } else if (ending <= event.ending) {
+                        overlap = ending - event.beginning + 1;
+                    } else if (beginning >= event.beginning) {
+                        overlap = event.ending - beginning + 1;
+                    }
+                }
+            } else {
+                event_size = event.ending + sequence_length -
+                    event.beginning + 1;
+                if (event.ending >= beginning) {
+                    overlap = ending >= event.ending
+                        ? event.ending - beginning + 1
+                        : target_size;
+                }
+                if (event.beginning <= ending) {
+                    overlap = beginning <= event.beginning
+                        ? ending - event.beginning + 1
+                        : target_size;
+                }
+            }
+        } else {
+            if (event.beginning < event.ending) {
+                event_size = event.ending - event.beginning + 1;
+                if (ending >= event.beginning) {
+                    overlap = ending >= event.ending
+                        ? event_size : ending - event.beginning + 1;
+                }
+                if (beginning <= event.ending) {
+                    overlap += beginning <= event.beginning
+                        ? event_size : event.ending - beginning + 1;
+                }
+            } else if (event.beginning > event.ending) {
+                event_size = event.ending + sequence_length -
+                    event.beginning + 1;
+                overlap = event.ending <= ending
+                    ? event.ending : ending;
+                overlap += event.beginning <= beginning
+                    ? sequence_length - beginning + 1
+                    : sequence_length - event.beginning + 1;
+            }
         }
         return static_cast<float>(overlap) /
             ((static_cast<float>(target_size) + event_size) / 2.0F) > 0.3F;
@@ -1454,7 +1530,7 @@ RdpEventSetState find_rdp_event_sets(
                     any = true;
                 }
             }
-            if (any && event_overlap(event)) {
+            if (any && initial_event_overlap(event)) {
                 for (int role = 0; role < 3; ++role) {
                     if (involved[role] == 0) continue;
                     for (const int member : members) {
@@ -1508,7 +1584,7 @@ RdpEventSetState find_rdp_event_sets(
         std::fill(sets.begin(), sets.end(), 0);
         for (int row = 0; row <= next_no; ++row) {
             for (const auto& event : events.xover_list[row]) {
-                if (!event_overlap(event)) continue;
+                if (!closure_event_overlap(event)) continue;
                 const auto members = event_members(event);
                 for (int role = 0; role < 3; ++role) {
                     bool touches = false;
@@ -1960,6 +2036,125 @@ RdpTreeCompatibilityState evaluate_rdp_tree_compatibility(
                  output.region_compatibility,
                  output.region_reverse_compatibility,
                  region_last, region_list);
+    }
+    return output;
+}
+
+RdpTreeCompatibilityFlowState run_rdp_tree_compatibility_flow(
+    const int sequence_length, const int next_no, const int beginning,
+    const int ending, const std::array<int, 3>& sequences,
+    const std::array<int, 6>& comparison_matrix,
+    const std::array<int, 3>& inversion_penalty,
+    const std::array<int, 3>& candidate_last,
+    const std::vector<int>& candidate_list,
+    const std::vector<int>& good_comparisons,
+    const std::vector<float>& background_ancestor_matrix,
+    const std::vector<float>& region_ancestor_matrix,
+    const std::vector<float>& background_secondary_matrix,
+    const std::vector<float>& region_secondary_matrix,
+    const RdpRawEventState& events) {
+    const int count = next_no + 1;
+    const auto matrix_cells = static_cast<std::size_t>(count) * count;
+    if (background_ancestor_matrix.size() != matrix_cells ||
+        region_ancestor_matrix.size() != matrix_cells ||
+        (!background_secondary_matrix.empty() &&
+         background_secondary_matrix.size() != matrix_cells) ||
+        (!region_secondary_matrix.empty() &&
+         region_secondary_matrix.size() != matrix_cells)) {
+        throw std::runtime_error("tree-compatibility flow matrix dimensions differ");
+    }
+    const auto cell = [](const int role, const int item) {
+        return static_cast<std::size_t>(role) + item * 3;
+    };
+    const auto make_list_distances = [&](const std::array<int, 3>& last,
+                                         const std::vector<int>& list,
+                                         const std::vector<float>& matrix) {
+        std::array<double, 3> distances{};
+        for (int role = 0; role < 3; ++role) {
+            for (int first = 0; first < last[role]; ++first) {
+                const int first_sequence = list[cell(role, first)];
+                for (int second = first + 1; second <= last[role]; ++second) {
+                    distances[role] = std::max<double>(
+                        distances[role],
+                        matrix[list[cell(role, second)] +
+                               static_cast<std::size_t>(first_sequence) *
+                                   count]);
+                }
+            }
+        }
+        return distances;
+    };
+    const auto tied = [](const std::array<int, 3>& values) {
+        return values[0] == values[1] && values[0] == values[2];
+    };
+
+    RdpTreeCompatibilityFlowState output;
+    output.event_sets = find_rdp_event_sets(
+        sequence_length, next_no, beginning, ending, sequences, events);
+
+    const auto run_family = [&](const std::array<int, 3>& last,
+                                const std::vector<int>& list,
+                                const std::vector<float>& matrix,
+                                std::array<int, 3>& compatibility,
+                                const bool preserve_between_roles) {
+        std::array<int, 3> reverse{};
+        const auto distances = make_list_distances(last, list, matrix);
+        std::array<int, 3> nonrecombinant_last{};
+        std::vector<int> nonrecombinant_list(
+            static_cast<std::size_t>(3) * count, 0);
+        for (int role = 0; role < 3; ++role) {
+            if (!preserve_between_roles) {
+                nonrecombinant_last = {};
+                nonrecombinant_list.assign(
+                    static_cast<std::size_t>(3) * count, 0);
+            }
+            output.calls.push_back(make_rdp_tree_compatibility_call(
+                next_no, sequences, comparison_matrix, role,
+                inversion_penalty, last, list, good_comparisons, matrix,
+                distances, compatibility, reverse, nonrecombinant_last,
+                nonrecombinant_list));
+        }
+    };
+
+    // Module3.ProcessEvent: FAMat and SAMat are always tried first. The
+    // bootstrap/alternate-set families are entered only while each preceding
+    // family remains tied.
+    run_family(candidate_last, candidate_list, background_ancestor_matrix,
+               output.background, true);
+    run_family(candidate_last, candidate_list, region_ancestor_matrix,
+               output.region, false);
+    if (tied(output.background) && next_no > 2 &&
+        !background_secondary_matrix.empty()) {
+        run_family(candidate_last, candidate_list, background_secondary_matrix,
+                   output.background_secondary, false);
+        if (tied(output.background_secondary)) {
+            run_family(output.event_sets.candidate_last,
+                       output.event_sets.candidate_list,
+                       background_ancestor_matrix, output.background_sets,
+                       false);
+            if (tied(output.background_sets) && next_no > 2) {
+                run_family(output.event_sets.candidate_last,
+                           output.event_sets.candidate_list,
+                           background_secondary_matrix,
+                           output.background_secondary_sets, false);
+            }
+        }
+    }
+    if (tied(output.region) && next_no > 2 &&
+        !region_secondary_matrix.empty()) {
+        run_family(candidate_last, candidate_list, region_secondary_matrix,
+                   output.region_secondary, false);
+        if (tied(output.region_secondary)) {
+            run_family(output.event_sets.candidate_last,
+                       output.event_sets.candidate_list,
+                       region_ancestor_matrix, output.region_sets, false);
+            if (tied(output.region_sets) && next_no > 2) {
+                run_family(output.event_sets.candidate_last,
+                           output.event_sets.candidate_list,
+                           region_secondary_matrix,
+                           output.region_secondary_sets, false);
+            }
+        }
     }
     return output;
 }
