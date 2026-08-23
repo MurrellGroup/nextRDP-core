@@ -31,6 +31,7 @@ struct Dna5XoverApi {
     int(RDP_XOVER_CALL* find_subsequence_with_positions)(
         int*, int, int, int, int, int, int, int, int, unsigned char*, int,
         char*, int*, int*, unsigned char*);
+    int(RDP_XOVER_CALL* clean_xover_sequence)(int, int, int, char*);
 };
 
 struct RdpXoverSettings {

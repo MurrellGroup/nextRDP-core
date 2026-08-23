@@ -71,9 +71,11 @@ The generated states are then wired into the actual `AlistRDP4` call and the
 first selected `XOver` path through `FindSubSeqPB3`, `XOHomologyP`, the VB role
 ranking block, `FindNextP`, circular-start handling, `DefineEventP2`, the
 `ProbEstimate` prefilter, `ProbCalcP`/`ProbCalcP2`, the source role cycles, and
-the first significant event's `FindSubSeqPB4` position-map reconstruction. The
-redo list used by this walk is produced by the generated `AlistRDP4` call in
-the same process. Run the all-dataset matrix for this connected prefix with:
+the first significant event's `FindSubSeqPB4` position-map reconstruction. It
+then exhausts the remaining interval/role scan and reaches the exact
+end-of-triplet `CleanXOSNW` state. The redo list used by this walk is produced
+by the generated `AlistRDP4` call in the same process. Run the all-dataset
+matrix for this connected prefix with:
 
 ```sh
 ./tools/check-all-pre-scan-parity.sh

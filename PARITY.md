@@ -70,7 +70,10 @@ the source's two role transitions and its `OldX` state across cycles until the
 first corrected-significant interval is found. Generated `AH`, `XoverSeqNumW`,
 `XDiffPos`, and `XPosDiff` at the resulting `FindSubSeqPB4` call are
 byte-identical on all ten datasets (with the accepted platform-math tolerance
-for final p-values); run `tools/check-all-pre-scan-parity.sh` for that table.
+for final p-values). The port then exhausts the remaining two role scans and
+matches the complete `XoverSeqNumW` input and cleared output at the final
+`CleanXOSNW` call on all ten datasets; run
+`tools/check-all-pre-scan-parity.sh` for that table.
 
 The orchestration preserves two otherwise easy-to-collapse state values:
 RDP passes the FASTA length to `FindSubSeqPB3` but the FASTA length plus one to

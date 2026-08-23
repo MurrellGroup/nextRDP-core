@@ -39,6 +39,7 @@ node "$project_dir/build/wasm/rdp-core.js" \
   "$fixture_dir/define-event-p2-v1.bin" \
   "$fixture_dir/prob-calc-p2-v1.bin" \
   "$fixture_dir/prob-calc-p-v1.bin" \
-  "$fixture_dir/find-subseq-pb4-v1.bin"
+  "$fixture_dir/find-subseq-pb4-v1.bin" \
+  "$fixture_dir/clean-xosnw-v1.bin"
 node "$project_dir/build/wasm/rdp-core.js" \
   oracle-fixture-chain "$fixture_dir"

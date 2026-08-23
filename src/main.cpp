@@ -366,7 +366,8 @@ int fasta_first_xover_walk_fixture(
     const std::string& define_event_fixture_path,
     const std::string& probability_p2_fixture_path,
     const std::string& probability_p_fixture_path,
-    const std::string& pb4_fixture_path) {
+    const std::string& pb4_fixture_path,
+    const std::string& clean_fixture_path) {
     const Dna5ScanPreprocessApi preprocess_api{
         &MathFuncs::MyMathFuncs::MakeAListP2,
         &MathFuncs::MyMathFuncs::CountNucs,
@@ -383,6 +384,7 @@ int fasta_first_xover_walk_fixture(
         &MathFuncs::MyMathFuncs::ProbCalcP2,
         &MathFuncs::MyMathFuncs::ProbCalcP,
         &MathFuncs::MyMathFuncs::FindSubSeqPB4,
+        &MathFuncs::MyMathFuncs::CleanXOSNW,
     };
     auto scan_state =
         build_rdp_scan_state_from_fasta(fasta_path, preprocess_api);
@@ -792,12 +794,64 @@ int fasta_first_xover_walk_fixture(
             return 1;
         }
     }
+    while (true) {
+        state.probability_tested = false;
+        continue_rdp_xover_to_first_probability(
+            state, scan_state, pb3_fixture.header.xover_window, settings,
+            probability_settings, probability_estimate, fact_three, fact,
+            xover_api);
+        if (state.probability_tested) {
+            apply_rdp_probability_cutoff(state, probability_settings);
+            continue;
+        }
+        if (!advance_rdp_role_cycle(state, 0)) break;
+        scan_rdp_current_roles_to_first_probability(
+            state, scan_state, pb3_fixture.header.xover_window, settings,
+            probability_settings, probability_estimate, fact_three, fact,
+            xover_api);
+        if (state.probability_tested) {
+            apply_rdp_probability_cutoff(state, probability_settings);
+        }
+    }
+    const char clean_magic[8] = {
+        'C', 'L', 'N', 'X', 'O', 'S', 'N', 'W'};
+    const auto clean_fixture =
+        load_rdp_sectioned_fixture<CleanXOSNWCaptureHeader>(
+            clean_fixture_path, clean_magic);
+    const auto expected_clean_input =
+        rdp_fixture_section<char>(clean_fixture, 1);
+    const auto expected_clean_output =
+        rdp_fixture_section<char>(clean_fixture, 101);
+    const auto expected_clean_result =
+        rdp_fixture_section<int>(clean_fixture, 102);
+    const bool clean_input_matches =
+        clean_fixture.header.xover_length ==
+            state.homology_length + pb3_fixture.header.xover_window * 2 &&
+        clean_fixture.header.xover_window ==
+            pb3_fixture.header.xover_window &&
+        clean_fixture.header.xover_sequence_ub == state.xover_sequence_ub &&
+        state.xover_sequence == expected_clean_input;
+    const int clean_result = xover_api.clean_xover_sequence(
+        state.homology_length + pb3_fixture.header.xover_window * 2,
+        pb3_fixture.header.xover_window, state.xover_sequence_ub,
+        state.xover_sequence.data());
+    if (!clean_input_matches || expected_clean_result.size() != 1 ||
+        clean_result != expected_clean_result[0] ||
+        state.xover_sequence != expected_clean_output) {
+        std::cerr << "FASTA first-XOver CleanXOSNW parity: FAIL input="
+                  << clean_input_matches << " result=" << clean_result << '/'
+                  << (expected_clean_result.empty()
+                          ? -1
+                          : expected_clean_result[0])
+                  << '\n';
+        return 1;
+    }
     std::cout << "FASTA first-XOver walk parity: PASS (FindSubSeqPB3 -> "
                  "XOHomologyP -> role ranking -> FindNextP -> "
                  "DefineEventP2 -> ProbCalcP/P2; significant-in-role="
               << reached_significant_event
               << (reached_significant_event ? " -> FindSubSeqPB4" : "")
-              << ")\n";
+              << " -> CleanXOSNW)\n";
     return 0;
 }
 
@@ -977,11 +1031,11 @@ int main(int argc, char** argv) {
         std::string_view(argv[1]) == "fasta-first-xover-fixture") {
         return fasta_first_xover_fixture(argv[2], argv[3], argv[4]);
     }
-    if (argc == 11 &&
+    if (argc == 12 &&
         std::string_view(argv[1]) == "fasta-first-xover-walk-fixture") {
         return fasta_first_xover_walk_fixture(
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
-            argv[9], argv[10]);
+            argv[9], argv[10], argv[11]);
     }
     if (argc == 3 && std::string_view(argv[1]) == "alist-rdp4-fixture") {
         return alist_rdp4_fixture(argv[2]);
@@ -1055,7 +1109,7 @@ int main(int argc, char** argv) {
         << "       rdp-core fasta-tree-distance-fixture <alignment.fasta> <alist-capture.bin>\n"
         << "       rdp-core fasta-alist-rdp4-fixture <alignment.fasta> <alist-capture.bin>\n"
         << "       rdp-core fasta-first-xover-fixture <alignment.fasta> <alist-capture.bin> <find-subseq-pb3-capture.bin>\n"
-        << "       rdp-core fasta-first-xover-walk-fixture <alignment.fasta> <alist-capture.bin> <find-subseq-pb3-capture.bin> <xohomology-capture.bin> <find-next-capture.bin> <define-event-capture.bin> <prob-calc-p2-capture.bin> <prob-calc-p-capture.bin> <find-subseq-pb4-capture.bin>\n"
+        << "       rdp-core fasta-first-xover-walk-fixture <alignment.fasta> <alist-capture.bin> <find-subseq-pb3-capture.bin> <xohomology-capture.bin> <find-next-capture.bin> <define-event-capture.bin> <prob-calc-p2-capture.bin> <prob-calc-p-capture.bin> <find-subseq-pb4-capture.bin> <clean-xosnw-capture.bin>\n"
         << "       rdp-core alist-rdp4-fixture <capture.bin>\n"
         << "       rdp-core find-subseq-pb3-fixture <capture.bin>\n"
         << "       rdp-core find-subseq-pb4-fixture <capture.bin>\n"
