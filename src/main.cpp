@@ -867,7 +867,8 @@ int fasta_all_redo_events_fixture(
     const std::string& make_nj_fixture_path,
     const std::string& make_sdmp_fixture_path,
     const std::array<std::string, 3>& fill_rmat_fixture_paths,
-    const std::string& calcr_fixture_path) {
+    const std::string& calcr_fixture_path,
+    const std::string& make_rlist_fixture_path) {
     const Dna5ScanPreprocessApi preprocess_api{
         &MathFuncs::MyMathFuncs::MakeAListP2,
         &MathFuncs::MyMathFuncs::CountNucs,
@@ -1895,6 +1896,206 @@ int fasta_all_redo_events_fixture(
         }
         std::cerr << '\n';
     }
+
+    const std::array<int, 4> local_starts{
+        start_positions[0], start_positions[1], start_positions[2],
+        start_positions[3]};
+    const std::array<int, 4> local_ends{
+        end_positions[0], end_positions[1], end_positions[2],
+        end_positions[3]};
+    auto correlation_decisions = finalize_rdp_correlations(
+        scan_state.next_no, correlation_state, correlation_sequences,
+        correlation_comparison, summary_matrix, regional_distance_matrix);
+    if (correlation_decisions.warnings[0] != 0 &&
+        correlation_decisions.warnings[1] != 0) {
+        correlation_decisions.warnings[2] = 0;
+    }
+    const auto local_distance_panels = make_rdp_local_distance_panels(
+        scan_state, local_starts, local_ends, correlation_sequences);
+    apply_rdp_distance_warnings(
+        scan_state.next_no, correlation_sequences, local_distance_panels,
+        correlation_decisions.warnings);
+    const auto good_comparisons = make_rdp_good_comparisons(
+        scan_state,
+        {breakpoint_flanks.positions[0], breakpoint_flanks.positions[1],
+         breakpoint_flanks.positions[2], breakpoint_flanks.positions[3]});
+
+    const auto make_small_matrix = [&](const std::vector<float>& matrix) {
+        std::vector<float> result(
+            static_cast<std::size_t>(3) * matrix_stride, 0.0F);
+        for (int sequence = 0; sequence <= scan_state.next_no; ++sequence) {
+            for (int role = 0; role < 3; ++role) {
+                result[role + sequence * 3] = matrix[
+                    selected_sequences[role] + sequence * matrix_stride];
+            }
+        }
+        return result;
+    };
+    const auto first_direct_small =
+        make_small_matrix(generated_matrices.background);
+    const auto second_direct_small =
+        make_small_matrix(generated_matrices.event_region);
+    auto first_adjusted_small = make_small_matrix(background_adjusted);
+    auto second_adjusted_small = make_small_matrix(region_adjusted);
+
+    std::array<unsigned char, 2> final_minimum_pair{};
+    std::array<float, 2> final_minimum_distance{
+        1000000.0F, 1000000.0F};
+    int final_pair = 0;
+    for (int first = 0; first < 2; ++first) {
+        for (int second = first + 1; second < 3; ++second) {
+            const auto offset = static_cast<std::size_t>(first) +
+                static_cast<std::size_t>(selected_sequences[second]) * 3;
+            if (first_adjusted_small[offset] < final_minimum_distance[0]) {
+                final_minimum_distance[0] = first_adjusted_small[offset];
+                final_minimum_pair[0] =
+                    static_cast<unsigned char>(final_pair);
+            }
+            if (second_adjusted_small[offset] < final_minimum_distance[1]) {
+                final_minimum_distance[1] = second_adjusted_small[offset];
+                final_minimum_pair[1] =
+                    static_cast<unsigned char>(final_pair);
+            }
+            ++final_pair;
+        }
+    }
+    const auto role_lists = make_rdp_role_lists(final_minimum_pair);
+    auto first_collapsed = first_adjusted_small;
+    auto second_collapsed = second_adjusted_small;
+    const auto acceptable_correlations = make_rdp_acceptable_correlations(
+        scan_state.next_no, correlation_sequences, role_lists.inside,
+        first_direct_small, second_direct_small,
+        first_adjusted_small, second_adjusted_small, first_collapsed,
+        second_collapsed);
+    const std::vector<unsigned char> dont_redo(
+        static_cast<std::size_t>(3) * matrix_stride, 0);
+
+    const char make_rlist_magic[8] = {
+        'M', 'R', 'L', 'I', 'S', 'T', '1', '\0'};
+    const auto make_rlist_fixture =
+        load_rdp_sectioned_fixture<MakeRListCaptureHeader>(
+            make_rlist_fixture_path, make_rlist_magic);
+    const bool make_rlist_inputs_match =
+        make_rlist_fixture.header.next_no == scan_state.next_no &&
+        selected_sequences ==
+            rdp_fixture_section<int>(make_rlist_fixture, 1) &&
+        good_comparisons ==
+            rdp_fixture_section<int>(make_rlist_fixture, 2) &&
+        correlation_decisions.correlations.inversion ==
+            rdp_fixture_section<float>(make_rlist_fixture, 3) &&
+        correlation_decisions.correlations.correlation ==
+            rdp_fixture_section<float>(make_rlist_fixture, 4) &&
+        dont_redo == rdp_fixture_section<unsigned char>(
+            make_rlist_fixture, 5) &&
+        acceptable_correlations == rdp_fixture_section<unsigned char>(
+            make_rlist_fixture, 6) &&
+        std::vector<unsigned char>(
+            correlation_decisions.warnings.begin(),
+            correlation_decisions.warnings.end()) ==
+            rdp_fixture_section<unsigned char>(make_rlist_fixture, 7);
+    const auto candidate_lists = make_rdp_candidate_lists(
+        scan_state.next_no, good_comparisons, correlation_sequences,
+        correlation_decisions, dont_redo, acceptable_correlations);
+    const auto probability_vectors_match = [](const auto& actual,
+                                                const auto& expected) {
+        if (actual.size() != expected.size()) return false;
+        for (std::size_t index = 0; index < actual.size(); ++index) {
+            if (std::abs(actual[index] - expected[index]) > 1.0e-12) {
+                return false;
+            }
+        }
+        return true;
+    };
+    const bool make_rlist_matches = make_rlist_inputs_match &&
+        std::vector<int>(candidate_lists.last.begin(),
+                         candidate_lists.last.end()) ==
+            rdp_fixture_section<int>(make_rlist_fixture, 101) &&
+        candidate_lists.list ==
+            rdp_fixture_section<int>(make_rlist_fixture, 102) &&
+        candidate_lists.inverse ==
+            rdp_fixture_section<int>(make_rlist_fixture, 103) &&
+        probability_vectors_match(
+            candidate_lists.totals,
+            rdp_fixture_section<double>(make_rlist_fixture, 104)) &&
+        probability_vectors_match(
+            candidate_lists.list_scores,
+            rdp_fixture_section<double>(make_rlist_fixture, 105));
+    if (!make_rlist_matches) {
+        const auto expected_warnings =
+            rdp_fixture_section<unsigned char>(make_rlist_fixture, 7);
+        const auto expected_last =
+            rdp_fixture_section<int>(make_rlist_fixture, 101);
+        const auto count_differences = [](const auto& actual,
+                                          const auto& expected) {
+            std::size_t count = actual.size() == expected.size() ? 0 : 1;
+            for (std::size_t index = 0;
+                 index < std::min(actual.size(), expected.size()); ++index) {
+                if (actual[index] != expected[index]) ++count;
+            }
+            return count;
+        };
+        std::cerr << "MakeRList integration mismatch: inputs="
+                  << make_rlist_inputs_match << " selected="
+                  << (selected_sequences ==
+                      rdp_fixture_section<int>(make_rlist_fixture, 1))
+                  << " good="
+                  << count_differences(
+                      good_comparisons,
+                      rdp_fixture_section<int>(make_rlist_fixture, 2))
+                  << " rcorr="
+                  << count_differences(
+                      correlation_decisions.correlations.correlation,
+                      rdp_fixture_section<float>(make_rlist_fixture, 4))
+                  << " rinv="
+                  << count_differences(
+                      correlation_decisions.correlations.inversion,
+                      rdp_fixture_section<float>(make_rlist_fixture, 3))
+                  << " acceptable="
+                  << count_differences(
+                      acceptable_correlations,
+                      rdp_fixture_section<unsigned char>(
+                          make_rlist_fixture, 6))
+                  << " warnings=";
+        for (const auto warning : correlation_decisions.warnings) {
+            std::cerr << static_cast<int>(warning);
+        }
+        std::cerr << '/';
+        for (const auto warning : expected_warnings) {
+            std::cerr << static_cast<int>(warning);
+        }
+        std::cerr << " last=";
+        for (const auto value : candidate_lists.last) std::cerr << value << ',';
+        std::cerr << '/';
+        for (const auto value : expected_last) std::cerr << value << ',';
+        std::cerr << " list="
+                  << count_differences(
+                      candidate_lists.list,
+                      rdp_fixture_section<int>(make_rlist_fixture, 102))
+                  << " inverse="
+                  << count_differences(
+                      candidate_lists.inverse,
+                      rdp_fixture_section<int>(make_rlist_fixture, 103))
+                  << " totals="
+                  << count_differences(
+                      candidate_lists.totals,
+                      rdp_fixture_section<double>(make_rlist_fixture, 104))
+                  << " scores="
+                  << count_differences(
+                      candidate_lists.list_scores,
+                      rdp_fixture_section<double>(make_rlist_fixture, 105));
+        const auto expected_totals =
+            rdp_fixture_section<double>(make_rlist_fixture, 104);
+        for (std::size_t index = 0;
+             index < candidate_lists.totals.size(); ++index) {
+            if (candidate_lists.totals[index] != expected_totals[index]) {
+                std::cerr << " first-total=" << index << ':'
+                          << candidate_lists.totals[index] << '/'
+                          << expected_totals[index];
+                break;
+            }
+        }
+        std::cerr << '\n';
+    }
     std::cout << "RDP all-redo raw event scan: " << events.scanned_triplets
               << " triplets (Alist return " << redo_count << "), "
               << events.significant_candidates << " significant intervals, "
@@ -1919,11 +2120,15 @@ int fasta_all_redo_events_fixture(
               << (make_sdmp_matches ? "PASS" : "FAIL")
               << ", FillRmat "
               << (fill_rmat_matches ? "PASS" : "FAIL")
-              << ", CalCR " << (calcr_matches ? "PASS" : "FAIL") << "\n";
+              << ", CalCR " << (calcr_matches ? "PASS" : "FAIL")
+              << ", MakeRList "
+              << (make_rlist_matches ? "PASS" : "FAIL") << "\n";
+
     return make_test_structure_matches && first_selection_matches &&
             ufdist_matches && region_distance_matches &&
             check_matrix_matches && make_nj_matches ?
-        (make_sdmp_matches && fill_rmat_matches && calcr_matches ? 0 : 1) : 1;
+        (make_sdmp_matches && fill_rmat_matches && calcr_matches &&
+         make_rlist_matches ? 0 : 1) : 1;
 }
 
 int alist_rdp4_fixture(const std::string& path) {
@@ -2108,12 +2313,12 @@ int main(int argc, char** argv) {
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
             argv[9], argv[10], argv[11]);
     }
-    if (argc == 16 &&
+    if (argc == 17 &&
         std::string_view(argv[1]) == "fasta-all-redo-events-fixture") {
         return fasta_all_redo_events_fixture(
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
             argv[9], argv[10], argv[11], {argv[12], argv[13], argv[14]},
-            argv[15]);
+            argv[15], argv[16]);
     }
     if (argc == 3 && std::string_view(argv[1]) == "alist-rdp4-fixture") {
         return alist_rdp4_fixture(argv[2]);

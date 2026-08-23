@@ -34,8 +34,8 @@ command, in their observed RDP execution order:
 node build/wasm/rdp-core.js oracle-fixture-chain sandbox/alist-rdp4-capture/runtime
 ```
 
-This currently checks 25 distinct routines (22 live calls because `FillRmat`
-is exercised for all three `Y` branches). The pinned DLL is a 32-bit x87 build;
+This currently checks 31 distinct routine or caller-state boundaries. The
+pinned DLL is a 32-bit x87 build;
 the WASM compilation uses Clang's extended evaluation mode to preserve that
 source-level floating-point ABI without editing the supplied routine bodies.
 The compatibility layer also supplies the Microsoft CRT 15-bit `rand()` stream.
@@ -82,8 +82,8 @@ matrix for this connected prefix with:
 ```
 
 Run the all-redo event-state, first-selection, regional-distance,
-`CheckMatrixP`, first-NJ-tree, `MakeSDMP2`, `FillRmat`, and `CalCR` parity table
-with:
+`CheckMatrixP`, first-NJ-tree, `MakeSDMP2`, `FillRmat`, `CalCR`, and
+`MakeRList` parity table with:
 
 ```sh
 ./tools/check-all-event-state-parity.sh

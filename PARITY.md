@@ -32,6 +32,12 @@ outputs use the user's accepted platform-math tolerance when Windows and WASM
 | 23 | `MarkOutsides` | live Dataset0 call from `RDP5CL.exe` | byte-identical event marking state |
 | 24 | `MakeSDMP2` | live Dataset0 call from `RDP5CL.exe` | byte-identical regional distance state |
 | 25 | `FillRmat` | all three live Dataset0 calls from `RDP5CL.exe` | byte-identical correlation-matrix state |
+| 26 | `CalCR` | all three first-event calls, fresh local-RDP capture on all ten datasets | byte-identical `RCorr`, `RInv`, and `tRCorr` state |
+| 27 | `MakeProperRCorr` caller tail | first-event `MakeRList` input, fresh local-RDP capture on all ten datasets | byte-identical filtered correlations, inversion categories, and warning mask |
+| 28 | `QuickDist6` / `MakeDMatS` | first-event `MakeRList` warning input on all ten datasets | byte-identical downstream warning state; literal inclusive-window source port |
+| 29 | `MakeGoodC` | first-event `MakeRList` input on all ten datasets | byte-identical overlap eligibility |
+| 30 | `MakeINList` / `MakeACOR` | first-event `MakeRList` input on all ten datasets | byte-identical role map and acceptable-correlation mask |
+| 31 | `MakeRList` | first live call from each of ten fresh local-RDP runs | exact row bounds, candidate membership, list order, and inversion flags; accepted platform-math tolerance for derived probability cells |
 
 The live `AlistRDP4` fixture covers 2,300 triplets and changes 709 redo states.
 Because the exact C++ implementation calls `FastRecCheckPB` internally, that
@@ -109,6 +115,14 @@ The resulting matrices then pass through a direct port of all three `CalCR`
 calls. Its complete `RCorr`, `RInv`, and five-permutation `tRCorr` state is
 byte-identical to a reproducible installed-`DNA.dll` oracle capture on all ten
 datasets.
+
+The connected path now continues through the literal VB tail of
+`MakeProperRCorr`, including SDM suppression, both warning passes, six-decimal
+tested-correlation rounding, and inversion-category remapping. It then ports
+the old-DNA `QuickDist6`, `MakeDMatS`, and `MakeGoodC` loops, constructs the
+compact three-row matrix panels used by `MakeINList`/`MakeACOR`, and executes a
+direct source port of `MakeRList`. Fresh first-call traces from the locally
+compiled RDP match all structural inputs and outputs on all ten datasets.
 
 The orchestration preserves two otherwise easy-to-collapse state values:
 RDP passes the FASTA length to `FindSubSeqPB3` but the FASTA length plus one to
