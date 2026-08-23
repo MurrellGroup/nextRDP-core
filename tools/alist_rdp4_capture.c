@@ -729,6 +729,7 @@ int STDCALL DefineEventP2Capture(
   static int invocation;
   HANDLE file = INVALID_HANDLE_VALUE;
   int scalar_state[5];
+  char capture_path[64];
 
   if (!original) {
     HMODULE module = LoadLibraryA("DNA5_original.dll");
@@ -736,13 +737,29 @@ int STDCALL DefineEventP2Capture(
   }
   if (!original) return -1;
   ++invocation;
+  {
+    const char *name = invocation == 1
+        ? "define-event-p2-v1.bin"
+        : "define-event-p2-call-000.bin";
+    int name_index = 0;
+    while (name[name_index] != '\0') {
+      capture_path[name_index] = name[name_index];
+      ++name_index;
+    }
+    capture_path[name_index] = '\0';
+    if (invocation > 1) {
+      capture_path[21] = (char)('0' + (invocation / 100) % 10);
+      capture_path[22] = (char)('0' + (invocation / 10) % 10);
+      capture_path[23] = (char)('0' + invocation % 10);
+    }
+  }
   scalar_state[0] = *end_flag;
   scalar_state[1] = *begin;
   scalar_state[2] = *end;
   scalar_state[3] = *ncommon;
   scalar_state[4] = *event_length;
 
-  if (invocation == 1) {
+  if (invocation <= 128) {
     struct DefineEventP2Header header;
     const char magic[8] = {'D', 'E', 'F', 'E', 'V', 'P', '2', '\0'};
     const int xover_stride = sequence_length + 1 + xover_window * 2;
@@ -764,7 +781,7 @@ int STDCALL DefineEventP2Capture(
     header.sequence_daughter = sequence_daughter;
     header.sequence_minor = sequence_minor;
     file = CreateFileA(
-        "define-event-p2-v1.bin", GENERIC_WRITE,
+        capture_path, GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_WRITE, (void *)0, CREATE_ALWAYS,
         FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
     if (file != INVALID_HANDLE_VALUE) {
@@ -786,14 +803,14 @@ int STDCALL DefineEventP2Capture(
         circular, xx, xover_window, sequence_length, xover_length,
         sequence_daughter, sequence_minor, end_flag, begin, end, ncommon,
         event_length, xover_sequence, homology);
-    if (invocation == 1) {
+    if (invocation <= 128) {
       scalar_state[0] = *end_flag;
       scalar_state[1] = *begin;
       scalar_state[2] = *end;
       scalar_state[3] = *ncommon;
       scalar_state[4] = *event_length;
       file = CreateFileA(
-          "define-event-p2-v1.bin", GENERIC_WRITE,
+          capture_path, GENERIC_WRITE,
           FILE_SHARE_READ | FILE_SHARE_WRITE, (void *)0, OPEN_EXISTING,
           FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
       if (file != INVALID_HANDLE_VALUE) {

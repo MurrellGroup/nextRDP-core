@@ -1,6 +1,7 @@
 #include "xover_state.hpp"
 
 #include <cstddef>
+#include <cmath>
 #include <stdexcept>
 
 RdpFirstXoverState build_rdp_first_xover_state(
@@ -200,4 +201,170 @@ RdpFirstXoverState build_rdp_first_xover_state(
         state.low_homology, state.homology_length, xover_window,
         state.homology.data());
     return state;
+}
+
+void define_rdp_first_xover_event(
+    RdpFirstXoverState& state, const RdpScanState& scan_state,
+    const int xover_window, const RdpXoverSettings& settings,
+    const Dna5XoverApi& api) {
+    if (state.next_position < 0) {
+        state.event_position = state.next_position;
+        return;
+    }
+    const int stride = state.homology_ub + 1;
+    const int med_offset = (state.med_homology - 1) * stride;
+    const int high_offset = (state.high_homology - 1) * stride;
+    int search_start = 1;
+    int position = state.next_position;
+    int old_position = -1;
+    while (position > -1 && position != old_position) {
+        old_position = position;
+        if (settings.circular == 1 && position == 1 &&
+            state.homology[position + med_offset] >
+                state.homology[position + high_offset]) {
+            state.used_find_first = true;
+            position = api.find_first(
+                position, state.med_homology, state.high_homology,
+                state.homology_length, state.homology_ub,
+                state.homology.data());
+            if (position < state.homology_length + 1 &&
+                position > search_start) {
+                search_start = position + 1;
+                position = api.find_next(
+                    state.homology_ub, search_start, state.high_homology,
+                    state.med_homology, state.low_homology,
+                    state.homology_length, xover_window,
+                    state.homology.data());
+                continue;
+            }
+            state.event_position = position;
+            return;
+        }
+
+        // VB Long locals begin as zero, and XOver explicitly resets NCommon
+        // and XOverLength before the DefineEventP2 branch.
+        state.number_in_common = 0;
+        state.event_length = 0;
+        state.define_input_position = position;
+        state.xover_sequence_at_define = state.xover_sequence;
+        state.homology_at_define = state.homology;
+        // Despite DefineEventP2's declaration order, XOver passes SeqMinorP
+        // first and SeqDaughter second. Preserve that observable caller bug.
+        state.event_position = api.define_event(
+            state.homology_ub, settings.short_output, settings.long_winded,
+            state.med_homology, state.high_homology, state.low_homology,
+            settings.target, settings.circular, position, xover_window,
+            scan_state.sequence_length, state.homology_length,
+            state.sequence_minor, state.sequence_daughter, &state.end_flag,
+            &state.event_begin, &state.event_end, &state.number_in_common,
+            &state.event_length, state.xover_sequence.data(),
+            state.homology.data());
+        return;
+    }
+    state.event_position = position;
+}
+
+void calculate_rdp_first_xover_probability(
+    RdpFirstXoverState& state, const RdpProbabilitySettings& settings,
+    std::vector<double>& probability_estimate,
+    std::vector<double>& fact_three, std::vector<double>& fact,
+    const Dna5XoverApi& api) {
+    if (state.define_input_position < 0 || state.event_length <= 2 ||
+        state.event_end == state.event_begin ||
+        (state.event_end <= state.event_begin && settings.circular != 1)) {
+        return;
+    }
+
+    state.probability_different =
+        state.event_length - state.number_in_common;
+    if (state.number_in_common <= state.probability_different * 0.8) return;
+
+    state.probability_length = state.event_length;
+    state.probability_same = state.number_in_common;
+    if (state.event_length >= 170) {
+        state.probability_scale =
+            static_cast<double>(state.event_length) / 169.0;
+        state.probability_different = static_cast<int>(std::nearbyint(
+            static_cast<double>(state.probability_different) * 169.0 /
+            static_cast<double>(state.event_length)));
+        state.probability_length = 169;
+        state.probability_same =
+            state.probability_length - state.probability_different;
+    }
+    state.individual_probability =
+        state.average_homology[state.med_homology - 1];
+
+    bool proceed = settings.probability_file_flag != 0;
+    if (!proceed) {
+        const int first_stride = settings.probability_one_ub + 1;
+        const int second_stride = settings.probability_two_ub + 1;
+        const int category =
+            static_cast<int>(state.individual_probability * 50.0);
+        const auto index = static_cast<std::size_t>(state.probability_length) +
+            static_cast<std::size_t>(state.probability_same) * first_stride +
+            static_cast<std::size_t>(category) * first_stride * second_stride;
+        if (index >= probability_estimate.size()) {
+            throw std::runtime_error("ProbEstimate lookup exceeds its bounds");
+        }
+        state.probability_prefilter_value = probability_estimate[index];
+        proceed =
+            state.probability_prefilter_value < settings.lowest_probability;
+    }
+    if (!proceed) return;
+
+    state.probability_tested = true;
+    if (state.event_length <= settings.fact_three_ub) {
+        state.used_probability_p2 = true;
+        state.event_probability = api.probability_p2(
+            fact_three.data(), settings.fact_three_ub,
+            state.probability_length, state.probability_same,
+            state.individual_probability, state.homology_length);
+    } else {
+        state.event_probability = api.probability_p(
+            fact.data(), state.probability_length, state.probability_same,
+            state.individual_probability, state.homology_length);
+    }
+}
+
+void continue_rdp_xover_to_first_probability(
+    RdpFirstXoverState& state, const RdpScanState& scan_state,
+    const int xover_window, const RdpXoverSettings& xover_settings,
+    const RdpProbabilitySettings& probability_settings,
+    std::vector<double>& probability_estimate,
+    std::vector<double>& fact_three, std::vector<double>& fact,
+    const Dna5XoverApi& api) {
+    while (!state.probability_tested) {
+        int position = state.event_position;
+        if (state.end_flag == 1) {
+            state.end_flag = 0;
+            position = state.homology_length;
+        }
+        if (position >= state.homology_length + 1 ||
+            position <= state.define_input_position) {
+            return;
+        }
+        const int search_start = position + 1;
+        position = api.find_next(
+            state.homology_ub, search_start, state.high_homology,
+            state.med_homology, state.low_homology, state.homology_length,
+            xover_window, state.homology.data());
+        if (position < 0) return;
+
+        state.number_in_common = 0;
+        state.event_length = 0;
+        state.define_input_position = position;
+        state.event_position = api.define_event(
+            state.homology_ub, xover_settings.short_output,
+            xover_settings.long_winded, state.med_homology,
+            state.high_homology, state.low_homology, xover_settings.target,
+            xover_settings.circular, position, xover_window,
+            scan_state.sequence_length, state.homology_length,
+            state.sequence_minor, state.sequence_daughter, &state.end_flag,
+            &state.event_begin, &state.event_end, &state.number_in_common,
+            &state.event_length, state.xover_sequence.data(),
+            state.homology.data());
+        calculate_rdp_first_xover_probability(
+            state, probability_settings, probability_estimate, fact_three,
+            fact, api);
+    }
 }

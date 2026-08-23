@@ -362,7 +362,10 @@ int fasta_first_xover_walk_fixture(
     const std::string& fasta_path, const std::string& alist_fixture_path,
     const std::string& find_subseq_fixture_path,
     const std::string& homology_fixture_path,
-    const std::string& find_next_fixture_path) {
+    const std::string& find_next_fixture_path,
+    const std::string& define_event_fixture_path,
+    const std::string& probability_p2_fixture_path,
+    const std::string& probability_p_fixture_path) {
     const Dna5ScanPreprocessApi preprocess_api{
         &MathFuncs::MyMathFuncs::MakeAListP2,
         &MathFuncs::MyMathFuncs::CountNucs,
@@ -374,16 +377,60 @@ int fasta_first_xover_walk_fixture(
         &MathFuncs::MyMathFuncs::FindSubSeqPB3,
         &MathFuncs::MyMathFuncs::XOHomologyP,
         &MathFuncs::MyMathFuncs::FindNextP,
+        &MathFuncs::MyMathFuncs::FindFirstCOP,
+        &MathFuncs::MyMathFuncs::DefineEventP2,
+        &MathFuncs::MyMathFuncs::ProbCalcP2,
+        &MathFuncs::MyMathFuncs::ProbCalcP,
     };
-    const auto scan_state =
+    auto scan_state =
         build_rdp_scan_state_from_fasta(fasta_path, preprocess_api);
-    const auto distance_state = build_rdp_distance_state(
+    auto distance_state = build_rdp_distance_state(
         scan_state, 1, scan_state.sequence_length);
-    const auto tree_state =
+    auto tree_state =
         build_rdp_upgma_tree_state(scan_state.next_no, distance_state);
     const auto alist_fixture = load_alist_rdp4_fixture(alist_fixture_path);
-    const auto redo = alist_rdp4_typed_section<unsigned char>(
+    const auto& alist_header = alist_fixture.header;
+    auto store_lpv = alist_rdp4_typed_section<double>(
+        alist_fixture, AlistRdp4Section::store_lpv_in);
+    auto redo = alist_rdp4_typed_section<unsigned char>(
+        alist_fixture, AlistRdp4Section::redo_list_in);
+    auto fss_rdp = alist_rdp4_typed_section<unsigned char>(
+        alist_fixture, AlistRdp4Section::fss_rdp_in);
+    auto probability_estimate = alist_rdp4_typed_section<double>(
+        alist_fixture, AlistRdp4Section::probability_estimate_in);
+    auto fact_three = alist_rdp4_typed_section<double>(
+        alist_fixture, AlistRdp4Section::fact_three_in);
+    auto fact = alist_rdp4_typed_section<double>(
+        alist_fixture, AlistRdp4Section::fact_in);
+    const auto expected_redo = alist_rdp4_typed_section<unsigned char>(
         alist_fixture, AlistRdp4Section::redo_list_out);
+    const auto expected_store = alist_rdp4_typed_section<double>(
+        alist_fixture, AlistRdp4Section::store_lpv_out);
+    const auto expected_alist_result = alist_rdp4_typed_section<int>(
+        alist_fixture, AlistRdp4Section::result_out);
+    const int alist_result = MathFuncs::MyMathFuncs::AlistRDP4(
+        alist_header.store_lpv_ub, store_lpv.data(),
+        scan_state.analysis_list.data(), alist_header.list_length,
+        alist_header.start, alist_header.end, alist_header.next_no,
+        alist_header.sub_threshold, redo.data(), alist_header.circular,
+        alist_header.mc_correction, alist_header.mc_flag,
+        alist_header.lowest_probability, alist_header.target_x,
+        alist_header.sequence_length, alist_header.short_output,
+        alist_header.distance_ub, distance_state.distance.data(),
+        alist_header.tree_distance_ub, tree_state.tree_distance.data(),
+        alist_header.fss_rdp_ub, alist_header.compressed_sequence_ub,
+        scan_state.compressed_sequence.data(), scan_state.sequence_data.data(),
+        alist_header.xover_window, alist_header.xover_window_x,
+        fss_rdp.data(), alist_header.probability_file_flag,
+        alist_header.probability_one_ub, alist_header.probability_two_ub,
+        probability_estimate.data(), alist_header.fact_three_ub,
+        fact_three.data(), fact.data());
+    if (expected_alist_result.size() != 1 ||
+        alist_result != expected_alist_result[0] || redo != expected_redo ||
+        store_lpv != expected_store) {
+        std::cerr << "FASTA first-XOver walk parity: FAIL AlistRDP4\n";
+        return 1;
+    }
     int first_redo = -1;
     for (int triplet = alist_fixture.header.start;
          triplet <= alist_fixture.header.end; ++triplet) {
@@ -392,11 +439,9 @@ int fasta_first_xover_walk_fixture(
             break;
         }
     }
-    auto fss_rdp = alist_rdp4_typed_section<unsigned char>(
-        alist_fixture, AlistRdp4Section::fss_rdp_in);
     const auto pb3_fixture =
         load_find_subseq_pb3_fixture(find_subseq_fixture_path);
-    const auto state = build_rdp_first_xover_state(
+    auto state = build_rdp_first_xover_state(
         scan_state, distance_state, tree_state, first_redo,
         pb3_fixture.header.fss_ub, fss_rdp,
         pb3_fixture.header.xover_window,
@@ -427,19 +472,132 @@ int fasta_first_xover_walk_fixture(
         rdp_fixture_section<int>(find_next_fixture, 1);
     const auto expected_next_position =
         rdp_fixture_section<int>(find_next_fixture, 101);
+    const char define_event_magic[8] = {
+        'D', 'E', 'F', 'E', 'V', 'P', '2', '\0'};
+    const auto define_event_fixture =
+        load_rdp_sectioned_fixture<DefineEventP2CaptureHeader>(
+            define_event_fixture_path, define_event_magic);
+    const auto define_scalars_in =
+        rdp_fixture_section<int>(define_event_fixture, 1);
+    const auto define_xover_in =
+        rdp_fixture_section<char>(define_event_fixture, 2);
+    const auto define_homology_in =
+        rdp_fixture_section<int>(define_event_fixture, 3);
+    const auto expected_define_scalars =
+        rdp_fixture_section<int>(define_event_fixture, 101);
+    const auto expected_define_result =
+        rdp_fixture_section<int>(define_event_fixture, 102);
+    const RdpXoverSettings settings{
+        define_event_fixture.header.short_output,
+        define_event_fixture.header.long_winded,
+        define_event_fixture.header.target_x,
+        define_event_fixture.header.circular,
+    };
+    const auto homology_before_event = state.homology;
+    const auto xover_before_event = state.xover_sequence;
+    define_rdp_first_xover_event(
+        state, scan_state, pb3_fixture.header.xover_window, settings,
+        xover_api);
+    const std::vector<int> actual_define_scalars{
+        state.end_flag, state.event_begin, state.event_end,
+        state.number_in_common, state.event_length};
+    const int first_define_result = state.event_position;
+    const bool define_buffers_match =
+        state.homology_at_define == define_homology_in &&
+        state.xover_sequence_at_define == define_xover_in;
+    const bool define_header_matches =
+        state.homology_ub == define_event_fixture.header.homology_ub &&
+        state.med_homology == define_event_fixture.header.med &&
+        state.high_homology == define_event_fixture.header.high &&
+        state.low_homology == define_event_fixture.header.low &&
+        alist_fixture.header.short_output ==
+            define_event_fixture.header.short_output &&
+        alist_fixture.header.target_x == define_event_fixture.header.target_x &&
+        alist_fixture.header.circular == define_event_fixture.header.circular &&
+        state.define_input_position == define_event_fixture.header.xx &&
+        pb3_fixture.header.xover_window ==
+            define_event_fixture.header.xover_window &&
+        scan_state.sequence_length ==
+            define_event_fixture.header.sequence_length &&
+        state.homology_length == define_event_fixture.header.xover_length &&
+        state.sequence_minor ==
+            define_event_fixture.header.sequence_daughter &&
+        state.sequence_daughter == define_event_fixture.header.sequence_minor;
+    const char probability_magic[8] = {
+        'P', 'R', 'O', 'B', 'C', 'P', '2', '\0'};
+    const auto probability_fixture =
+        load_rdp_sectioned_fixture<ProbCalcP2CaptureHeader>(
+            probability_p2_fixture_path, probability_magic);
+    const auto expected_probability_fact =
+        rdp_fixture_section<double>(probability_fixture, 1);
+    const auto expected_probability =
+        rdp_fixture_section<double>(probability_fixture, 101);
+    const char probability_p_magic[8] = {
+        'P', 'R', 'O', 'B', 'C', 'P', '\0', '\0'};
+    const auto probability_p_fixture =
+        load_rdp_sectioned_fixture<ProbCalcPCaptureHeader>(
+            probability_p_fixture_path, probability_p_magic);
+    const auto expected_probability_fact_p =
+        rdp_fixture_section<double>(probability_p_fixture, 1);
+    const auto expected_probability_p =
+        rdp_fixture_section<double>(probability_p_fixture, 101);
+    const RdpProbabilitySettings probability_settings{
+        alist_header.circular,
+        alist_header.probability_file_flag,
+        alist_header.probability_one_ub,
+        alist_header.probability_two_ub,
+        alist_header.fact_three_ub,
+        alist_header.lowest_probability,
+    };
+    calculate_rdp_first_xover_probability(
+        state, probability_settings, probability_estimate, fact_three, fact,
+        xover_api);
+    if (!state.probability_tested) {
+        continue_rdp_xover_to_first_probability(
+            state, scan_state, pb3_fixture.header.xover_window, settings,
+            probability_settings, probability_estimate, fact_three, fact,
+            xover_api);
+    }
+    const auto probability_close = [](const double actual,
+                                      const std::vector<double>& expected) {
+        if (expected.size() != 1) return false;
+        const double scale = std::max(1.0, std::abs(expected[0]));
+        return std::abs(actual - expected[0]) <= 1e-14 * scale;
+    };
+    const bool probability_p2_matches = state.probability_tested &&
+        state.used_probability_p2 && fact_three == expected_probability_fact &&
+        state.probability_length == probability_fixture.header.xover_length &&
+        state.probability_same == probability_fixture.header.number_in_common &&
+        state.individual_probability ==
+            probability_fixture.header.individual_probability &&
+        state.homology_length == probability_fixture.header.informative_length &&
+        probability_close(state.event_probability, expected_probability);
+    const bool probability_p_matches = state.probability_tested &&
+        !state.used_probability_p2 && fact == expected_probability_fact_p &&
+        state.probability_length == probability_p_fixture.header.xover_length &&
+        state.probability_same ==
+            probability_p_fixture.header.number_in_common &&
+        state.individual_probability ==
+            probability_p_fixture.header.individual_probability &&
+        state.homology_length ==
+            probability_p_fixture.header.informative_length &&
+        probability_close(state.event_probability, expected_probability_p);
+    const bool probability_matches =
+        probability_p2_matches || probability_p_matches;
     const std::vector<int> actual_ah(
         state.agreement_counts.begin(), state.agreement_counts.end());
     const bool matches = expected_pb3_result.size() == 1 &&
         state.informative_length == expected_pb3_result[0] &&
-        actual_ah == expected_ah && state.xover_sequence == expected_xover &&
+        actual_ah == expected_ah && xover_before_event == expected_xover &&
         state.initial_high_homology == xoh_fixture.header.inlyer &&
+        xover_before_event == expected_xoh_sequence &&
         state.homology_sequence_length ==
             xoh_fixture.header.sequence_length &&
         state.homology_length == xoh_fixture.header.xover_length &&
         expected_xoh_result.size() == 1 &&
         state.homology_start == expected_xoh_result[0] &&
-        state.homology == expected_homology &&
-        state.homology == expected_find_next_homology &&
+        homology_before_event == expected_homology &&
+        homology_before_event == expected_find_next_homology &&
         state.homology_ub == find_next_fixture.header.homology_ub &&
         find_next_fixture.header.start == 1 &&
         state.high_homology == find_next_fixture.header.high &&
@@ -449,30 +607,36 @@ int fasta_first_xover_walk_fixture(
         pb3_fixture.header.xover_window ==
             find_next_fixture.header.xover_window &&
         expected_next_position.size() == 1 &&
-        state.next_position == expected_next_position[0];
+        state.next_position == expected_next_position[0] &&
+        define_scalars_in == std::vector<int>(5, 0) &&
+        define_buffers_match && define_header_matches &&
+        expected_define_result.size() == 1 &&
+        first_define_result == expected_define_result[0] &&
+        actual_define_scalars == expected_define_scalars &&
+        probability_matches;
     if (!matches) {
         const auto homology_difference = std::mismatch(
             expected_homology.begin(), expected_homology.end(),
-            state.homology.begin(), state.homology.end());
+            homology_before_event.begin(), homology_before_event.end());
         const auto sequence_difference = std::mismatch(
             expected_xoh_sequence.begin(), expected_xoh_sequence.end(),
-            state.xover_sequence.begin(), state.xover_sequence.end());
+            xover_before_event.begin(), xover_before_event.end());
         std::cerr << "FASTA first-XOver walk parity: FAIL"
                   << " PB3="
                   << (expected_pb3_result.size() == 1 &&
                       state.informative_length == expected_pb3_result[0] &&
                       actual_ah == expected_ah &&
-                      state.xover_sequence == expected_xover)
+                      xover_before_event == expected_xover)
                   << " role="
                   << (state.initial_high_homology ==
                       xoh_fixture.header.inlyer)
                   << " XOH="
                   << (expected_xoh_result.size() == 1 &&
                       state.homology_start == expected_xoh_result[0] &&
-                      state.homology == expected_homology)
+                      homology_before_event == expected_homology)
                   << " result=" << state.homology_start << '/'
                   << (expected_xoh_result.empty() ? -1 : expected_xoh_result[0])
-                  << " homology-size=" << state.homology.size() << '/'
+                  << " homology-size=" << homology_before_event.size() << '/'
                   << expected_homology.size()
                   << " homology-diff="
                   << (homology_difference.first == expected_homology.end()
@@ -480,7 +644,7 @@ int fasta_first_xover_walk_fixture(
                           : static_cast<long long>(std::distance(
                                 expected_homology.begin(),
                                 homology_difference.first)))
-                  << " xoh-input-size=" << state.xover_sequence.size() << '/'
+                  << " xoh-input-size=" << xover_before_event.size() << '/'
                   << expected_xoh_sequence.size()
                   << " xoh-input-diff="
                   << (sequence_difference.first == expected_xoh_sequence.end()
@@ -497,11 +661,43 @@ int fasta_first_xover_walk_fixture(
                   << (expected_next_position.empty()
                           ? -1
                           : expected_next_position[0])
+                  << " define=" << first_define_result << '/'
+                  << (expected_define_result.empty()
+                          ? -1
+                          : expected_define_result[0])
+                  << " define-scalars="
+                  << (actual_define_scalars == expected_define_scalars)
+                  << " define-input-scalars="
+                  << (define_scalars_in == std::vector<int>(5, 0))
+                  << " define-buffers=" << define_buffers_match
+                  << " define-header=" << define_header_matches
+                  << " passed-daughter/minor=" << state.sequence_minor << ','
+                  << state.sequence_daughter << '/'
+                  << define_event_fixture.header.sequence_daughter << ','
+                  << define_event_fixture.header.sequence_minor
+                  << " probability=" << probability_matches
+                  << " probability-state=" << state.probability_tested << ','
+                  << (state.used_probability_p2 ? "P2" : "P") << ','
+                  << state.probability_length << ','
+                  << state.probability_same << ','
+                  << state.individual_probability << " expected="
+                  << (state.used_probability_p2
+                          ? probability_fixture.header.xover_length
+                          : probability_p_fixture.header.xover_length) << ','
+                  << (state.used_probability_p2
+                          ? probability_fixture.header.number_in_common
+                          : probability_p_fixture.header.number_in_common) << ','
+                  << (state.used_probability_p2
+                          ? probability_fixture.header.individual_probability
+                          : probability_p_fixture.header.individual_probability)
+                  << " prefilter=" << state.probability_prefilter_value << '/'
+                  << alist_header.lowest_probability
                   << '\n';
         return 1;
     }
     std::cout << "FASTA first-XOver walk parity: PASS (FindSubSeqPB3 -> "
-                 "XOHomologyP -> role ranking -> FindNextP)\n";
+                 "XOHomologyP -> role ranking -> FindNextP -> "
+                 "DefineEventP2 -> ProbCalcP/P2)\n";
     return 0;
 }
 
@@ -681,10 +877,11 @@ int main(int argc, char** argv) {
         std::string_view(argv[1]) == "fasta-first-xover-fixture") {
         return fasta_first_xover_fixture(argv[2], argv[3], argv[4]);
     }
-    if (argc == 7 &&
+    if (argc == 10 &&
         std::string_view(argv[1]) == "fasta-first-xover-walk-fixture") {
         return fasta_first_xover_walk_fixture(
-            argv[2], argv[3], argv[4], argv[5], argv[6]);
+            argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
+            argv[9]);
     }
     if (argc == 3 && std::string_view(argv[1]) == "alist-rdp4-fixture") {
         return alist_rdp4_fixture(argv[2]);
@@ -758,7 +955,7 @@ int main(int argc, char** argv) {
         << "       rdp-core fasta-tree-distance-fixture <alignment.fasta> <alist-capture.bin>\n"
         << "       rdp-core fasta-alist-rdp4-fixture <alignment.fasta> <alist-capture.bin>\n"
         << "       rdp-core fasta-first-xover-fixture <alignment.fasta> <alist-capture.bin> <find-subseq-pb3-capture.bin>\n"
-        << "       rdp-core fasta-first-xover-walk-fixture <alignment.fasta> <alist-capture.bin> <find-subseq-pb3-capture.bin> <xohomology-capture.bin> <find-next-capture.bin>\n"
+        << "       rdp-core fasta-first-xover-walk-fixture <alignment.fasta> <alist-capture.bin> <find-subseq-pb3-capture.bin> <xohomology-capture.bin> <find-next-capture.bin> <define-event-capture.bin> <prob-calc-p2-capture.bin> <prob-calc-p-capture.bin>\n"
         << "       rdp-core alist-rdp4-fixture <capture.bin>\n"
         << "       rdp-core find-subseq-pb3-fixture <capture.bin>\n"
         << "       rdp-core find-subseq-pb4-fixture <capture.bin>\n"

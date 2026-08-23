@@ -33,6 +33,9 @@ for number in {0..9}; do
     fasta-first-xover-walk-fixture "$fasta" "$fixture" \
     "$fixture_dir/find-subseq-pb3-v1.bin" \
     "$fixture_dir/xohomology-p-v1.bin" \
-    "$fixture_dir/find-next-p-v1.bin" >/dev/null
+    "$fixture_dir/find-next-p-v1.bin" \
+    "$fixture_dir/define-event-p2-v1.bin" \
+    "$fixture_dir/prob-calc-p2-v1.bin" \
+    "$fixture_dir/prob-calc-p-v1.bin" >/dev/null
   printf '| %s | PASS | PASS | PASS | PASS | PASS |\n' "$dataset"
 done

@@ -62,9 +62,13 @@ With those generated matrices substituted for captured state, `AlistRDP4`
 still produces the byte-identical redo list and `StoreLPV`. The first redo
 triplet selected from that list drives generated `CompressSeq` through
 `FindSubSeqPB3`, `XOHomologyP`, the intervening VB average-homology role
-ranking and distance tie breaks, and `FindNextP`. The connected prefix is
-byte-identical at every captured state boundary on all ten supplied datasets;
-run `tools/check-all-pre-scan-parity.sh` for that table.
+ranking and distance tie breaks, `FindNextP`, `FindFirstCOP` when the circular
+start branch applies, and `DefineEventP2`. Rejected intervals advance through
+the source `NextPosX` loop and the probability-table prefilter until the first
+literal `ProbCalcP` or `ProbCalcP2` branch is reached. The connected prefix is
+byte-identical (with the accepted platform-math tolerance for final p-values)
+at every captured state boundary on all ten supplied datasets; run
+`tools/check-all-pre-scan-parity.sh` for that table.
 
 The orchestration preserves two otherwise easy-to-collapse state values:
 RDP passes the FASTA length to `FindSubSeqPB3` but the FASTA length plus one to

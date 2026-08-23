@@ -87,6 +87,7 @@ rm -f "$run_dir/alist-rdp4-v1.bin"
 rm -f "$run_dir/find-subseq-pb3-v1.bin"
 rm -f "$run_dir/xohomology-p-v1.bin" "$run_dir/find-next-p-v1.bin"
 rm -f "$run_dir/define-event-p2-v1.bin"
+rm -f "$run_dir"/define-event-p2-call-*.bin
 rm -f "$run_dir/prob-calc-p2-v1.bin"
 rm -f "$run_dir/find-subseq-pb4-v1.bin"
 rm -f "$run_dir/find-first-co-p-v1.bin" "$run_dir/prob-calc-p-v1.bin"

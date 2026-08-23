@@ -21,6 +21,29 @@ struct Dna5XoverApi {
         short, int, int, short, char*, int*);
     int(RDP_XOVER_CALL* find_next)(
         int, int, int, int, int, int, int, int*);
+    int(RDP_XOVER_CALL* find_first)(int, int, int, int, int, int*);
+    int(RDP_XOVER_CALL* define_event)(
+        int, int, int, int, int, int, int, int, int, int, int, int, int,
+        int, int*, int*, int*, int*, int*, char*, int*);
+    double(RDP_XOVER_CALL* probability_p2)(
+        double*, int, int, int, double, int);
+    double(RDP_XOVER_CALL* probability_p)(double*, int, int, double, int);
+};
+
+struct RdpXoverSettings {
+    int short_output = 0;
+    int long_winded = 0;
+    int target = 0;
+    int circular = 0;
+};
+
+struct RdpProbabilitySettings {
+    int circular = 0;
+    int probability_file_flag = 0;
+    int probability_one_ub = 0;
+    int probability_two_ub = 0;
+    int fact_three_ub = 0;
+    double lowest_probability = 0.0;
 };
 
 struct RdpFirstXoverState {
@@ -35,6 +58,23 @@ struct RdpFirstXoverState {
     int low_homology = 0;
     int homology_start = 0;
     int next_position = -1;
+    int define_input_position = -1;
+    int event_position = -1;
+    int end_flag = 0;
+    int event_begin = 0;
+    int event_end = 0;
+    int number_in_common = 0;
+    int event_length = 0;
+    bool used_find_first = false;
+    bool probability_tested = false;
+    bool used_probability_p2 = false;
+    int probability_length = 0;
+    int probability_same = 0;
+    int probability_different = 0;
+    double probability_scale = 1.0;
+    double individual_probability = 0.0;
+    double probability_prefilter_value = 0.0;
+    double event_probability = 0.0;
     int active_sequence = -1;
     int active_major_parent = -1;
     int active_minor_parent = -1;
@@ -45,6 +85,8 @@ struct RdpFirstXoverState {
     std::array<double, 3> average_homology{};
     std::vector<char> xover_sequence;
     std::vector<int> homology;
+    std::vector<char> xover_sequence_at_define;
+    std::vector<int> homology_at_define;
 };
 
 RdpFirstXoverState build_rdp_first_xover_state(
@@ -52,3 +94,22 @@ RdpFirstXoverState build_rdp_first_xover_state(
     const RdpTreeState& tree_state, int triplet_index, int fss_ub,
     std::vector<unsigned char>& fss_rdp, int xover_window,
     short xover_window_x, const Dna5XoverApi& api);
+
+void define_rdp_first_xover_event(
+    RdpFirstXoverState& state, const RdpScanState& scan_state,
+    int xover_window, const RdpXoverSettings& settings,
+    const Dna5XoverApi& api);
+
+void calculate_rdp_first_xover_probability(
+    RdpFirstXoverState& state, const RdpProbabilitySettings& settings,
+    std::vector<double>& probability_estimate,
+    std::vector<double>& fact_three, std::vector<double>& fact,
+    const Dna5XoverApi& api);
+
+void continue_rdp_xover_to_first_probability(
+    RdpFirstXoverState& state, const RdpScanState& scan_state,
+    int xover_window, const RdpXoverSettings& xover_settings,
+    const RdpProbabilitySettings& probability_settings,
+    std::vector<double>& probability_estimate,
+    std::vector<double>& fact_three, std::vector<double>& fact,
+    const Dna5XoverApi& api);
