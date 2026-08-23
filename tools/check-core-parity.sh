@@ -15,4 +15,10 @@ export LD_LIBRARY_PATH="$workspace_dir/software/cmake/usr/lib/x86_64-linux-gnu:$
 cmake --build "$project_dir/build/wasm" --parallel 1 >/dev/null
 
 node "$project_dir/build/wasm/rdp-core.js" \
+  fasta-preprocess-fixture "$fixture_dir/Dataset0.fas" \
+  "$fixture_dir/alist-rdp4-v1.bin"
+node "$project_dir/build/wasm/rdp-core.js" \
+  fasta-distance-fixture "$fixture_dir/Dataset0.fas" \
+  "$fixture_dir/alist-rdp4-v1.bin"
+node "$project_dir/build/wasm/rdp-core.js" \
   oracle-fixture-chain "$fixture_dir"

@@ -20,7 +20,9 @@ target_compile_options(rdp_dna5_exact PRIVATE
 )
 
 add_executable(rdp-core
+    src/distance_state.cpp
     src/main.cpp
+    src/scan_state.cpp
 )
 target_include_directories(rdp-core PRIVATE include vendor/dna5 tests)
 target_link_libraries(rdp-core PRIVATE rdp_dna5_exact)
@@ -30,6 +32,12 @@ if(EMSCRIPTEN)
     # x87 extended-precision stack. This preserves that compiler ABI while
     # leaving the supplied routine bodies byte-identical.
     target_compile_options(rdp_dna5_exact PRIVATE
+        "-ffp-eval-method=extended"
+    )
+    # VB6 and the legacy DNA.dll source use the same 32-bit x87 evaluation
+    # model in the pinned oracle. The orchestration port contains scalar
+    # bodies from both, so it must use that ABI as well.
+    target_compile_options(rdp-core PRIVATE
         "-ffp-eval-method=extended"
     )
     set_target_properties(rdp-core PROPERTIES SUFFIX ".js")

@@ -7,7 +7,7 @@ outputs use the user's accepted platform-math tolerance when Windows and WASM
 
 | Execution order | Routine | Oracle boundary | Current result |
 |---:|---|---|---|
-| 1 | `SuperDistP` | synthetic input, Windows DLL vs WASM | byte-identical |
+| 1 | `SuperDistP` | first live Dataset0 row call from `RDP5CL.exe` | byte-identical result and distance state |
 | 2 | `MakeAListP2` | synthetic input, Windows DLL vs WASM | byte-identical |
 | 3 | `CountNucs` | chained synthetic state | byte-identical |
 | 4 | `RecodeNucs` | chained synthetic state | byte-identical |
@@ -37,3 +37,17 @@ The live `AlistRDP4` fixture covers 2,300 triplets and changes 709 redo states.
 Because the exact C++ implementation calls `FastRecCheckPB` internally, that
 passing outer boundary also validates its complete internal chain collectively;
 the later rows isolate the same routines at their separately exported calls.
+
+The CLI now constructs `Seqnum`, the complete triplet list, and `CompressSeq`
+directly from the supplied Dataset0 FASTA. Those three arrays are byte-identical
+to the live state passed by RDP into `AlistRDP4`; they are no longer supplied to
+that preprocessing gate by a fixture.
+
+The CLI also ports the scalar VB/DNA distance setup preceding the first
+`SuperDistP`: site categorization, the seven `NucXX` categories, RDP's unusual
+fixed-width sequence compressors, the sequential `SuperDistP` row loop, and
+the caller's diagonal/low-validity normalization. Starting from FASTA, the
+resulting complete 25-by-25 distance matrix is byte-identical to the live
+matrix passed into `AlistRDP4`. The legacy helper bodies are implemented but
+remain collectively gated at this shared-state boundary until their individual
+`DNA.dll` calls are captured.

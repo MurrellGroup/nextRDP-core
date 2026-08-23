@@ -34,8 +34,27 @@ command, in their observed RDP execution order:
 node build/wasm/rdp-core.js oracle-fixture-chain sandbox/alist-rdp4-capture/runtime
 ```
 
-This currently checks 25 distinct routines (21 live calls because `FillRmat`
+This currently checks 25 distinct routines (22 live calls because `FillRmat`
 is exercised for all three `Y` branches). The pinned DLL is a 32-bit x87 build;
 the WASM compilation uses Clang's extended evaluation mode to preserve that
 source-level floating-point ABI without editing the supplied routine bodies.
 The compatibility layer also supplies the Microsoft CRT 15-bit `rand()` stream.
+
+The first shared-state orchestration segment now starts from FASTA and calls the
+same preprocessing routines in order. Its live oracle gate is:
+
+```sh
+node build/wasm/rdp-core.js fasta-preprocess-fixture \
+  sandbox/alist-rdp4-capture/runtime/Dataset0.fas \
+  sandbox/alist-rdp4-capture/runtime/alist-rdp4-v1.bin
+```
+
+The next shared-state segment reconstructs RDP's compressed distance pipeline
+from the same FASTA, calls `SuperDistP` row-by-row as observed, and compares the
+complete matrix passed into `AlistRDP4`:
+
+```sh
+node build/wasm/rdp-core.js fasta-distance-fixture \
+  sandbox/alist-rdp4-capture/runtime/Dataset0.fas \
+  sandbox/alist-rdp4-capture/runtime/alist-rdp4-v1.bin
+```

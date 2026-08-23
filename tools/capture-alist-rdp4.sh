@@ -45,6 +45,8 @@ awk '
       print "    FindBestRecSignalP2=FindBestRecSignalP2Capture@36 " ordinal
     else if (name == "UFDist")
       print "    UFDist=UFDistCapture@44 " ordinal
+    else if (name == "SuperDistP")
+      print "    SuperDistP=SuperDistPCapture@132 " ordinal
     else if (name == "SuperDistP2")
       print "    SuperDistP2=SuperDistP2Capture@132 " ordinal
     else if (name == "CheckMatrixP")
@@ -83,6 +85,7 @@ rm -f "$run_dir/clean-xosnw-v1.bin"
 rm -f "$run_dir/make-test-pvs-v1.bin"
 rm -f "$run_dir/find-best-rec-signal-p2-v1.bin"
 rm -f "$run_dir/ufdist-v1.bin"
+rm -f "$run_dir/super-dist-p-v1.bin"
 rm -f "$run_dir/super-dist-p2-v1.bin"
 rm -f "$run_dir/check-matrix-p-v1.bin"
 rm -f "$run_dir/make-nj-trees-p2-v1.bin"
@@ -113,6 +116,7 @@ test -s "$run_dir/clean-xosnw-v1.bin"
 test -s "$run_dir/make-test-pvs-v1.bin"
 test -s "$run_dir/find-best-rec-signal-p2-v1.bin"
 test -s "$run_dir/ufdist-v1.bin"
+test -s "$run_dir/super-dist-p-v1.bin"
 test -s "$run_dir/super-dist-p2-v1.bin"
 test -s "$run_dir/check-matrix-p-v1.bin"
 test -s "$run_dir/make-nj-trees-p2-v1.bin"
@@ -134,6 +138,7 @@ echo "captured $run_dir/clean-xosnw-v1.bin ($(stat -c %s "$run_dir/clean-xosnw-v
 echo "captured $run_dir/make-test-pvs-v1.bin ($(stat -c %s "$run_dir/make-test-pvs-v1.bin") bytes)"
 echo "captured $run_dir/find-best-rec-signal-p2-v1.bin ($(stat -c %s "$run_dir/find-best-rec-signal-p2-v1.bin") bytes)"
 echo "captured $run_dir/ufdist-v1.bin ($(stat -c %s "$run_dir/ufdist-v1.bin") bytes)"
+echo "captured $run_dir/super-dist-p-v1.bin ($(stat -c %s "$run_dir/super-dist-p-v1.bin") bytes)"
 echo "captured $run_dir/super-dist-p2-v1.bin ($(stat -c %s "$run_dir/super-dist-p2-v1.bin") bytes)"
 echo "captured $run_dir/check-matrix-p-v1.bin ($(stat -c %s "$run_dir/check-matrix-p-v1.bin") bytes)"
 echo "captured $run_dir/make-nj-trees-p2-v1.bin ($(stat -c %s "$run_dir/make-nj-trees-p2-v1.bin") bytes)"

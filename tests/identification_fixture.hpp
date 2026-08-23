@@ -138,11 +138,10 @@ inline int run_ufdist_fixture(
     return 0;
 }
 
-template <typename SuperDistP2Fn>
-inline int run_super_dist_p2_fixture(
-    SuperDistP2Fn function, const std::string& path, std::ostream& output,
-    std::ostream& error) {
-    const char magic[8] = {'S', 'U', 'P', 'D', 'I', 'S', 'T', '2'};
+template <typename SuperDistFn>
+inline int run_super_dist_fixture(
+    SuperDistFn function, const std::string& path, const char (&magic)[8],
+    const char* routine_name, std::ostream& output, std::ostream& error) {
     const auto fixture =
         load_rdp_sectioned_fixture<SuperDistP2CaptureHeader>(path, magic);
     const auto& h = fixture.header;
@@ -176,7 +175,8 @@ inline int run_super_dist_p2_fixture(
     const auto expected_distance = rdp_fixture_section<float>(fixture, 104);
     const auto expected_result = rdp_fixture_section<double>(fixture, 105);
     if (average.size() != 1) {
-        throw std::runtime_error("SuperDistP2 average section must be scalar");
+        throw std::runtime_error(
+            std::string(routine_name) + " average section must be scalar");
     }
     const double result = function(
         h.x, h.next_no, h.ub14, h.ub04, h.ub13, h.ub03, h.ub12, h.ub02,
@@ -200,12 +200,30 @@ inline int run_super_dist_p2_fixture(
         bytes_equal(pair_valid, expected_pair_valid) &&
         bytes_equal(distance, expected_distance);
     if (!matches) {
-        error << "SuperDistP2 parity: FAIL\n";
+        error << routine_name << " parity: FAIL\n";
         return 1;
     }
-    output << "SuperDistP2 parity: PASS (" << (h.next_no + 1)
+    output << routine_name << " parity: PASS (" << (h.next_no + 1)
            << " sequences)\n";
     return 0;
+}
+
+template <typename SuperDistPFn>
+inline int run_super_dist_p_fixture(
+    SuperDistPFn function, const std::string& path, std::ostream& output,
+    std::ostream& error) {
+    const char magic[8] = {'S', 'U', 'P', 'D', 'I', 'S', 'T', '1'};
+    return run_super_dist_fixture(
+        function, path, magic, "SuperDistP", output, error);
+}
+
+template <typename SuperDistP2Fn>
+inline int run_super_dist_p2_fixture(
+    SuperDistP2Fn function, const std::string& path, std::ostream& output,
+    std::ostream& error) {
+    const char magic[8] = {'S', 'U', 'P', 'D', 'I', 'S', 'T', '2'};
+    return run_super_dist_fixture(
+        function, path, magic, "SuperDistP2", output, error);
 }
 
 template <typename CheckMatrixPFn>

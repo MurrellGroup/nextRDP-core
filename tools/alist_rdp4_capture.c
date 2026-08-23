@@ -91,6 +91,7 @@ typedef double(STDCALL *SuperDistP2Fn)(
     float *, short *, int *, short *, short *, short *, short *, short *,
     short *, short *, char *, char *, char *, char *, char *, char *, char *,
     char *, char *, char *, char *);
+typedef SuperDistP2Fn SuperDistPFn;
 typedef int(STDCALL *CheckMatrixPFn)(
     int *, int *, int, int, int, int, unsigned char *, int, float *, int,
     float *, int, float *, float *, int *, int *);
@@ -1369,6 +1370,82 @@ int super_dist_p2_write_inputs(
   write_section(file, SDP2_DIFF03_IN, diff03, (u32)(730 * 730));
   write_section(file, SDP2_DIFF02_IN, diff02, (u32)(1025 * 1025));
   return 1;
+}
+
+double STDCALL SuperDistPCapture(
+    int x, int next_no, int ub14, int ub04, int ub13, int ub03, int ub12,
+    int ub02, int ub11, double *average, float *pair_diff, float *pair_valid,
+    float *distance, short *redo, int *category_count, short *iseq14,
+    short *iseq04, short *iseq13, short *iseq03, short *iseq12,
+    short *iseq02, short *iseq11, char *valid14, char *diff14,
+    char *valid13, char *diff13, char *valid12, char *diff12, char *valid11,
+    char *diff11, char *diff04, char *diff03, char *diff02) {
+  static SuperDistPFn original;
+  static int invocation;
+  HANDLE file = INVALID_HANDLE_VALUE;
+  const u32 matrix_bytes =
+      (u32)((next_no + 1) * (next_no + 1) * (int)sizeof(float));
+  if (!original) {
+    HMODULE module = LoadLibraryA("DNA5_original.dll");
+    if (module) original = (SuperDistPFn)GetProcAddress(module, "SuperDistP");
+  }
+  if (!original) return 0.0;
+  ++invocation;
+  if (invocation == 1) {
+    struct SuperDistP2Header header;
+    const char magic[8] = {'S', 'U', 'P', 'D', 'I', 'S', 'T', '1'};
+    int i;
+    for (i = 0; i < 8; ++i) header.magic[i] = magic[i];
+    header.version = 1;
+    header.x = x;
+    header.next_no = next_no;
+    header.ub14 = ub14;
+    header.ub04 = ub04;
+    header.ub13 = ub13;
+    header.ub03 = ub03;
+    header.ub12 = ub12;
+    header.ub02 = ub02;
+    header.ub11 = ub11;
+    file = CreateFileA(
+        "super-dist-p-v1.bin", GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, (void *)0, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
+    if (file != INVALID_HANDLE_VALUE) {
+      write_bytes(file, &header, (DWORD)sizeof(header));
+      super_dist_p2_write_inputs(
+          file, next_no, ub14, ub04, ub13, ub03, ub12, ub02, ub11, average,
+          pair_diff, pair_valid, distance, redo, category_count, iseq14,
+          iseq04, iseq13, iseq03, iseq12, iseq02, iseq11, valid14, diff14,
+          valid13, diff13, valid12, diff12, valid11, diff11, diff04, diff03,
+          diff02);
+      CloseHandle(file);
+    }
+  }
+  {
+    const double result = original(
+        x, next_no, ub14, ub04, ub13, ub03, ub12, ub02, ub11, average,
+        pair_diff, pair_valid, distance, redo, category_count, iseq14, iseq04,
+        iseq13, iseq03, iseq12, iseq02, iseq11, valid14, diff14, valid13,
+        diff13, valid12, diff12, valid11, diff11, diff04, diff03, diff02);
+    if (invocation == 1) {
+      file = CreateFileA(
+          "super-dist-p-v1.bin", GENERIC_WRITE,
+          FILE_SHARE_READ | FILE_SHARE_WRITE, (void *)0, OPEN_EXISTING,
+          FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
+      if (file != INVALID_HANDLE_VALUE) {
+        const struct SectionHeader end_marker = {END_MARKER, 0};
+        SetFilePointer(file, 0, (long *)0, FILE_END);
+        write_section(file, SDP2_AVERAGE_OUT, average, (u32)sizeof(double));
+        write_section(file, SDP2_PAIR_DIFF_OUT, pair_diff, matrix_bytes);
+        write_section(file, SDP2_PAIR_VALID_OUT, pair_valid, matrix_bytes);
+        write_section(file, SDP2_DISTANCE_OUT, distance, matrix_bytes);
+        write_section(file, SDP2_RESULT_OUT, &result, (u32)sizeof(result));
+        write_bytes(file, &end_marker, (DWORD)sizeof(end_marker));
+        CloseHandle(file);
+      }
+    }
+    return result;
+  }
 }
 
 double STDCALL SuperDistP2Capture(
