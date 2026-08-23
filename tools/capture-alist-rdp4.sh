@@ -3,10 +3,19 @@ set -euo pipefail
 
 project_dir=$(cd "$(dirname "$0")/.." && pwd)
 workspace_dir=$(cd "$project_dir/.." && pwd)
+dataset_name=${1:-Dataset0}
+if [[ ! $dataset_name =~ ^Dataset[0-9]+$ ]]; then
+  echo "invalid dataset name: $dataset_name" >&2
+  exit 2
+fi
 oracle_dir="$workspace_dir/sandbox/source-build/rdp-dll-smoke/rebuilt"
 mingw_bin="$workspace_dir/software/mingw/root/usr/bin"
 wine_dir="$workspace_dir/software/wine-11.13"
-run_dir="$project_dir/sandbox/alist-rdp4-capture/runtime"
+if [[ $dataset_name == Dataset0 ]]; then
+  run_dir="$project_dir/sandbox/alist-rdp4-capture/runtime"
+else
+  run_dir="$project_dir/sandbox/alist-rdp4-capture/$dataset_name"
+fi
 proxy_def="$project_dir/sandbox/alist-rdp4-capture/DNA5.capture.def"
 
 mkdir -p "$run_dir"
@@ -100,7 +109,7 @@ export WINEPREFIX="$workspace_dir/sandbox/rdp5-trace-prefix"
 
 (
   cd "$run_dir"
-  xvfb-run -a wine RDP5CL.exe -fDataset0.fas -ds > capture.stdout 2> capture.stderr
+  xvfb-run -a wine RDP5CL.exe -f"$dataset_name.fas" -ds > capture.stdout 2> capture.stderr
 )
 
 test -s "$run_dir/alist-rdp4-v1.bin"

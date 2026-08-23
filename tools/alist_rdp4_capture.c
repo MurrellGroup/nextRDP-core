@@ -907,7 +907,7 @@ int STDCALL FindSubSeqPB4Capture(
         FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
     if (file != INVALID_HANDLE_VALUE) {
       write_bytes(file, &header, (DWORD)sizeof(header));
-      write_section(file, FSP4_AH_IN, ah, (u32)(4 * (int)sizeof(int)));
+      write_section(file, FSP4_AH_IN, ah, (u32)(3 * (int)sizeof(int)));
       write_section(
           file, FSP4_COMPRESSED_SEQUENCE_IN, compressed_sequence,
           (u32)((compressed_sequence_ub + 1) * (next_no + 1)));
@@ -935,7 +935,7 @@ int STDCALL FindSubSeqPB4Capture(
       if (file != INVALID_HANDLE_VALUE) {
         const struct SectionHeader end_marker = {END_MARKER, 0};
         SetFilePointer(file, 0, (long *)0, FILE_END);
-        write_section(file, FSP4_AH_OUT, ah, (u32)(4 * (int)sizeof(int)));
+        write_section(file, FSP4_AH_OUT, ah, (u32)(3 * (int)sizeof(int)));
         write_section(
             file, FSP4_XOVER_SEQUENCE_OUT, xover_sequence,
             (u32)((xover_sequence_ub + 1) * 3));
@@ -1980,7 +1980,7 @@ int STDCALL FindSubSeqPB3Capture(
         FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
     if (file != INVALID_HANDLE_VALUE) {
       write_bytes(file, &header, (DWORD)sizeof(header));
-      write_section(file, FSP_AH_IN, ah, (u32)(4 * (int)sizeof(int)));
+      write_section(file, FSP_AH_IN, ah, (u32)(3 * (int)sizeof(int)));
       write_section(
           file, FSP_COMPRESSED_SEQUENCE_IN, compressed_sequence,
           (u32)((compressed_sequence_ub + 1) * (next_no + 1)));
@@ -2007,7 +2007,7 @@ int STDCALL FindSubSeqPB3Capture(
       if (file != INVALID_HANDLE_VALUE) {
         const struct SectionHeader end = {END_MARKER, 0};
         SetFilePointer(file, 0, (long *)0, FILE_END);
-        write_section(file, FSP_AH_OUT, ah, (u32)(4 * (int)sizeof(int)));
+        write_section(file, FSP_AH_OUT, ah, (u32)(3 * (int)sizeof(int)));
         write_section(
             file, FSP_XOVER_SEQUENCE_OUT, xover_sequence,
             (u32)((xover_sequence_ub + 1) * 3));

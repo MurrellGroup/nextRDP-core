@@ -58,3 +58,19 @@ node build/wasm/rdp-core.js fasta-distance-fixture \
   sandbox/alist-rdp4-capture/runtime/Dataset0.fas \
   sandbox/alist-rdp4-capture/runtime/alist-rdp4-v1.bin
 ```
+
+The following source-faithful UPGMA block is gated separately:
+
+```sh
+node build/wasm/rdp-core.js fasta-tree-distance-fixture \
+  sandbox/alist-rdp4-capture/runtime/Dataset0.fas \
+  sandbox/alist-rdp4-capture/runtime/alist-rdp4-v1.bin
+```
+
+The generated states are then wired into the actual `AlistRDP4` call and its
+first selected `XOver`/`FindSubSeqPB3` boundary. Run the all-dataset pre-scan
+matrix with:
+
+```sh
+./tools/check-all-pre-scan-parity.sh
+```

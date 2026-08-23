@@ -8,6 +8,7 @@
 #include "preprocess_fixture.hpp"
 #include "rdp_walk_fixture.hpp"
 #include "scan_state.hpp"
+#include "tree_state.hpp"
 
 #include <array>
 #include <cstdint>
@@ -167,6 +168,192 @@ int fasta_distance_fixture(
     }
     std::cout << "FASTA distance parity: PASS ("
               << (scan_state.next_no + 1) << " sequences)\n";
+    return 0;
+}
+
+int fasta_tree_distance_fixture(
+    const std::string& fasta_path, const std::string& fixture_path) {
+    const Dna5ScanPreprocessApi api{
+        &MathFuncs::MyMathFuncs::MakeAListP2,
+        &MathFuncs::MyMathFuncs::CountNucs,
+        &MathFuncs::MyMathFuncs::RecodeNucs,
+        &MathFuncs::MyMathFuncs::DoRecodeP,
+        &MathFuncs::MyMathFuncs::MakeCompressSeqP,
+    };
+    const auto scan_state = build_rdp_scan_state_from_fasta(fasta_path, api);
+    const auto distance_state = build_rdp_distance_state(
+        scan_state, 1, scan_state.sequence_length);
+    const auto actual =
+        build_rdp_upgma_tree_state(scan_state.next_no, distance_state);
+    const auto fixture = load_alist_rdp4_fixture(fixture_path);
+    const auto expected = alist_rdp4_typed_section<float>(
+        fixture, AlistRdp4Section::tree_distance_in);
+    if (actual.tree_distance != expected) {
+        const auto common =
+            std::min(actual.tree_distance.size(), expected.size());
+        std::size_t first = 0;
+        std::size_t mismatches =
+            actual.tree_distance.size() > common ?
+            actual.tree_distance.size() - common : expected.size() - common;
+        while (first < common && actual.tree_distance[first] == expected[first]) {
+            ++first;
+        }
+        for (std::size_t index = 0; index < common; ++index) {
+            if (actual.tree_distance[index] != expected[index]) ++mismatches;
+        }
+        std::cerr << "FASTA tree-distance parity: FAIL (mismatches="
+                  << mismatches << ", first difference=" << first;
+        if (first < common) {
+            std::cerr << ", actual value=" << actual.tree_distance[first]
+                      << ", expected value=" << expected[first];
+        }
+        std::cerr << ")\n";
+        return 1;
+    }
+    std::cout << "FASTA tree-distance parity: PASS ("
+              << (scan_state.next_no + 1) << " sequences)\n";
+    return 0;
+}
+
+int fasta_alist_rdp4_fixture(
+    const std::string& fasta_path, const std::string& fixture_path) {
+    const Dna5ScanPreprocessApi api{
+        &MathFuncs::MyMathFuncs::MakeAListP2,
+        &MathFuncs::MyMathFuncs::CountNucs,
+        &MathFuncs::MyMathFuncs::RecodeNucs,
+        &MathFuncs::MyMathFuncs::DoRecodeP,
+        &MathFuncs::MyMathFuncs::MakeCompressSeqP,
+    };
+    auto scan_state = build_rdp_scan_state_from_fasta(fasta_path, api);
+    auto distance_state = build_rdp_distance_state(
+        scan_state, 1, scan_state.sequence_length);
+    auto tree_state =
+        build_rdp_upgma_tree_state(scan_state.next_no, distance_state);
+    const auto fixture = load_alist_rdp4_fixture(fixture_path);
+    const auto& h = fixture.header;
+    if (scan_state.next_no != h.next_no ||
+        scan_state.sequence_length != h.sequence_length ||
+        scan_state.analysis_list_last != h.list_length ||
+        scan_state.compressed_sequence_ub != h.compressed_sequence_ub) {
+        std::cerr << "FASTA AlistRDP4 parity: FAIL (state dimensions)\n";
+        return 1;
+    }
+
+    auto store_lpv = alist_rdp4_typed_section<double>(
+        fixture, AlistRdp4Section::store_lpv_in);
+    auto redo_list = alist_rdp4_typed_section<unsigned char>(
+        fixture, AlistRdp4Section::redo_list_in);
+    auto fss_rdp = alist_rdp4_typed_section<unsigned char>(
+        fixture, AlistRdp4Section::fss_rdp_in);
+    auto probability_estimate = alist_rdp4_typed_section<double>(
+        fixture, AlistRdp4Section::probability_estimate_in);
+    auto fact_three = alist_rdp4_typed_section<double>(
+        fixture, AlistRdp4Section::fact_three_in);
+    auto fact = alist_rdp4_typed_section<double>(
+        fixture, AlistRdp4Section::fact_in);
+    const auto expected_redo = alist_rdp4_typed_section<unsigned char>(
+        fixture, AlistRdp4Section::redo_list_out);
+    const auto expected_store = alist_rdp4_typed_section<double>(
+        fixture, AlistRdp4Section::store_lpv_out);
+    const auto expected_result = alist_rdp4_typed_section<int>(
+        fixture, AlistRdp4Section::result_out);
+
+    const int result = MathFuncs::MyMathFuncs::AlistRDP4(
+        h.store_lpv_ub, store_lpv.data(), scan_state.analysis_list.data(),
+        h.list_length, h.start, h.end, h.next_no, h.sub_threshold,
+        redo_list.data(), h.circular, h.mc_correction, h.mc_flag,
+        h.lowest_probability, h.target_x, h.sequence_length, h.short_output,
+        h.distance_ub, distance_state.distance.data(), h.tree_distance_ub,
+        tree_state.tree_distance.data(), h.fss_rdp_ub,
+        h.compressed_sequence_ub, scan_state.compressed_sequence.data(),
+        scan_state.sequence_data.data(), h.xover_window, h.xover_window_x,
+        fss_rdp.data(), h.probability_file_flag, h.probability_one_ub,
+        h.probability_two_ub, probability_estimate.data(), h.fact_three_ub,
+        fact_three.data(), fact.data());
+    const bool matches = expected_result.size() == 1 &&
+        result == expected_result[0] && redo_list == expected_redo &&
+        store_lpv == expected_store;
+    if (!matches) {
+        std::cerr << "FASTA AlistRDP4 parity: FAIL (result=" << result
+                  << ", redo=" << (redo_list == expected_redo)
+                  << ", store=" << (store_lpv == expected_store) << ")\n";
+        return 1;
+    }
+    std::cout << "FASTA AlistRDP4 parity: PASS ("
+              << (scan_state.analysis_list_last + 1) << " triplets)\n";
+    return 0;
+}
+
+int fasta_first_xover_fixture(
+    const std::string& fasta_path, const std::string& alist_fixture_path,
+    const std::string& find_subseq_fixture_path) {
+    const Dna5ScanPreprocessApi api{
+        &MathFuncs::MyMathFuncs::MakeAListP2,
+        &MathFuncs::MyMathFuncs::CountNucs,
+        &MathFuncs::MyMathFuncs::RecodeNucs,
+        &MathFuncs::MyMathFuncs::DoRecodeP,
+        &MathFuncs::MyMathFuncs::MakeCompressSeqP,
+    };
+    auto scan_state = build_rdp_scan_state_from_fasta(fasta_path, api);
+    const auto alist_fixture = load_alist_rdp4_fixture(alist_fixture_path);
+    const auto redo = alist_rdp4_typed_section<unsigned char>(
+        alist_fixture, AlistRdp4Section::redo_list_out);
+    int first_redo = -1;
+    for (int triplet = alist_fixture.header.start;
+         triplet <= alist_fixture.header.end; ++triplet) {
+        if (redo[triplet] == 1) {
+            first_redo = triplet;
+            break;
+        }
+    }
+    if (first_redo < 0) {
+        std::cerr << "FASTA first-XOver parity: FAIL (no redo triplet)\n";
+        return 1;
+    }
+
+    const std::array<int, 3> sequences{
+        scan_state.analysis_list[0 + first_redo * 3],
+        scan_state.analysis_list[1 + first_redo * 3],
+        scan_state.analysis_list[2 + first_redo * 3],
+    };
+    const auto fixture =
+        load_find_subseq_pb3_fixture(find_subseq_fixture_path);
+    const auto& h = fixture.header;
+    if (sequences[0] != h.seq1 || sequences[1] != h.seq2 ||
+        sequences[2] != h.seq3 || h.next_no != scan_state.next_no ||
+        h.sequence_length != scan_state.sequence_length ||
+        h.compressed_sequence_ub != scan_state.compressed_sequence_ub) {
+        std::cerr << "FASTA first-XOver parity: FAIL (selected triplet/state)\n";
+        return 1;
+    }
+    std::array<int, 3> ah{};
+    std::vector<char> xover_sequence(
+        static_cast<std::size_t>(h.xover_sequence_ub + 1) * 3, 0);
+    auto fss_rdp = alist_rdp4_typed_section<unsigned char>(
+        alist_fixture, AlistRdp4Section::fss_rdp_in);
+    const auto expected_ah = find_subseq_pb3_section<int>(fixture, 101);
+    const auto expected_xover = find_subseq_pb3_section<char>(fixture, 102);
+    const auto expected_result = find_subseq_pb3_section<int>(fixture, 103);
+    const int result = MathFuncs::MyMathFuncs::FindSubSeqPB3(
+        ah.data(), h.fss_ub, h.xover_window, h.compressed_sequence_ub,
+        h.sequence_length, h.next_no, h.seq1, h.seq2, h.seq3,
+        scan_state.compressed_sequence.data(), h.xover_sequence_ub,
+        xover_sequence.data(), fss_rdp.data());
+    const std::vector<int> actual_ah(ah.begin(), ah.end());
+    if (expected_result.size() != 1 || result != expected_result[0] ||
+        actual_ah != expected_ah || xover_sequence != expected_xover) {
+        std::cerr << "FASTA first-XOver parity: FAIL (result=" << result
+                  << ", AH=" << (actual_ah == expected_ah)
+                  << ", window=" << (xover_sequence == expected_xover)
+                  << ", actual AH=" << actual_ah[0] << ',' << actual_ah[1]
+                  << ',' << actual_ah[2] << ", expected AH="
+                  << expected_ah[0] << ',' << expected_ah[1] << ','
+                  << expected_ah[2] << ")\n";
+        return 1;
+    }
+    std::cout << "FASTA first-XOver parity: PASS (triplet "
+              << sequences[0] << ',' << sequences[1] << ',' << sequences[2]
+              << ", informative length " << result << ")\n";
     return 0;
 }
 
@@ -334,6 +521,18 @@ int main(int argc, char** argv) {
         std::string_view(argv[1]) == "fasta-distance-fixture") {
         return fasta_distance_fixture(argv[2], argv[3]);
     }
+    if (argc == 4 &&
+        std::string_view(argv[1]) == "fasta-tree-distance-fixture") {
+        return fasta_tree_distance_fixture(argv[2], argv[3]);
+    }
+    if (argc == 4 &&
+        std::string_view(argv[1]) == "fasta-alist-rdp4-fixture") {
+        return fasta_alist_rdp4_fixture(argv[2], argv[3]);
+    }
+    if (argc == 5 &&
+        std::string_view(argv[1]) == "fasta-first-xover-fixture") {
+        return fasta_first_xover_fixture(argv[2], argv[3], argv[4]);
+    }
     if (argc == 3 && std::string_view(argv[1]) == "alist-rdp4-fixture") {
         return alist_rdp4_fixture(argv[2]);
     }
@@ -403,6 +602,9 @@ int main(int argc, char** argv) {
         << "usage: rdp-core <self-test|distance-fixture|preprocess-fixture>\n"
         << "       rdp-core fasta-preprocess-fixture <alignment.fasta> <alist-capture.bin>\n"
         << "       rdp-core fasta-distance-fixture <alignment.fasta> <alist-capture.bin>\n"
+        << "       rdp-core fasta-tree-distance-fixture <alignment.fasta> <alist-capture.bin>\n"
+        << "       rdp-core fasta-alist-rdp4-fixture <alignment.fasta> <alist-capture.bin>\n"
+        << "       rdp-core fasta-first-xover-fixture <alignment.fasta> <alist-capture.bin> <find-subseq-pb3-capture.bin>\n"
         << "       rdp-core alist-rdp4-fixture <capture.bin>\n"
         << "       rdp-core find-subseq-pb3-fixture <capture.bin>\n"
         << "       rdp-core find-subseq-pb4-fixture <capture.bin>\n"

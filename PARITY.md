@@ -51,3 +51,16 @@ resulting complete 25-by-25 distance matrix is byte-identical to the live
 matrix passed into `AlistRDP4`. The legacy helper bodies are implemented but
 remain collectively gated at this shared-state boundary until their individual
 `DNA.dll` calls are captured.
+
+The following UPGMA block now starts from that generated distance matrix and
+ports `MakeDistanceBakB`, `MakeDistMapX`, `ShortestDistB`,
+`AddSeqToUPGMA`, `UpdateDistMapX`, and `TreeDist2` in their VB call order.
+The resulting complete `TreeDistance` matrix is byte-identical to the live
+matrix passed into `AlistRDP4`.
+
+With those generated matrices substituted for captured state, `AlistRDP4`
+still produces the byte-identical redo list and `StoreLPV`. The first redo
+triplet selected from that list also drives generated `CompressSeq` into
+`FindSubSeqPB3` with byte-identical `AH`, window state, and informative length.
+The pre-scan chain through `AlistRDP4` passes independently on all ten supplied
+datasets; run `tools/check-all-pre-scan-parity.sh` for that table.

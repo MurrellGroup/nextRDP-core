@@ -21,4 +21,14 @@ node "$project_dir/build/wasm/rdp-core.js" \
   fasta-distance-fixture "$fixture_dir/Dataset0.fas" \
   "$fixture_dir/alist-rdp4-v1.bin"
 node "$project_dir/build/wasm/rdp-core.js" \
+  fasta-tree-distance-fixture "$fixture_dir/Dataset0.fas" \
+  "$fixture_dir/alist-rdp4-v1.bin"
+node "$project_dir/build/wasm/rdp-core.js" \
+  fasta-alist-rdp4-fixture "$fixture_dir/Dataset0.fas" \
+  "$fixture_dir/alist-rdp4-v1.bin"
+node "$project_dir/build/wasm/rdp-core.js" \
+  fasta-first-xover-fixture "$fixture_dir/Dataset0.fas" \
+  "$fixture_dir/alist-rdp4-v1.bin" \
+  "$fixture_dir/find-subseq-pb3-v1.bin"
+node "$project_dir/build/wasm/rdp-core.js" \
   oracle-fixture-chain "$fixture_dir"
