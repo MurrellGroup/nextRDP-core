@@ -5,6 +5,7 @@
 #include "event_state_fixture.hpp"
 #include "find_subseq_pb3_fixture.hpp"
 #include "identification_fixture.hpp"
+#include "identification_state.hpp"
 #include "preprocess_fixture.hpp"
 #include "rdp_walk_fixture.hpp"
 #include "scan_state.hpp"
@@ -863,7 +864,9 @@ int fasta_all_redo_events_fixture(
     const std::string& ufdist_fixture_path,
     const std::string& super_dist_p2_fixture_path,
     const std::string& check_matrix_fixture_path,
-    const std::string& make_nj_fixture_path) {
+    const std::string& make_nj_fixture_path,
+    const std::string& make_sdmp_fixture_path,
+    const std::array<std::string, 3>& fill_rmat_fixture_paths) {
     const Dna5ScanPreprocessApi preprocess_api{
         &MathFuncs::MyMathFuncs::MakeAListP2,
         &MathFuncs::MyMathFuncs::CountNucs,
@@ -1592,6 +1595,195 @@ int fasta_all_redo_events_fixture(
                   << (native_nj_result.empty() ? -1 : native_nj_result[0])
                   << '\n';
     }
+
+    const char make_sdmp_magic[8] = {
+        'M', 'A', 'K', 'E', 'S', 'D', 'M', 'P'};
+    const auto make_sdmp_fixture =
+        load_rdp_sectioned_fixture<MakeSDMP2CaptureHeader>(
+            make_sdmp_fixture_path, make_sdmp_magic);
+    const auto breakpoint_flanks = make_rdp_breakpoint_flanks(
+        scan_state, selected.beginning, selected.ending,
+        {selected_sequences[0], selected_sequences[1],
+         selected_sequences[2]});
+    std::vector<int> start_positions{
+        breakpoint_flanks.positions[0], selected.beginning,
+        breakpoint_flanks.positions[2], selected.ending + 1,
+        selected.beginning};
+    std::vector<int> end_positions{
+        selected.beginning - 1, breakpoint_flanks.positions[1],
+        selected.ending, breakpoint_flanks.positions[3], selected.ending};
+    for (int region = 0; region < 4; ++region) {
+        if (start_positions[region] > scan_state.sequence_length) {
+            start_positions[region] -= scan_state.sequence_length;
+        } else if (start_positions[region] < 1) {
+            start_positions[region] += scan_state.sequence_length;
+        }
+        if (end_positions[region] > scan_state.sequence_length) {
+            end_positions[region] -= scan_state.sequence_length;
+        } else if (end_positions[region] < 1) {
+            end_positions[region] += scan_state.sequence_length;
+        }
+    }
+    std::vector<int> comparison_matrix{1, 0, 0, 2, 2, 1};
+    const auto alignment_cells =
+        static_cast<std::size_t>(matrix_stride) *
+        (scan_state.sequence_length + 1);
+    std::vector<unsigned char> missing_data(alignment_cells, 0);
+    std::vector<double> summary_matrix(
+        static_cast<std::size_t>(9) * matrix_stride, 0.0);
+    std::vector<double> regional_distance_matrix(
+        static_cast<std::size_t>(45) * matrix_stride, 0.0);
+    const auto native_sdmp_sequence_data =
+        rdp_fixture_section<short>(make_sdmp_fixture, 6);
+    const bool sdmp_sequence_data_matches =
+        scan_state.sequence_data.size() >= native_sdmp_sequence_data.size() &&
+        std::equal(native_sdmp_sequence_data.begin(),
+                   native_sdmp_sequence_data.end(),
+                   scan_state.sequence_data.begin());
+    const bool make_sdmp_inputs_match =
+        make_sdmp_fixture.header.next_no == scan_state.next_no &&
+        make_sdmp_fixture.header.sequence_length ==
+            scan_state.sequence_length &&
+        start_positions ==
+            rdp_fixture_section<int>(make_sdmp_fixture, 1) &&
+        end_positions == rdp_fixture_section<int>(make_sdmp_fixture, 2) &&
+        selected_sequences ==
+            rdp_fixture_section<int>(make_sdmp_fixture, 3) &&
+        comparison_matrix ==
+            rdp_fixture_section<int>(make_sdmp_fixture, 4) &&
+        missing_data ==
+            rdp_fixture_section<unsigned char>(make_sdmp_fixture, 5) &&
+        sdmp_sequence_data_matches &&
+        summary_matrix ==
+            rdp_fixture_section<double>(make_sdmp_fixture, 7) &&
+        regional_distance_matrix ==
+            rdp_fixture_section<double>(make_sdmp_fixture, 8);
+    const int make_sdmp_result = MathFuncs::MyMathFuncs::MakeSDMP2(
+        scan_state.next_no, scan_state.sequence_length,
+        start_positions.data(), end_positions.data(),
+        selected_sequences.data(), comparison_matrix.data(),
+        missing_data.data(), scan_state.sequence_data.data(),
+        summary_matrix.data(), regional_distance_matrix.data());
+    const auto native_make_sdmp_result =
+        rdp_fixture_section<int>(make_sdmp_fixture, 103);
+    const bool make_sdmp_matches = make_sdmp_inputs_match &&
+        native_make_sdmp_result.size() == 1 &&
+        make_sdmp_result == native_make_sdmp_result[0] &&
+        summary_matrix ==
+            rdp_fixture_section<double>(make_sdmp_fixture, 101) &&
+        regional_distance_matrix ==
+            rdp_fixture_section<double>(make_sdmp_fixture, 102);
+    if (!make_sdmp_matches) {
+        int differing_rows = 0;
+        int differing_cells = 0;
+        int ufdist_to_sdmp_cells = 0;
+        std::array<int, 256> recode_counts{};
+        for (int sequence = 0; sequence <= scan_state.next_no; ++sequence) {
+            bool row_differs = false;
+            for (int position = 0; position <= scan_state.sequence_length;
+                 ++position) {
+                const auto offset = static_cast<std::size_t>(position) +
+                    static_cast<std::size_t>(sequence) *
+                        (scan_state.sequence_length + 1);
+                if (scan_state.sequence_data[offset] !=
+                    native_sdmp_sequence_data[offset]) {
+                    row_differs = true;
+                    ++differing_cells;
+                    const int key =
+                        (scan_state.sequence_data[offset] & 15) * 16 +
+                        (native_sdmp_sequence_data[offset] & 15);
+                    ++recode_counts[key];
+                }
+                if (native_sequence_data[offset] !=
+                    native_sdmp_sequence_data[offset]) {
+                    ++ufdist_to_sdmp_cells;
+                }
+            }
+            if (row_differs) ++differing_rows;
+        }
+        std::cerr << "MakeSDMP2 integration mismatch: inputs="
+                  << make_sdmp_inputs_match << " SP=";
+        for (const int position : start_positions) {
+            std::cerr << position << ',';
+        }
+        std::cerr << " EP=";
+        for (const int position : end_positions) {
+            std::cerr << position << ',';
+        }
+        std::cerr << " missing="
+                  << (missing_data == rdp_fixture_section<unsigned char>(
+                          make_sdmp_fixture, 5))
+                  << " seqnum="
+                  << sdmp_sequence_data_matches
+                  << " seqnum-diff=" << differing_rows << "rows/"
+                  << differing_cells << "cells ufdist-to-sdmp="
+                  << ufdist_to_sdmp_cells << " sizes="
+                  << scan_state.sequence_data.size() << '/'
+                  << native_sdmp_sequence_data.size() << " recodes=";
+        for (int key = 0; key < 256; ++key) {
+            if (recode_counts[key] != 0) {
+                std::cerr << (key / 16) << '>' << (key % 16) << ':'
+                          << recode_counts[key] << ',';
+            }
+        }
+        std::cerr
+                  << " result=" << make_sdmp_result << '/'
+                  << (native_make_sdmp_result.empty() ?
+                          -1 : native_make_sdmp_result[0])
+                  << '\n';
+    }
+
+    bool fill_rmat_matches = make_sdmp_matches;
+    std::vector<unsigned char> correlation_positions(2, 0);
+    for (int target = 0; target < 3; ++target) {
+        const char fill_rmat_magic[8] = {
+            'F', 'I', 'L', 'L', 'R', 'M', 'A', 'T'};
+        const auto fill_fixture =
+            load_rdp_sectioned_fixture<FillRmatCaptureHeader>(
+                fill_rmat_fixture_paths[target], fill_rmat_magic);
+        const auto& fill_header = fill_fixture.header;
+        std::vector<double> correlation_matrix(
+            static_cast<std::size_t>(3) * 6 * matrix_stride, 0.0);
+        const bool fill_inputs_match = fill_header.y == target &&
+            fill_header.next_no == scan_state.next_no &&
+            fill_header.result_matrix_ub1 == 2 &&
+            fill_header.result_matrix_ub2 == 5 &&
+            fill_header.distance_matrix_ub1 == 2 &&
+            fill_header.distance_matrix_ub2 == 4 &&
+            fill_header.distance_matrix_ub3 == scan_state.next_no &&
+            correlation_matrix ==
+                rdp_fixture_section<double>(fill_fixture, 1) &&
+            regional_distance_matrix ==
+                rdp_fixture_section<double>(fill_fixture, 2) &&
+            correlation_positions ==
+                rdp_fixture_section<unsigned char>(fill_fixture, 3);
+        const int fill_result = MathFuncs::MyMathFuncs::FillRmat(
+            target, scan_state.next_no, 2, 5, 2, 4,
+            scan_state.next_no, correlation_matrix.data(),
+            regional_distance_matrix.data(), correlation_positions.data());
+        const auto native_fill_result =
+            rdp_fixture_section<int>(fill_fixture, 104);
+        const bool target_matches = fill_inputs_match &&
+            native_fill_result.size() == 1 &&
+            fill_result == native_fill_result[0] &&
+            correlation_matrix ==
+                rdp_fixture_section<double>(fill_fixture, 101) &&
+            regional_distance_matrix ==
+                rdp_fixture_section<double>(fill_fixture, 102) &&
+            correlation_positions ==
+                rdp_fixture_section<unsigned char>(fill_fixture, 103);
+        if (!target_matches) {
+            std::cerr << "FillRmat integration mismatch: Y=" << target
+                      << " inputs=" << fill_inputs_match << " positions="
+                      << static_cast<int>(correlation_positions[0]) << ','
+                      << static_cast<int>(correlation_positions[1])
+                      << " result=" << fill_result << '/'
+                      << (native_fill_result.empty() ?
+                              -1 : native_fill_result[0])
+                      << '\n';
+        }
+        fill_rmat_matches = fill_rmat_matches && target_matches;
+    }
     std::cout << "RDP all-redo raw event scan: " << events.scanned_triplets
               << " triplets (Alist return " << redo_count << "), "
               << events.significant_candidates << " significant intervals, "
@@ -1611,11 +1803,15 @@ int fasta_all_redo_events_fixture(
               << ", CheckMatrix "
               << (check_matrix_matches ? "PASS" : "FAIL")
               << ", first NJ tree "
-              << (make_nj_matches ? "PASS" : "FAIL") << "\n";
+              << (make_nj_matches ? "PASS" : "FAIL")
+              << ", MakeSDMP2 "
+              << (make_sdmp_matches ? "PASS" : "FAIL")
+              << ", FillRmat "
+              << (fill_rmat_matches ? "PASS" : "FAIL") << "\n";
     return make_test_structure_matches && first_selection_matches &&
             ufdist_matches && region_distance_matches &&
             check_matrix_matches && make_nj_matches ?
-        0 : 1;
+        (make_sdmp_matches && fill_rmat_matches ? 0 : 1) : 1;
 }
 
 int alist_rdp4_fixture(const std::string& path) {
@@ -1800,11 +1996,11 @@ int main(int argc, char** argv) {
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
             argv[9], argv[10], argv[11]);
     }
-    if (argc == 11 &&
+    if (argc == 15 &&
         std::string_view(argv[1]) == "fasta-all-redo-events-fixture") {
         return fasta_all_redo_events_fixture(
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
-            argv[9], argv[10]);
+            argv[9], argv[10], argv[11], {argv[12], argv[13], argv[14]});
     }
     if (argc == 3 && std::string_view(argv[1]) == "alist-rdp4-fixture") {
         return alist_rdp4_fixture(argv[2]);

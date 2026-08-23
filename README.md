@@ -82,7 +82,7 @@ matrix for this connected prefix with:
 ```
 
 Run the all-redo event-state, first-selection, regional-distance,
-`CheckMatrixP`, and first-NJ-tree parity table with:
+`CheckMatrixP`, first-NJ-tree, `MakeSDMP2`, and `FillRmat` parity table with:
 
 ```sh
 ./tools/check-all-event-state-parity.sh

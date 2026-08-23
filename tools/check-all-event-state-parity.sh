@@ -9,8 +9,8 @@ export PATH="$workspace_dir/software/cmake/usr/bin:$PATH"
 export LD_LIBRARY_PATH="$workspace_dir/software/cmake/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
 cmake --build "$project_dir/build/wasm" --parallel 1 >/dev/null
 
-printf '| Dataset | Redo triplets | Stored events | Row counts | Event identities | MakeTestPVs | First selection | UFDist | Region distance | CheckMatrix | First NJ tree |\n'
-printf '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n'
+printf '| Dataset | Redo triplets | Stored events | Row counts | Event identities | MakeTestPVs | First selection | UFDist | Region distance | CheckMatrix | First NJ tree | MakeSDMP2 | FillRmat |\n'
+printf '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n'
 for number in {0..9}; do
   dataset="Dataset$number"
   if [[ $number == 0 ]]; then
@@ -28,14 +28,19 @@ for number in {0..9}; do
     "$fixture_dir/ufdist-v1.bin" \
     "$fixture_dir/super-dist-p2-v1.bin" \
     "$fixture_dir/check-matrix-p-v1.bin" \
-    "$fixture_dir/make-nj-trees-p2-v1.bin")
-  if [[ $output =~ scan:\ ([0-9]+)\ triplets.*\ ([0-9]+)\ stored\ candidates.*\ ([0-9]+/[0-9]+)\ row\ counts\ equal,\ ([0-9]+/[0-9]+)\ event\ identities\ exact.*MakeTestPVs\ (PASS|FAIL),\ first\ selection\ (PASS|FAIL).*UFDist\ (PASS|FAIL),\ region\ distance\ (PASS|FAIL),\ CheckMatrix\ (PASS|FAIL),\ first\ NJ\ tree\ (PASS|FAIL) ]]; then
-    printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' \
+    "$fixture_dir/make-nj-trees-p2-v1.bin" \
+    "$fixture_dir/make-sdmp2-v1.bin" \
+    "$fixture_dir/fill-rmat-y0-v1.bin" \
+    "$fixture_dir/fill-rmat-y1-v1.bin" \
+    "$fixture_dir/fill-rmat-y2-v1.bin")
+  if [[ $output =~ scan:\ ([0-9]+)\ triplets.*\ ([0-9]+)\ stored\ candidates.*\ ([0-9]+/[0-9]+)\ row\ counts\ equal,\ ([0-9]+/[0-9]+)\ event\ identities\ exact.*MakeTestPVs\ (PASS|FAIL),\ first\ selection\ (PASS|FAIL).*UFDist\ (PASS|FAIL),\ region\ distance\ (PASS|FAIL),\ CheckMatrix\ (PASS|FAIL),\ first\ NJ\ tree\ (PASS|FAIL),\ MakeSDMP2\ (PASS|FAIL),\ FillRmat\ (PASS|FAIL) ]]; then
+    printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' \
       "$dataset" "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" \
       "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}" \
       "${BASH_REMATCH[5]}" "${BASH_REMATCH[6]}" \
       "${BASH_REMATCH[7]}" "${BASH_REMATCH[8]}" \
-      "${BASH_REMATCH[9]}" "${BASH_REMATCH[10]}"
+      "${BASH_REMATCH[9]}" "${BASH_REMATCH[10]}" \
+      "${BASH_REMATCH[11]}" "${BASH_REMATCH[12]}"
   else
     printf '%s\n' "$output" >&2
     exit 1

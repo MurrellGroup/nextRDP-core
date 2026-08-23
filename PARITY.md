@@ -100,6 +100,12 @@ otherwise equivalent stored Jukes-Cantor cells are compared at `1e-6`; the
 delayed-rounding implementation is required because rounding the apparent
 source `float` temporaries changes the native tied-tree merge order.
 
+From the same generated event and alignment, the port now also executes the
+literal circular `MakeBPosLR` flank walk, constructs the five VB correlation
+regions and fixed triplet comparison matrix, and reaches `MakeSDMP2` with the
+exact native input state. Its complete `SDM` and `DistMat` outputs and the
+three sequential `FillRmat` branches are byte-identical on all ten datasets.
+
 The orchestration preserves two otherwise easy-to-collapse state values:
 RDP passes the FASTA length to `FindSubSeqPB3` but the FASTA length plus one to
 `XOHomologyP`, and its initial tree-selected `HighHomol` can differ from the

@@ -21,6 +21,7 @@ target_compile_options(rdp_dna5_exact PRIVATE
 
 add_executable(rdp-core
     src/distance_state.cpp
+    src/identification_state.cpp
     src/main.cpp
     src/scan_state.cpp
     src/tree_state.cpp
