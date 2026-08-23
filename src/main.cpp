@@ -876,7 +876,9 @@ int fasta_all_redo_events_fixture(
     const std::string& phpr_fixture_path,
     const std::string& score_support_fixture_path,
     const std::string& check_pattern_fixture_path,
-    const std::string& cmaxd_fixture_path) {
+    const std::string& cmaxd_fixture_path,
+    const std::string& consensus_fixture_path,
+    const std::string& collect_events_fixture_path) {
     const Dna5ScanPreprocessApi preprocess_api{
         &MathFuncs::MyMathFuncs::MakeAListP2,
         &MathFuncs::MyMathFuncs::CountNucs,
@@ -2541,6 +2543,7 @@ int fasta_all_redo_events_fixture(
         phpr_fixture.header.next_no == scan_state.next_no &&
         phpr_fixture.header.calls >= 2 &&
         phpr_fixture.header.calls <= 3;
+    std::array<RdpPhylProScoreState, 3> phpr_states;
     for (unsigned int call_index = 0;
          call_index < phpr_fixture.header.calls; ++call_index) {
         const int base = static_cast<int>(call_index) * 1000;
@@ -2570,6 +2573,7 @@ int fasta_all_redo_events_fixture(
                 scan_state.next_no, offset_values[0], done_this,
                 {call_sequences[0], call_sequences[1], call_sequences[2]},
                 first_matrix, second_matrix);
+            phpr_states[call_index] = actual;
         }
         const bool call_matches = dimensions_match &&
             actual.trace_involved == expected_trace &&
@@ -2626,6 +2630,7 @@ int fasta_all_redo_events_fixture(
         score_support_fixture.header.done_calls == 2 &&
         score_support_fixture.header.group_calls == 3 &&
         score_support_fixture.header.score_calls == 3;
+    std::array<std::vector<int>, 2> score_filters;
     for (unsigned int call_index = 0; call_index < 2; ++call_index) {
         const int base = static_cast<int>(call_index) * 1000;
         const auto call_sequences =
@@ -2650,6 +2655,7 @@ int fasta_all_redo_events_fixture(
                 scan_state.next_no,
                 {call_sequences[0], call_sequences[1], call_sequences[2]},
                 raw_background, ancestor_background, ancestor_region);
+            score_filters[call_index] = actual;
         }
         const bool call_matches = dimensions_match &&
             std::all_of(done_before.begin(), done_before.end(),
@@ -2663,6 +2669,7 @@ int fasta_all_redo_events_fixture(
         score_support_matches = score_support_matches && call_matches;
     }
     std::array<RdpTripletGroupState, 3> triplet_groups;
+    std::array<double, 3> triplet_scores{};
     for (unsigned int call_index = 0; call_index < 3; ++call_index) {
         const int base = 10000 + static_cast<int>(call_index) * 1000;
         const auto raw_header =
@@ -2769,6 +2776,7 @@ int fasta_all_redo_events_fixture(
                 role, scan_state.next_no,
                 {call_sequences[0], call_sequences[1], call_sequences[2]},
                 first_matrix, second_matrix, inputs);
+            triplet_scores[role] = scores[role];
         }
         const bool call_matches = dimensions_match &&
             expected_result[0] == 1 &&
@@ -2842,6 +2850,11 @@ int fasta_all_redo_events_fixture(
     }
     bool final_trim_prefix_matches = true;
     bool final_trim_runs = false;
+    RdpFinalTrimState downstream_candidates;
+    downstream_candidates.candidate_last = actual_resolution.candidates.last;
+    downstream_candidates.candidate_list = actual_resolution.candidates.list;
+    downstream_candidates.acceptable_sequences =
+        pattern_state.acceptable_sequences;
     std::array<int, 3> expected_trim_last{};
     std::vector<int> expected_trim_list;
     for (unsigned int call_index = 6;
@@ -2889,6 +2902,7 @@ int fasta_all_redo_events_fixture(
             background_adjusted, region_adjusted, first_direct_small,
             second_direct_small, first_adjusted_small, second_adjusted_small,
             first_collapsed, second_collapsed, std::move(trim_prefix), true);
+        downstream_candidates = trim_prefix;
         final_trim_prefix_matches =
             trim_prefix.candidate_last == expected_trim_last;
         for (int role = 0; role < 3 && final_trim_prefix_matches; ++role) {
@@ -3077,6 +3091,325 @@ int fasta_all_redo_events_fixture(
         }
         std::cerr << '\n';
     }
+    const char consensus_magic[8] = {
+        'C', 'O', 'N', 'S', 'C', 'V', '1', '\0'};
+    const auto consensus_fixture =
+        load_rdp_sectioned_fixture<ConsensusCsvCaptureHeader>(
+            consensus_fixture_path, consensus_magic);
+    const auto consensus_values =
+        rdp_fixture_section<double>(consensus_fixture, 1);
+    if (consensus_values.size() != 120) {
+        throw std::runtime_error("consensus fixture must contain 120 values");
+    }
+    const auto csv_value = [&](const int metric, const int role) {
+        return consensus_values[metric * 3 + role];
+    };
+    RdpConsensusInputs consensus_inputs;
+    consensus_inputs.next_no = scan_state.next_no;
+    consensus_inputs.permanent_next_no = scan_state.next_no;
+    consensus_inputs.comparison_matrix = correlation_comparison;
+    for (int role = 0; role < 3; ++role) {
+        consensus_inputs.list_correlation[role] = csv_value(0, role);
+        consensus_inputs.simple_distance_strength[role] = csv_value(1, role);
+        consensus_inputs.simple_distance_score[role] =
+            static_cast<int>(csv_value(2, role));
+        consensus_inputs.phylpro[role] = csv_value(3, role);
+        consensus_inputs.phylpro_secondary[role] = csv_value(4, role);
+        consensus_inputs.phylpro_collapsed[role] = csv_value(5, role);
+        consensus_inputs.subtree_score[role] = csv_value(6, role);
+        consensus_inputs.split_distance[role] = csv_value(7, role);
+        consensus_inputs.outlier_index[role] =
+            static_cast<int>(csv_value(8, role));
+        consensus_inputs.subtree_phylpro[role] = csv_value(9, role);
+        consensus_inputs.subtree_score_secondary[role] = csv_value(10, role);
+        consensus_inputs.subtree_phylpro_secondary[role] = csv_value(11, role);
+        consensus_inputs.compatibility[role] =
+            static_cast<int>(csv_value(14, role));
+        consensus_inputs.compatibility_secondary[role] =
+            static_cast<int>(csv_value(15, role));
+        consensus_inputs.compatibility_tertiary[role] =
+            static_cast<int>(csv_value(16, role));
+        consensus_inputs.compatibility_quaternary[role] =
+            static_cast<int>(csv_value(17, role));
+        consensus_inputs.region_compatibility[role] =
+            static_cast<int>(csv_value(18, role));
+        consensus_inputs.region_compatibility_secondary[role] =
+            static_cast<int>(csv_value(19, role));
+        consensus_inputs.region_compatibility_tertiary[role] =
+            static_cast<int>(csv_value(20, role));
+        consensus_inputs.region_compatibility_quaternary[role] =
+            static_cast<int>(csv_value(21, role));
+        consensus_inputs.post_trim_compatibility[role] =
+            static_cast<int>(csv_value(24, role));
+        consensus_inputs.post_trim_region_compatibility[role] =
+            static_cast<int>(csv_value(25, role));
+        consensus_inputs.triplet_score[role] = csv_value(26, role);
+        consensus_inputs.bad_distances[role] = csv_value(27, role);
+        consensus_inputs.outside_list[role] =
+            static_cast<int>(csv_value(28, role));
+        consensus_inputs.list_correlation_secondary[role] =
+            csv_value(29, role);
+        consensus_inputs.list_correlation_tertiary[role] =
+            csv_value(30, role);
+        consensus_inputs.outlier_check[role] =
+            static_cast<int>(csv_value(34, role));
+        consensus_inputs.ranks[role] = {
+            static_cast<int>(csv_value(37, role)),
+            static_cast<int>(csv_value(38, role))};
+        consensus_inputs.maximum_distance[role] =
+            static_cast<float>(csv_value(39, role));
+    }
+    const auto split_distances = calculate_rdp_split_distances(
+        scan_state.next_no, correlation_sequences, role_lists.inside,
+        first_adjusted_small, generated_matrices.background,
+        generated_matrices.event_region, score_filters[0]);
+    const auto simple_distances = calculate_rdp_simple_distances(
+        scan_state.next_no, correlation_sequences, role_lists.inside,
+        actual_resolution.candidates.last,
+        actual_resolution.candidates.list, generated_matrices.background,
+        generated_matrices.event_region);
+    std::array<int, 3> outlier_checks{};
+    if (final_minimum_pair[0] != final_minimum_pair[1]) {
+        outlier_checks = calculate_rdp_outlier_checks(
+            scan_state.next_no, correlation_sequences, role_lists.inside,
+            first_adjusted_small, second_adjusted_small);
+    }
+    const auto bad_distances = calculate_rdp_bad_distances(
+        scan_state.next_no, correlation_sequences, correlation_comparison,
+        actual_resolution.candidates.last,
+        actual_resolution.candidates.list, actual_resolution.unfound,
+        actual_resolution.correlations.correlations.correlation,
+        first_adjusted_small, local_distance_panels);
+    RdpListCorrelationState list_correlations;
+    if (final_minimum_pair[0] != final_minimum_pair[1]) {
+        list_correlations = calculate_rdp_list_correlations(
+            scan_state.next_no, correlation_sequences, role_lists.inside,
+            correlation_decisions.warnings,
+            candidate_lists.last, candidate_lists.list,
+            correlation_decisions.correlations.inversion,
+            correlation_decisions.correlations.tested_correlation,
+            first_adjusted_small, second_adjusted_small);
+    }
+    std::array<int, 3> post_trim_background{};
+    std::array<int, 3> post_trim_region{};
+    if (final_trim_runs) {
+        const auto run_post_trim_compatibility = [&](
+            const std::vector<float>& matrix,
+            const std::array<double, 3>& list_distances,
+            std::array<int, 3>& compatibility) {
+            std::array<int, 3> reverse{};
+            for (int role = 0; role < 3; ++role) {
+                std::array<int, 3> nonrecombinant_last{};
+                std::vector<int> nonrecombinant_list(
+                    static_cast<std::size_t>(3) *
+                        (scan_state.next_no + 1), 0);
+                make_rdp_tree_compatibility_call(
+                    scan_state.next_no, correlation_sequences,
+                    correlation_comparison, role,
+                    actual_resolution.inversion_penalty,
+                    downstream_candidates.candidate_last,
+                    downstream_candidates.candidate_list, good_comparisons,
+                    matrix, list_distances, compatibility, reverse,
+                    nonrecombinant_last, nonrecombinant_list);
+            }
+        };
+        run_post_trim_compatibility(
+            background_adjusted,
+            tree_compatibility_flow.calls[0].list_distances,
+            post_trim_background);
+        run_post_trim_compatibility(
+            region_adjusted,
+            tree_compatibility_flow.calls[3].list_distances,
+            post_trim_region);
+    }
+    const auto metric_close = [&](const double actual, const int metric,
+                                  const int role) {
+        return std::abs(actual - csv_value(metric, role)) < 0.00051;
+    };
+    bool generated_consensus_inputs_match = true;
+    for (int role = 0; role < 3; ++role) {
+        generated_consensus_inputs_match = generated_consensus_inputs_match &&
+            metric_close(split_distances.distances[role], 7, role) &&
+            split_distances.outlier_index[role] ==
+                static_cast<int>(csv_value(8, role)) &&
+            metric_close(simple_distances.strengths[role], 1, role) &&
+            simple_distances.scores[role] ==
+                static_cast<int>(csv_value(2, role)) &&
+            outlier_checks[role] == static_cast<int>(csv_value(34, role)) &&
+            metric_close(bad_distances[role], 27, role) &&
+            metric_close(list_correlations.mismatches[role], 0, role) &&
+            metric_close(list_correlations.expected_strength[role], 29, role) &&
+            metric_close(list_correlations.absent_strength[role], 30, role) &&
+            post_trim_background[role] ==
+                static_cast<int>(csv_value(24, role)) &&
+            post_trim_region[role] ==
+                static_cast<int>(csv_value(25, role));
+    }
+    if (!generated_consensus_inputs_match) {
+        std::cerr << "Generated consensus support mismatch:";
+        for (int role = 0; role < 3; ++role) {
+            std::cerr << " role" << role << " SSD="
+                      << split_distances.distances[role] << '/'
+                      << csv_value(7, role) << " OUI="
+                      << split_distances.outlier_index[role] << '/'
+                      << csv_value(8, role) << " Sim="
+                      << simple_distances.strengths[role] << '/'
+                      << csv_value(1, role) << ':'
+                      << simple_distances.scores[role] << '/'
+                      << csv_value(2, role) << " OU="
+                      << outlier_checks[role] << '/'
+                      << csv_value(34, role) << " Bad="
+                      << bad_distances[role] << '/'
+                      << csv_value(27, role) << " LC="
+                      << list_correlations.mismatches[role] << '/'
+                      << csv_value(0, role) << ':'
+                      << list_correlations.expected_strength[role] << '/'
+                      << csv_value(29, role) << ':'
+                      << list_correlations.absent_strength[role] << '/'
+                      << csv_value(30, role) << " post="
+                      << post_trim_background[role] << '/'
+                      << csv_value(24, role) << ':'
+                      << post_trim_region[role] << '/'
+                      << csv_value(25, role);
+        }
+        std::cerr << '\n';
+    }
+    auto connected_consensus_inputs = consensus_inputs;
+    connected_consensus_inputs.list_correlation =
+        list_correlations.mismatches;
+    connected_consensus_inputs.list_correlation_secondary =
+        list_correlations.expected_strength;
+    connected_consensus_inputs.list_correlation_tertiary =
+        list_correlations.absent_strength;
+    connected_consensus_inputs.post_trim_compatibility =
+        post_trim_background;
+    connected_consensus_inputs.post_trim_region_compatibility =
+        post_trim_region;
+    connected_consensus_inputs.simple_distance_strength =
+        simple_distances.strengths;
+    connected_consensus_inputs.simple_distance_score = simple_distances.scores;
+    connected_consensus_inputs.phylpro = phpr_states[0].scores;
+    connected_consensus_inputs.phylpro_secondary = phpr_states[1].scores;
+    if (phpr_fixture.header.calls >= 3) {
+        connected_consensus_inputs.phylpro_collapsed = phpr_states[2].scores;
+    }
+    connected_consensus_inputs.subtree_score =
+        phpr_states[0].sub_distance_scores;
+    connected_consensus_inputs.subtree_phylpro = phpr_states[0].sub_scores;
+    connected_consensus_inputs.subtree_score_secondary =
+        phpr_states[1].sub_distance_scores;
+    connected_consensus_inputs.subtree_phylpro_secondary =
+        phpr_states[1].sub_scores;
+    connected_consensus_inputs.split_distance = split_distances.distances;
+    connected_consensus_inputs.outlier_index = split_distances.outlier_index;
+    connected_consensus_inputs.compatibility = tree_compatibility_flow.background;
+    connected_consensus_inputs.compatibility_secondary =
+        tree_compatibility_flow.background_secondary;
+    connected_consensus_inputs.compatibility_tertiary =
+        tree_compatibility_flow.background_sets;
+    connected_consensus_inputs.compatibility_quaternary =
+        tree_compatibility_flow.background_secondary_sets;
+    connected_consensus_inputs.region_compatibility =
+        tree_compatibility_flow.region;
+    connected_consensus_inputs.region_compatibility_secondary =
+        tree_compatibility_flow.region_secondary;
+    connected_consensus_inputs.region_compatibility_tertiary =
+        tree_compatibility_flow.region_sets;
+    connected_consensus_inputs.region_compatibility_quaternary =
+        tree_compatibility_flow.region_secondary_sets;
+    connected_consensus_inputs.triplet_score = triplet_scores;
+    connected_consensus_inputs.bad_distances = bad_distances;
+    connected_consensus_inputs.outlier_check = outlier_checks;
+    connected_consensus_inputs.maximum_distance =
+        maximum_distance.maximum_distances;
+    connected_consensus_inputs.ranks = simple_distances.ranks;
+    bool connected_metrics_match = generated_consensus_inputs_match;
+    for (int role = 0; role < 3; ++role) {
+        connected_metrics_match = connected_metrics_match &&
+            metric_close(connected_consensus_inputs.phylpro[role], 3, role) &&
+            metric_close(connected_consensus_inputs.phylpro_secondary[role],
+                         4, role) &&
+            metric_close(connected_consensus_inputs.phylpro_collapsed[role],
+                         5, role) &&
+            metric_close(connected_consensus_inputs.subtree_score[role],
+                         6, role) &&
+            metric_close(connected_consensus_inputs.subtree_phylpro[role],
+                         9, role) &&
+            metric_close(
+                connected_consensus_inputs.subtree_score_secondary[role],
+                10, role) &&
+            metric_close(
+                connected_consensus_inputs.subtree_phylpro_secondary[role],
+                11, role) &&
+            connected_consensus_inputs.compatibility[role] ==
+                static_cast<int>(csv_value(14, role)) &&
+            connected_consensus_inputs.compatibility_secondary[role] ==
+                static_cast<int>(csv_value(15, role)) &&
+            connected_consensus_inputs.compatibility_tertiary[role] ==
+                static_cast<int>(csv_value(16, role)) &&
+            connected_consensus_inputs.compatibility_quaternary[role] ==
+                static_cast<int>(csv_value(17, role)) &&
+            connected_consensus_inputs.region_compatibility[role] ==
+                static_cast<int>(csv_value(18, role)) &&
+            connected_consensus_inputs.region_compatibility_secondary[role] ==
+                static_cast<int>(csv_value(19, role)) &&
+            connected_consensus_inputs.region_compatibility_tertiary[role] ==
+                static_cast<int>(csv_value(20, role)) &&
+            connected_consensus_inputs.region_compatibility_quaternary[role] ==
+                static_cast<int>(csv_value(21, role)) &&
+            metric_close(connected_consensus_inputs.triplet_score[role],
+                         26, role) &&
+            connected_consensus_inputs.ranks[role][0] ==
+                static_cast<int>(csv_value(37, role)) &&
+            connected_consensus_inputs.ranks[role][1] ==
+                static_cast<int>(csv_value(38, role));
+    }
+    const auto consensus_state = make_rdp_consensus(consensus_inputs);
+    const auto connected_consensus_state =
+        make_rdp_consensus(connected_consensus_inputs);
+    bool consensus_scores_match = true;
+    for (int role = 0; role < 3; ++role) {
+        // NN_inputs formats source statistics to four decimal places, so this
+        // gate admits only the resulting last-decimal dMax contribution loss.
+        consensus_scores_match = consensus_scores_match &&
+            std::abs(consensus_state.consensus[role] -
+                     csv_value(33, role)) < 0.01;
+    }
+    const char collect_magic[8] = {
+        'C', 'O', 'L', 'L', 'E', 'C', 'T', '1'};
+    const auto collect_fixture =
+        load_rdp_sectioned_fixture<CollectEventsCaptureHeader>(
+            collect_events_fixture_path, collect_magic);
+    const auto collect_first =
+        rdp_fixture_section<unsigned int>(collect_fixture, 1);
+    const auto collect_second =
+        rdp_fixture_section<unsigned int>(collect_fixture, 1001);
+    if (collect_first.size() != 17 || collect_second.size() != 17) {
+        throw std::runtime_error("collect-events fixture header differs");
+    }
+    const int first_parent = static_cast<int>(collect_first[4]);
+    const int second_parent = static_cast<int>(collect_second[4]);
+    int expected_winner = -1;
+    for (int role = 0; role < 3; ++role) {
+        if (role != first_parent && role != second_parent) expected_winner = role;
+    }
+    const bool consensus_matches = consensus_scores_match &&
+        consensus_state.winning_role == expected_winner &&
+        connected_metrics_match &&
+        connected_consensus_state.winning_role == expected_winner;
+    if (!consensus_matches) {
+        std::cerr << "MakeConsensusC mismatch: scores="
+                  << consensus_scores_match << " winner="
+                  << consensus_state.winning_role << '/' << expected_winner
+                  << " connected=" << connected_metrics_match << ':'
+                  << connected_consensus_state.winning_role
+                  << " raw=";
+        for (int role = 0; role < 3; ++role) {
+            std::cerr << consensus_state.consensus[role] << '/'
+                      << csv_value(33, role) << ',';
+        }
+        std::cerr << '\n';
+    }
     std::cout << "RDP all-redo raw event scan: " << events.scanned_triplets
               << " triplets (Alist return " << redo_count << "), "
               << events.significant_candidates << " significant intervals, "
@@ -3121,6 +3454,8 @@ int fasta_all_redo_events_fixture(
               << ", FinalTrim prefix "
               << (final_trim_prefix_matches ? "PASS" : "FAIL")
               << ", CalcMaxD " << (cmaxd_matches ? "PASS" : "FAIL")
+              << ", MakeConsensusC "
+              << (consensus_matches ? "PASS" : "FAIL")
               << "\n";
 
     return make_test_structure_matches && first_selection_matches &&
@@ -3130,7 +3465,7 @@ int fasta_all_redo_events_fixture(
          make_rlist_matches && find_actual_matches && strip_dup_matches &&
              rcompat_matches && rcompat_flow_matches && phpr_matches &&
              score_support_matches && check_pattern_matches &&
-             final_trim_prefix_matches && cmaxd_matches
+             final_trim_prefix_matches && cmaxd_matches && consensus_matches
              ? 0 : 1) : 1;
 }
 
@@ -3316,13 +3651,13 @@ int main(int argc, char** argv) {
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
             argv[9], argv[10], argv[11]);
     }
-    if (argc == 24 &&
+    if (argc == 26 &&
         std::string_view(argv[1]) == "fasta-all-redo-events-fixture") {
         return fasta_all_redo_events_fixture(
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
             argv[9], argv[10], argv[11], {argv[12], argv[13], argv[14]},
             argv[15], argv[16], argv[17], argv[18], argv[19], argv[20],
-            argv[21], argv[22], argv[23]);
+            argv[21], argv[22], argv[23], argv[24], argv[25]);
     }
     if (argc == 3 && std::string_view(argv[1]) == "alist-rdp4-fixture") {
         return alist_rdp4_fixture(argv[2]);

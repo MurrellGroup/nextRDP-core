@@ -159,5 +159,8 @@ for number in $dataset_numbers; do
   "$node_bin" "$project_dir/tools/convert-cmaxd2p3-trace.mjs" \
     "$capture_dir/$dataset-cmaxd2p3-trace.bin" \
     "$capture_dir/$dataset-cmaxd2p3-v1.bin"
+  "$node_bin" "$project_dir/tools/convert-consensus-csv.mjs" \
+    "$run_dir/NN_inputs.txt" \
+    "$capture_dir/$dataset-consensus-v1.bin"
   printf '%s captured\n' "$dataset"
 done

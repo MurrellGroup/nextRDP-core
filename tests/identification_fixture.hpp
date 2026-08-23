@@ -151,6 +151,18 @@ struct CMaxD2P3CaptureHeader {
     std::int32_t next_no;
     std::int32_t sequence_length;
 };
+
+struct ConsensusCsvCaptureHeader {
+    char magic[8];
+    std::uint32_t version;
+};
+
+struct CollectEventsCaptureHeader {
+    char magic[8];
+    std::uint32_t version;
+    std::int32_t next_no;
+    std::int32_t sequence_length;
+};
 #pragma pack(pop)
 
 static_assert(sizeof(UFDistCaptureHeader) == 32);
@@ -168,6 +180,8 @@ static_assert(sizeof(RCompatCaptureHeader) == 20);
 static_assert(sizeof(PhPrScoreCaptureHeader) == 20);
 static_assert(sizeof(ScoreSupportCaptureHeader) == 28);
 static_assert(sizeof(CheckPatternCaptureHeader) == 20);
+static_assert(sizeof(ConsensusCsvCaptureHeader) == 12);
+static_assert(sizeof(CollectEventsCaptureHeader) == 20);
 
 template <typename UFDistFn>
 inline int run_ufdist_fixture(

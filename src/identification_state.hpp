@@ -307,6 +307,112 @@ RdpMaximumDistanceState calculate_rdp_maximum_distances(
     const std::vector<short>& sequence_data,
     const std::vector<unsigned char>& masked_sequences);
 
+struct RdpConsensusInputs {
+    int next_no{};
+    int permanent_next_no{};
+    std::array<int, 6> comparison_matrix{};
+    std::array<double, 3> list_correlation{};
+    std::array<double, 3> simple_distance_strength{};
+    std::array<int, 3> simple_distance_score{};
+    std::array<double, 3> phylpro{};
+    std::array<double, 3> phylpro_secondary{};
+    std::array<double, 3> phylpro_collapsed{};
+    std::array<double, 3> subtree_score{};
+    std::array<double, 3> split_distance{};
+    std::array<int, 3> outlier_index{};
+    std::array<double, 3> subtree_phylpro{};
+    std::array<double, 3> subtree_score_secondary{};
+    std::array<double, 3> subtree_phylpro_secondary{};
+    std::array<int, 3> compatibility{};
+    std::array<int, 3> compatibility_secondary{};
+    std::array<int, 3> compatibility_tertiary{};
+    std::array<int, 3> compatibility_quaternary{};
+    std::array<int, 3> region_compatibility{};
+    std::array<int, 3> region_compatibility_secondary{};
+    std::array<int, 3> region_compatibility_tertiary{};
+    std::array<int, 3> region_compatibility_quaternary{};
+    std::array<int, 3> post_trim_compatibility{};
+    std::array<int, 3> post_trim_region_compatibility{};
+    std::array<double, 3> triplet_score{};
+    std::array<double, 3> bad_distances{};
+    std::array<int, 3> outside_list{};
+    std::array<double, 3> list_correlation_secondary{};
+    std::array<double, 3> list_correlation_tertiary{};
+    std::array<int, 3> outlier_check{};
+    std::array<float, 3> maximum_distance{};
+    std::array<std::array<int, 2>, 3> ranks{};
+};
+
+struct RdpConsensusState {
+    RdpConsensusInputs rounded_inputs;
+    std::array<double, 3> consensus{};
+    std::array<double, 78> decision_scores{};
+    int winning_role{};
+};
+
+RdpConsensusState make_rdp_consensus(RdpConsensusInputs inputs);
+
+struct RdpSplitDistanceState {
+    std::array<double, 3> distances{};
+    std::array<int, 3> outlier_index{};
+};
+
+RdpSplitDistanceState calculate_rdp_split_distances(
+    int next_no, const std::array<int, 3>& sequences,
+    const std::array<unsigned char, 3>& inside_roles,
+    const std::vector<float>& ancestor_rows,
+    const std::vector<float>& background_matrix,
+    const std::vector<float>& region_matrix,
+    const std::vector<int>& done);
+
+struct RdpSimpleDistanceState {
+    std::array<std::array<int, 2>, 3> ranks{};
+    std::array<int, 3> scores{};
+    std::array<double, 3> strengths{};
+};
+
+RdpSimpleDistanceState calculate_rdp_simple_distances(
+    int next_no, const std::array<int, 3>& sequences,
+    const std::array<unsigned char, 3>& inside_roles,
+    const std::array<int, 3>& candidate_last,
+    const std::vector<int>& candidate_list,
+    const std::vector<float>& background_matrix,
+    const std::vector<float>& region_matrix);
+
+std::array<int, 3> calculate_rdp_outlier_checks(
+    int next_no, const std::array<int, 3>& sequences,
+    const std::array<unsigned char, 3>& inside_roles,
+    const std::vector<float>& background_ancestor_rows,
+    const std::vector<float>& region_ancestor_rows);
+
+std::array<double, 3> calculate_rdp_bad_distances(
+    int next_no, const std::array<int, 3>& sequences,
+    const std::array<int, 6>& comparison_matrix,
+    const std::array<int, 3>& candidate_last,
+    const std::vector<int>& candidate_list,
+    const std::vector<unsigned char>& unfound,
+    const std::vector<float>& correlations,
+    const std::vector<float>& ancestor_rows,
+    const std::vector<float>& local_distance_panels);
+
+struct RdpListCorrelationState {
+    std::array<double, 3> mismatches{};
+    std::array<double, 3> expected_strength{};
+    std::array<double, 3> absent_strength{};
+    std::array<std::array<double, 3>, 3> regional_strength{};
+};
+
+RdpListCorrelationState calculate_rdp_list_correlations(
+    int next_no, const std::array<int, 3>& sequences,
+    const std::array<unsigned char, 3>& inside_roles,
+    const std::array<unsigned char, 3>& correlation_warnings,
+    const std::array<int, 3>& candidate_last,
+    const std::vector<int>& candidate_list,
+    const std::vector<float>& inversions,
+    const std::vector<float>& tested_correlations,
+    const std::vector<float>& background_ancestor_rows,
+    const std::vector<float>& region_ancestor_rows);
+
 RdpTreeCompatibilityCallState make_rdp_tree_compatibility_call(
     int next_no, const std::array<int, 3>& sequences,
     const std::array<int, 6>& comparison_matrix, int role,

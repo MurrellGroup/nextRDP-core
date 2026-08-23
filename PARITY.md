@@ -163,3 +163,12 @@ representative and included-sequence masks, informative-site nucleotide maps,
 pairwise V-score matrix, and accumulated maximum-distance values. Every input
 and output cell at that boundary matches fresh locally compiled RDP traces on
 all ten datasets.
+
+The connected first-event path now also ports `MakeSSDistB`, `SimpleDist`,
+`MakeOUCheck`, `MakeEList`, `MakeListCorr`, `GetBadDists`, the two post-retrim
+`MakeRCompat` families, and the active decision-tree path of
+`MakeConsensusC`. Every generated input statistic agrees with the native
+`NN_inputs` boundary on all ten datasets at its printed precision, and the
+raw consensus scores and selected recombinant role agree on all ten. The CSV
+oracle is used only as a boundary assertion; no value from it drives the
+connected consensus calculation.
