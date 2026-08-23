@@ -63,12 +63,42 @@ struct ProbCalcP2CaptureHeader {
     double individual_probability;
     std::int32_t informative_length;
 };
+
+struct FindFirstCOPCaptureHeader {
+    char magic[8];
+    std::uint32_t version;
+    std::int32_t x;
+    std::int32_t med;
+    std::int32_t high;
+    std::int32_t xover_length;
+    std::int32_t homology_ub;
+};
+
+struct ProbCalcPCaptureHeader {
+    char magic[8];
+    std::uint32_t version;
+    std::int32_t xover_length;
+    std::int32_t number_in_common;
+    double individual_probability;
+    std::int32_t informative_length;
+};
+
+struct CleanXOSNWCaptureHeader {
+    char magic[8];
+    std::uint32_t version;
+    std::int32_t xover_length;
+    std::int32_t xover_window;
+    std::int32_t xover_sequence_ub;
+};
 #pragma pack(pop)
 
 static_assert(sizeof(XOHomologyPCaptureHeader) == 24);
 static_assert(sizeof(FindNextPCaptureHeader) == 40);
 static_assert(sizeof(DefineEventP2CaptureHeader) == 68);
 static_assert(sizeof(ProbCalcP2CaptureHeader) == 36);
+static_assert(sizeof(FindFirstCOPCaptureHeader) == 32);
+static_assert(sizeof(ProbCalcPCaptureHeader) == 32);
+static_assert(sizeof(CleanXOSNWCaptureHeader) == 24);
 
 template <typename Header>
 struct RdpSectionedFixture {
@@ -225,5 +255,81 @@ inline int run_prob_calc_p2_fixture(
     output << "ProbCalcP2 parity: PASS (p=" << result;
     if (!bit_exact) output << ", accepted platform-math rounding";
     output << ")\n";
+    return 0;
+}
+
+template <typename FindFirstCOPFn>
+inline int run_find_first_co_p_fixture(
+    FindFirstCOPFn function, const std::string& path, std::ostream& output,
+    std::ostream& error) {
+    const char magic[8] = {'F', 'F', 'I', 'R', 'S', 'T', '\0', '\0'};
+    const auto fixture =
+        load_rdp_sectioned_fixture<FindFirstCOPCaptureHeader>(path, magic);
+    const auto& h = fixture.header;
+    auto homology = rdp_fixture_section<int>(fixture, 1);
+    const auto expected_result = rdp_fixture_section<int>(fixture, 101);
+    const int result = function(
+        h.x, h.med, h.high, h.xover_length, h.homology_ub, homology.data());
+    if (expected_result.size() != 1 || result != expected_result[0]) {
+        error << "FindFirstCOP parity: FAIL\n";
+        return 1;
+    }
+    output << "FindFirstCOP parity: PASS (position " << result << ")\n";
+    return 0;
+}
+
+template <typename ProbCalcPFn>
+inline int run_prob_calc_p_fixture(
+    ProbCalcPFn function, const std::string& path, std::ostream& output,
+    std::ostream& error) {
+    const char magic[8] = {'P', 'R', 'O', 'B', 'C', 'P', '\0', '\0'};
+    const auto fixture =
+        load_rdp_sectioned_fixture<ProbCalcPCaptureHeader>(path, magic);
+    const auto& h = fixture.header;
+    auto fact = rdp_fixture_section<double>(fixture, 1);
+    const auto expected_result = rdp_fixture_section<double>(fixture, 101);
+    const double result = function(
+        fact.data(), h.xover_length, h.number_in_common,
+        h.individual_probability, h.informative_length);
+    const bool bit_exact = expected_result.size() == 1 &&
+        std::memcmp(&result, expected_result.data(), sizeof(result)) == 0;
+    const double scale = expected_result.empty()
+                             ? 1.0
+                             : std::max(1.0, std::abs(expected_result[0]));
+    const bool numerically_equivalent = expected_result.size() == 1 &&
+        std::abs(result - expected_result[0]) <= 1e-14 * scale;
+    if (!numerically_equivalent) {
+        error.precision(17);
+        error << "ProbCalcP parity: FAIL (result=" << result << ", expected="
+              << (expected_result.empty() ? -1.0 : expected_result[0]) << ")\n";
+        return 1;
+    }
+    output.precision(17);
+    output << "ProbCalcP parity: PASS (p=" << result;
+    if (!bit_exact) output << ", accepted platform-math rounding";
+    output << ")\n";
+    return 0;
+}
+
+template <typename CleanXOSNWFn>
+inline int run_clean_xosnw_fixture(
+    CleanXOSNWFn function, const std::string& path, std::ostream& output,
+    std::ostream& error) {
+    const char magic[8] = {'C', 'L', 'N', 'X', 'O', 'S', 'N', 'W'};
+    const auto fixture =
+        load_rdp_sectioned_fixture<CleanXOSNWCaptureHeader>(path, magic);
+    const auto& h = fixture.header;
+    auto xover_sequence = rdp_fixture_section<char>(fixture, 1);
+    const auto expected_xover = rdp_fixture_section<char>(fixture, 101);
+    const auto expected_result = rdp_fixture_section<int>(fixture, 102);
+    const int result = function(
+        h.xover_length, h.xover_window, h.xover_sequence_ub,
+        xover_sequence.data());
+    if (expected_result.size() != 1 || result != expected_result[0] ||
+        xover_sequence != expected_xover) {
+        error << "CleanXOSNW parity: FAIL\n";
+        return 1;
+    }
+    output << "CleanXOSNW parity: PASS\n";
     return 0;
 }

@@ -15,14 +15,4 @@ export LD_LIBRARY_PATH="$workspace_dir/software/cmake/usr/lib/x86_64-linux-gnu:$
 cmake --build "$project_dir/build/wasm" --parallel 1 >/dev/null
 
 node "$project_dir/build/wasm/rdp-core.js" \
-  alist-rdp4-fixture "$fixture_dir/alist-rdp4-v1.bin"
-node "$project_dir/build/wasm/rdp-core.js" \
-  find-subseq-pb3-fixture "$fixture_dir/find-subseq-pb3-v1.bin"
-node "$project_dir/build/wasm/rdp-core.js" \
-  xohomology-p-fixture "$fixture_dir/xohomology-p-v1.bin"
-node "$project_dir/build/wasm/rdp-core.js" \
-  find-next-p-fixture "$fixture_dir/find-next-p-v1.bin"
-node "$project_dir/build/wasm/rdp-core.js" \
-  define-event-p2-fixture "$fixture_dir/define-event-p2-v1.bin"
-node "$project_dir/build/wasm/rdp-core.js" \
-  prob-calc-p2-fixture "$fixture_dir/prob-calc-p2-v1.bin"
+  oracle-fixture-chain "$fixture_dir"

@@ -31,6 +31,32 @@ awk '
       print "    DefineEventP2=DefineEventP2Capture@84 " ordinal
     else if (name == "ProbCalcP2")
       print "    ProbCalcP2=ProbCalcP2Capture@28 " ordinal
+    else if (name == "FindSubSeqPB4")
+      print "    FindSubSeqPB4=FindSubSeqPB4Capture@60 " ordinal
+    else if (name == "FindFirstCOP")
+      print "    FindFirstCOP=FindFirstCOPCapture@24 " ordinal
+    else if (name == "ProbCalcP")
+      print "    ProbCalcP=ProbCalcPCapture@24 " ordinal
+    else if (name == "CleanXOSNW")
+      print "    CleanXOSNW=CleanXOSNWCapture@16 " ordinal
+    else if (name == "MakeTestPVs")
+      print "    MakeTestPVs=MakeTestPVsCapture@32 " ordinal
+    else if (name == "FindBestRecSignalP2")
+      print "    FindBestRecSignalP2=FindBestRecSignalP2Capture@36 " ordinal
+    else if (name == "UFDist")
+      print "    UFDist=UFDistCapture@44 " ordinal
+    else if (name == "SuperDistP2")
+      print "    SuperDistP2=SuperDistP2Capture@132 " ordinal
+    else if (name == "CheckMatrixP")
+      print "    CheckMatrixP=CheckMatrixPCapture@64 " ordinal
+    else if (name == "MakeNJTreesP2")
+      print "    MakeNJTreesP2=MakeNJTreesP2Capture@100 " ordinal
+    else if (name == "MarkOutsides")
+      print "    MarkOutsides=MarkOutsidesCapture@24 " ordinal
+    else if (name == "MakeSDMP2")
+      print "    MakeSDMP2=MakeSDMP2Capture@40 " ordinal
+    else if (name == "FillRmat")
+      print "    FillRmat=FillRmatCapture@40 " ordinal
     else
       print "    " name "=DNA5_original." name " " ordinal
   }
@@ -51,6 +77,18 @@ rm -f "$run_dir/find-subseq-pb3-v1.bin"
 rm -f "$run_dir/xohomology-p-v1.bin" "$run_dir/find-next-p-v1.bin"
 rm -f "$run_dir/define-event-p2-v1.bin"
 rm -f "$run_dir/prob-calc-p2-v1.bin"
+rm -f "$run_dir/find-subseq-pb4-v1.bin"
+rm -f "$run_dir/find-first-co-p-v1.bin" "$run_dir/prob-calc-p-v1.bin"
+rm -f "$run_dir/clean-xosnw-v1.bin"
+rm -f "$run_dir/make-test-pvs-v1.bin"
+rm -f "$run_dir/find-best-rec-signal-p2-v1.bin"
+rm -f "$run_dir/ufdist-v1.bin"
+rm -f "$run_dir/super-dist-p2-v1.bin"
+rm -f "$run_dir/check-matrix-p-v1.bin"
+rm -f "$run_dir/make-nj-trees-p2-v1.bin"
+rm -f "$run_dir/mark-outsides-v1.bin"
+rm -f "$run_dir/make-sdmp2-v1.bin"
+rm -f "$run_dir/fill-rmat-y0-v1.bin" "$run_dir/fill-rmat-y1-v1.bin" "$run_dir/fill-rmat-y2-v1.bin"
 
 export PATH="$wine_dir/bin:$PATH"
 export LD_LIBRARY_PATH="$wine_dir/lib:${LD_LIBRARY_PATH:-}"
@@ -68,9 +106,39 @@ test -s "$run_dir/xohomology-p-v1.bin"
 test -s "$run_dir/find-next-p-v1.bin"
 test -s "$run_dir/define-event-p2-v1.bin"
 test -s "$run_dir/prob-calc-p2-v1.bin"
+test -s "$run_dir/find-subseq-pb4-v1.bin"
+test -s "$run_dir/find-first-co-p-v1.bin"
+test -s "$run_dir/prob-calc-p-v1.bin"
+test -s "$run_dir/clean-xosnw-v1.bin"
+test -s "$run_dir/make-test-pvs-v1.bin"
+test -s "$run_dir/find-best-rec-signal-p2-v1.bin"
+test -s "$run_dir/ufdist-v1.bin"
+test -s "$run_dir/super-dist-p2-v1.bin"
+test -s "$run_dir/check-matrix-p-v1.bin"
+test -s "$run_dir/make-nj-trees-p2-v1.bin"
+test -s "$run_dir/mark-outsides-v1.bin"
+test -s "$run_dir/make-sdmp2-v1.bin"
+test -s "$run_dir/fill-rmat-y0-v1.bin"
+test -s "$run_dir/fill-rmat-y1-v1.bin"
+test -s "$run_dir/fill-rmat-y2-v1.bin"
 echo "captured $run_dir/alist-rdp4-v1.bin ($(stat -c %s "$run_dir/alist-rdp4-v1.bin") bytes)"
 echo "captured $run_dir/find-subseq-pb3-v1.bin ($(stat -c %s "$run_dir/find-subseq-pb3-v1.bin") bytes)"
 echo "captured $run_dir/xohomology-p-v1.bin ($(stat -c %s "$run_dir/xohomology-p-v1.bin") bytes)"
 echo "captured $run_dir/find-next-p-v1.bin ($(stat -c %s "$run_dir/find-next-p-v1.bin") bytes)"
 echo "captured $run_dir/define-event-p2-v1.bin ($(stat -c %s "$run_dir/define-event-p2-v1.bin") bytes)"
 echo "captured $run_dir/prob-calc-p2-v1.bin ($(stat -c %s "$run_dir/prob-calc-p2-v1.bin") bytes)"
+echo "captured $run_dir/find-subseq-pb4-v1.bin ($(stat -c %s "$run_dir/find-subseq-pb4-v1.bin") bytes)"
+echo "captured $run_dir/find-first-co-p-v1.bin ($(stat -c %s "$run_dir/find-first-co-p-v1.bin") bytes)"
+echo "captured $run_dir/prob-calc-p-v1.bin ($(stat -c %s "$run_dir/prob-calc-p-v1.bin") bytes)"
+echo "captured $run_dir/clean-xosnw-v1.bin ($(stat -c %s "$run_dir/clean-xosnw-v1.bin") bytes)"
+echo "captured $run_dir/make-test-pvs-v1.bin ($(stat -c %s "$run_dir/make-test-pvs-v1.bin") bytes)"
+echo "captured $run_dir/find-best-rec-signal-p2-v1.bin ($(stat -c %s "$run_dir/find-best-rec-signal-p2-v1.bin") bytes)"
+echo "captured $run_dir/ufdist-v1.bin ($(stat -c %s "$run_dir/ufdist-v1.bin") bytes)"
+echo "captured $run_dir/super-dist-p2-v1.bin ($(stat -c %s "$run_dir/super-dist-p2-v1.bin") bytes)"
+echo "captured $run_dir/check-matrix-p-v1.bin ($(stat -c %s "$run_dir/check-matrix-p-v1.bin") bytes)"
+echo "captured $run_dir/make-nj-trees-p2-v1.bin ($(stat -c %s "$run_dir/make-nj-trees-p2-v1.bin") bytes)"
+echo "captured $run_dir/mark-outsides-v1.bin ($(stat -c %s "$run_dir/mark-outsides-v1.bin") bytes)"
+echo "captured $run_dir/make-sdmp2-v1.bin ($(stat -c %s "$run_dir/make-sdmp2-v1.bin") bytes)"
+echo "captured $run_dir/fill-rmat-y0-v1.bin ($(stat -c %s "$run_dir/fill-rmat-y0-v1.bin") bytes)"
+echo "captured $run_dir/fill-rmat-y1-v1.bin ($(stat -c %s "$run_dir/fill-rmat-y1-v1.bin") bytes)"
+echo "captured $run_dir/fill-rmat-y2-v1.bin ($(stat -c %s "$run_dir/fill-rmat-y2-v1.bin") bytes)"

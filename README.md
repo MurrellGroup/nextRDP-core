@@ -26,3 +26,16 @@ Run every implemented oracle gate in execution order:
 ```
 
 See `PARITY.md` for the current routine-by-routine ledger.
+
+The live captured routine boundaries can also be replayed through one WASM
+command, in their observed RDP execution order:
+
+```sh
+node build/wasm/rdp-core.js oracle-fixture-chain sandbox/alist-rdp4-capture/runtime
+```
+
+This currently checks 25 distinct routines (21 live calls because `FillRmat`
+is exercised for all three `Y` branches). The pinned DLL is a 32-bit x87 build;
+the WASM compilation uses Clang's extended evaluation mode to preserve that
+source-level floating-point ABI without editing the supplied routine bodies.
+The compatibility layer also supplies the Microsoft CRT 15-bit `rand()` stream.

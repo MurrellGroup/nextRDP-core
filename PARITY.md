@@ -19,6 +19,19 @@ outputs use the user's accepted platform-math tolerance when Windows and WASM
 | 10 | `FindNextP` | live Dataset0 call from `RDP5CL.exe` | byte-identical result |
 | 11 | `DefineEventP2` | live Dataset0 call from `RDP5CL.exe` | byte-identical result and all scalar output state |
 | 12 | `ProbCalcP2` | live Dataset0 call from `RDP5CL.exe` | numerically equivalent; one final-bit `pow` rounding difference |
+| 13 | `FindSubSeqPB4` | live Dataset0 call from `RDP5CL.exe` | byte-identical result and position maps |
+| 14 | `FindFirstCOP` | live Dataset0 call from `RDP5CL.exe` | byte-identical result |
+| 15 | `ProbCalcP` | live Dataset0 call from `RDP5CL.exe` | numeric result gate |
+| 16 | `CleanXOSNW` | live Dataset0 call from `RDP5CL.exe` | byte-identical cleared state |
+| 17 | `MakeTestPVs` | live Dataset0 call from `RDP5CL.exe` | byte-identical event-test state |
+| 18 | `FindBestRecSignalP2` | live Dataset0 call from `RDP5CL.exe` | byte-identical selected event and state |
+| 19 | `UFDist` | live Dataset0 call from `RDP5CL.exe` | byte-identical interval distances |
+| 20 | `SuperDistP2` | live Dataset0 call from `RDP5CL.exe` | byte-identical distance matrices |
+| 21 | `CheckMatrixP` | live Dataset0 call from `RDP5CL.exe` | byte-identical matrix filtering state |
+| 22 | `MakeNJTreesP2` | live Dataset0 call from `RDP5CL.exe` | byte-identical tree-building state |
+| 23 | `MarkOutsides` | live Dataset0 call from `RDP5CL.exe` | byte-identical event marking state |
+| 24 | `MakeSDMP2` | live Dataset0 call from `RDP5CL.exe` | byte-identical regional distance state |
+| 25 | `FillRmat` | all three live Dataset0 calls from `RDP5CL.exe` | byte-identical correlation-matrix state |
 
 The live `AlistRDP4` fixture covers 2,300 triplets and changes 709 redo states.
 Because the exact C++ implementation calls `FastRecCheckPB` internally, that
