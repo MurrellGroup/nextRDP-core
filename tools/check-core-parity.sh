@@ -31,4 +31,10 @@ node "$project_dir/build/wasm/rdp-core.js" \
   "$fixture_dir/alist-rdp4-v1.bin" \
   "$fixture_dir/find-subseq-pb3-v1.bin"
 node "$project_dir/build/wasm/rdp-core.js" \
+  fasta-first-xover-walk-fixture "$fixture_dir/Dataset0.fas" \
+  "$fixture_dir/alist-rdp4-v1.bin" \
+  "$fixture_dir/find-subseq-pb3-v1.bin" \
+  "$fixture_dir/xohomology-p-v1.bin" \
+  "$fixture_dir/find-next-p-v1.bin"
+node "$project_dir/build/wasm/rdp-core.js" \
   oracle-fixture-chain "$fixture_dir"

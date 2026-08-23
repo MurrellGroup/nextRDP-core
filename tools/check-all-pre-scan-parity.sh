@@ -9,8 +9,8 @@ export PATH="$workspace_dir/software/cmake/usr/bin:$PATH"
 export LD_LIBRARY_PATH="$workspace_dir/software/cmake/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
 cmake --build "$project_dir/build/wasm" --parallel 1 >/dev/null
 
-printf '| Dataset | FASTA state | Distance | Tree distance | AlistRDP4 |\n'
-printf '|---|---:|---:|---:|---:|\n'
+printf '| Dataset | FASTA state | Distance | Tree distance | AlistRDP4 | First XOver walk |\n'
+printf '|---|---:|---:|---:|---:|---:|\n'
 for number in {0..9}; do
   dataset="Dataset$number"
   "$project_dir/tools/capture-alist-rdp4.sh" "$dataset" >/dev/null
@@ -29,5 +29,10 @@ for number in {0..9}; do
     fasta-tree-distance-fixture "$fasta" "$fixture" >/dev/null
   node "$project_dir/build/wasm/rdp-core.js" \
     fasta-alist-rdp4-fixture "$fasta" "$fixture" >/dev/null
-  printf '| %s | PASS | PASS | PASS | PASS |\n' "$dataset"
+  node "$project_dir/build/wasm/rdp-core.js" \
+    fasta-first-xover-walk-fixture "$fasta" "$fixture" \
+    "$fixture_dir/find-subseq-pb3-v1.bin" \
+    "$fixture_dir/xohomology-p-v1.bin" \
+    "$fixture_dir/find-next-p-v1.bin" >/dev/null
+  printf '| %s | PASS | PASS | PASS | PASS | PASS |\n' "$dataset"
 done

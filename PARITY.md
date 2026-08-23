@@ -60,7 +60,13 @@ matrix passed into `AlistRDP4`.
 
 With those generated matrices substituted for captured state, `AlistRDP4`
 still produces the byte-identical redo list and `StoreLPV`. The first redo
-triplet selected from that list also drives generated `CompressSeq` into
-`FindSubSeqPB3` with byte-identical `AH`, window state, and informative length.
-The pre-scan chain through `AlistRDP4` passes independently on all ten supplied
-datasets; run `tools/check-all-pre-scan-parity.sh` for that table.
+triplet selected from that list drives generated `CompressSeq` through
+`FindSubSeqPB3`, `XOHomologyP`, the intervening VB average-homology role
+ranking and distance tie breaks, and `FindNextP`. The connected prefix is
+byte-identical at every captured state boundary on all ten supplied datasets;
+run `tools/check-all-pre-scan-parity.sh` for that table.
+
+The orchestration preserves two otherwise easy-to-collapse state values:
+RDP passes the FASTA length to `FindSubSeqPB3` but the FASTA length plus one to
+`XOHomologyP`, and its initial tree-selected `HighHomol` can differ from the
+average-selected `HighHomol` later passed to `FindNextP`.

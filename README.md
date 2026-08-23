@@ -67,9 +67,10 @@ node build/wasm/rdp-core.js fasta-tree-distance-fixture \
   sandbox/alist-rdp4-capture/runtime/alist-rdp4-v1.bin
 ```
 
-The generated states are then wired into the actual `AlistRDP4` call and its
-first selected `XOver`/`FindSubSeqPB3` boundary. Run the all-dataset pre-scan
-matrix with:
+The generated states are then wired into the actual `AlistRDP4` call and the
+first selected `XOver` path through `FindSubSeqPB3`, `XOHomologyP`, the VB role
+ranking block, and `FindNextP`. Run the all-dataset matrix for this connected
+prefix with:
 
 ```sh
 ./tools/check-all-pre-scan-parity.sh

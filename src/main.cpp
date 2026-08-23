@@ -9,6 +9,7 @@
 #include "rdp_walk_fixture.hpp"
 #include "scan_state.hpp"
 #include "tree_state.hpp"
+#include "xover_state.hpp"
 
 #include <array>
 #include <cstdint>
@@ -357,6 +358,153 @@ int fasta_first_xover_fixture(
     return 0;
 }
 
+int fasta_first_xover_walk_fixture(
+    const std::string& fasta_path, const std::string& alist_fixture_path,
+    const std::string& find_subseq_fixture_path,
+    const std::string& homology_fixture_path,
+    const std::string& find_next_fixture_path) {
+    const Dna5ScanPreprocessApi preprocess_api{
+        &MathFuncs::MyMathFuncs::MakeAListP2,
+        &MathFuncs::MyMathFuncs::CountNucs,
+        &MathFuncs::MyMathFuncs::RecodeNucs,
+        &MathFuncs::MyMathFuncs::DoRecodeP,
+        &MathFuncs::MyMathFuncs::MakeCompressSeqP,
+    };
+    const Dna5XoverApi xover_api{
+        &MathFuncs::MyMathFuncs::FindSubSeqPB3,
+        &MathFuncs::MyMathFuncs::XOHomologyP,
+        &MathFuncs::MyMathFuncs::FindNextP,
+    };
+    const auto scan_state =
+        build_rdp_scan_state_from_fasta(fasta_path, preprocess_api);
+    const auto distance_state = build_rdp_distance_state(
+        scan_state, 1, scan_state.sequence_length);
+    const auto tree_state =
+        build_rdp_upgma_tree_state(scan_state.next_no, distance_state);
+    const auto alist_fixture = load_alist_rdp4_fixture(alist_fixture_path);
+    const auto redo = alist_rdp4_typed_section<unsigned char>(
+        alist_fixture, AlistRdp4Section::redo_list_out);
+    int first_redo = -1;
+    for (int triplet = alist_fixture.header.start;
+         triplet <= alist_fixture.header.end; ++triplet) {
+        if (redo[triplet] == 1) {
+            first_redo = triplet;
+            break;
+        }
+    }
+    auto fss_rdp = alist_rdp4_typed_section<unsigned char>(
+        alist_fixture, AlistRdp4Section::fss_rdp_in);
+    const auto pb3_fixture =
+        load_find_subseq_pb3_fixture(find_subseq_fixture_path);
+    const auto state = build_rdp_first_xover_state(
+        scan_state, distance_state, tree_state, first_redo,
+        pb3_fixture.header.fss_ub, fss_rdp,
+        pb3_fixture.header.xover_window,
+        alist_fixture.header.xover_window_x, xover_api);
+    const auto expected_ah =
+        find_subseq_pb3_section<int>(pb3_fixture, 101);
+    const auto expected_xover =
+        find_subseq_pb3_section<char>(pb3_fixture, 102);
+    const auto expected_pb3_result =
+        find_subseq_pb3_section<int>(pb3_fixture, 103);
+
+    const char xoh_magic[8] = {'X', 'O', 'H', 'O', 'M', 'P', '\0', '\0'};
+    const auto xoh_fixture =
+        load_rdp_sectioned_fixture<XOHomologyPCaptureHeader>(
+            homology_fixture_path, xoh_magic);
+    const auto expected_xoh_sequence =
+        rdp_fixture_section<char>(xoh_fixture, 1);
+    const auto expected_homology =
+        rdp_fixture_section<int>(xoh_fixture, 101);
+    const auto expected_xoh_result =
+        rdp_fixture_section<int>(xoh_fixture, 102);
+    const char find_next_magic[8] = {
+        'F', 'I', 'N', 'D', 'N', 'X', 'T', '\0'};
+    const auto find_next_fixture =
+        load_rdp_sectioned_fixture<FindNextPCaptureHeader>(
+            find_next_fixture_path, find_next_magic);
+    const auto expected_find_next_homology =
+        rdp_fixture_section<int>(find_next_fixture, 1);
+    const auto expected_next_position =
+        rdp_fixture_section<int>(find_next_fixture, 101);
+    const std::vector<int> actual_ah(
+        state.agreement_counts.begin(), state.agreement_counts.end());
+    const bool matches = expected_pb3_result.size() == 1 &&
+        state.informative_length == expected_pb3_result[0] &&
+        actual_ah == expected_ah && state.xover_sequence == expected_xover &&
+        state.initial_high_homology == xoh_fixture.header.inlyer &&
+        state.homology_sequence_length ==
+            xoh_fixture.header.sequence_length &&
+        state.homology_length == xoh_fixture.header.xover_length &&
+        expected_xoh_result.size() == 1 &&
+        state.homology_start == expected_xoh_result[0] &&
+        state.homology == expected_homology &&
+        state.homology == expected_find_next_homology &&
+        state.homology_ub == find_next_fixture.header.homology_ub &&
+        find_next_fixture.header.start == 1 &&
+        state.high_homology == find_next_fixture.header.high &&
+        state.med_homology == find_next_fixture.header.med &&
+        state.low_homology == find_next_fixture.header.low &&
+        state.homology_length == find_next_fixture.header.xover_length &&
+        pb3_fixture.header.xover_window ==
+            find_next_fixture.header.xover_window &&
+        expected_next_position.size() == 1 &&
+        state.next_position == expected_next_position[0];
+    if (!matches) {
+        const auto homology_difference = std::mismatch(
+            expected_homology.begin(), expected_homology.end(),
+            state.homology.begin(), state.homology.end());
+        const auto sequence_difference = std::mismatch(
+            expected_xoh_sequence.begin(), expected_xoh_sequence.end(),
+            state.xover_sequence.begin(), state.xover_sequence.end());
+        std::cerr << "FASTA first-XOver walk parity: FAIL"
+                  << " PB3="
+                  << (expected_pb3_result.size() == 1 &&
+                      state.informative_length == expected_pb3_result[0] &&
+                      actual_ah == expected_ah &&
+                      state.xover_sequence == expected_xover)
+                  << " role="
+                  << (state.initial_high_homology ==
+                      xoh_fixture.header.inlyer)
+                  << " XOH="
+                  << (expected_xoh_result.size() == 1 &&
+                      state.homology_start == expected_xoh_result[0] &&
+                      state.homology == expected_homology)
+                  << " result=" << state.homology_start << '/'
+                  << (expected_xoh_result.empty() ? -1 : expected_xoh_result[0])
+                  << " homology-size=" << state.homology.size() << '/'
+                  << expected_homology.size()
+                  << " homology-diff="
+                  << (homology_difference.first == expected_homology.end()
+                          ? -1
+                          : static_cast<long long>(std::distance(
+                                expected_homology.begin(),
+                                homology_difference.first)))
+                  << " xoh-input-size=" << state.xover_sequence.size() << '/'
+                  << expected_xoh_sequence.size()
+                  << " xoh-input-diff="
+                  << (sequence_difference.first == expected_xoh_sequence.end()
+                          ? -1
+                          : static_cast<long long>(std::distance(
+                                expected_xoh_sequence.begin(),
+                                sequence_difference.first)))
+                  << " roles=" << state.high_homology << ','
+                  << state.med_homology << ',' << state.low_homology << '/'
+                  << find_next_fixture.header.high << ','
+                  << find_next_fixture.header.med << ','
+                  << find_next_fixture.header.low
+                  << " next=" << state.next_position << '/'
+                  << (expected_next_position.empty()
+                          ? -1
+                          : expected_next_position[0])
+                  << '\n';
+        return 1;
+    }
+    std::cout << "FASTA first-XOver walk parity: PASS (FindSubSeqPB3 -> "
+                 "XOHomologyP -> role ranking -> FindNextP)\n";
+    return 0;
+}
+
 int alist_rdp4_fixture(const std::string& path) {
     return run_alist_rdp4_fixture(
         &MathFuncs::MyMathFuncs::AlistRDP4, path, std::cout, std::cerr);
@@ -533,6 +681,11 @@ int main(int argc, char** argv) {
         std::string_view(argv[1]) == "fasta-first-xover-fixture") {
         return fasta_first_xover_fixture(argv[2], argv[3], argv[4]);
     }
+    if (argc == 7 &&
+        std::string_view(argv[1]) == "fasta-first-xover-walk-fixture") {
+        return fasta_first_xover_walk_fixture(
+            argv[2], argv[3], argv[4], argv[5], argv[6]);
+    }
     if (argc == 3 && std::string_view(argv[1]) == "alist-rdp4-fixture") {
         return alist_rdp4_fixture(argv[2]);
     }
@@ -605,6 +758,7 @@ int main(int argc, char** argv) {
         << "       rdp-core fasta-tree-distance-fixture <alignment.fasta> <alist-capture.bin>\n"
         << "       rdp-core fasta-alist-rdp4-fixture <alignment.fasta> <alist-capture.bin>\n"
         << "       rdp-core fasta-first-xover-fixture <alignment.fasta> <alist-capture.bin> <find-subseq-pb3-capture.bin>\n"
+        << "       rdp-core fasta-first-xover-walk-fixture <alignment.fasta> <alist-capture.bin> <find-subseq-pb3-capture.bin> <xohomology-capture.bin> <find-next-capture.bin>\n"
         << "       rdp-core alist-rdp4-fixture <capture.bin>\n"
         << "       rdp-core find-subseq-pb3-fixture <capture.bin>\n"
         << "       rdp-core find-subseq-pb4-fixture <capture.bin>\n"
