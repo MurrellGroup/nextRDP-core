@@ -156,3 +156,10 @@ configured conservative grouping thresholds. The resulting active `RNum` and
 datasets that take this path; the other six correctly skip it. As in VB, cells
 beyond each `RNum` are stale backing-array storage and are not observable list
 members.
+
+Immediately after that retrim path, the clean port now reproduces the active
+`CalcMaxD` prelude and its `CMaxD2P3` boundary. It constructs the same
+representative and included-sequence masks, informative-site nucleotide maps,
+pairwise V-score matrix, and accumulated maximum-distance values. Every input
+and output cell at that boundary matches fresh locally compiled RDP traces on
+all ten datasets.

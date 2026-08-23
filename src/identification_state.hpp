@@ -285,6 +285,28 @@ RdpFinalTrimState make_rdp_consensus_candidates(
     const std::vector<float>& region_collapsed_small,
     RdpFinalTrimState state, bool conservative_grouping);
 
+struct RdpMaximumDistanceState {
+    int result = 0;
+    int included_last = -1;
+    std::vector<int> included_sequences;
+    std::vector<unsigned char> included_mask;
+    std::vector<unsigned char> representative_mask;
+    std::vector<int> informative_to_position;
+    std::vector<int> position_to_informative;
+    std::vector<unsigned char> nucleotide_map;
+    std::vector<float> split_scores;
+    std::array<float, 3> distance_totals{};
+    std::array<int, 3> distance_counts{};
+    std::array<float, 3> maximum_distances{};
+};
+
+RdpMaximumDistanceState calculate_rdp_maximum_distances(
+    int sequence_length, int next_no,
+    const std::array<int, 3>& sequences,
+    int beginning, int ending,
+    const std::vector<short>& sequence_data,
+    const std::vector<unsigned char>& masked_sequences);
+
 RdpTreeCompatibilityCallState make_rdp_tree_compatibility_call(
     int next_no, const std::array<int, 3>& sequences,
     const std::array<int, 6>& comparison_matrix, int role,

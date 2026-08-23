@@ -14,6 +14,7 @@ done_trace_path="$workspace_dir/sandbox/native-trace/make-done-this3-trace.bin"
 trp_group_trace_path="$workspace_dir/sandbox/native-trace/make-trp-groups2-trace.bin"
 trp_score_trace_path="$workspace_dir/sandbox/native-trace/make-trp-score2-trace.bin"
 check_pattern_trace_path="$workspace_dir/sandbox/native-trace/check-pattern-trace.bin"
+cmaxd_trace_path="$workspace_dir/sandbox/native-trace/cmaxd-trace.bin"
 runtime_dir="$workspace_dir/sandbox/source-build/rdp-dll-smoke/rebuilt"
 proxy_dir="$workspace_dir/sandbox/native-trace/dna-proxy"
 wine_bin="$workspace_dir/software/wine-11.13/bin"
@@ -35,6 +36,7 @@ touch "$collect_trace_path"
 touch "$phpr_trace_path"
 touch "$done_trace_path" "$trp_group_trace_path" "$trp_score_trace_path"
 touch "$check_pattern_trace_path"
+touch "$cmaxd_trace_path"
 
 dataset_numbers=${DATASET_NUMBERS:-"0 1 2 3 4 5 6 7 8 9"}
 for number in $dataset_numbers; do
@@ -48,6 +50,7 @@ for number in $dataset_numbers; do
   trp_group_before=$(stat -c %s "$trp_group_trace_path")
   trp_score_before=$(stat -c %s "$trp_score_trace_path")
   check_pattern_before=$(stat -c %s "$check_pattern_trace_path")
+  cmaxd_before=$(stat -c %s "$cmaxd_trace_path")
   (
     cd "$run_dir"
     PATH="$wine_bin:$PATH" WINEPREFIX="$wine_prefix" \
@@ -63,6 +66,7 @@ for number in $dataset_numbers; do
   trp_group_after=$(stat -c %s "$trp_group_trace_path")
   trp_score_after=$(stat -c %s "$trp_score_trace_path")
   check_pattern_after=$(stat -c %s "$check_pattern_trace_path")
+  cmaxd_after=$(stat -c %s "$cmaxd_trace_path")
   if [[ $after -le $before ]]; then
     printf 'no FindActualEvents trace captured for %s\n' "$dataset" >&2
     exit 1
@@ -90,6 +94,10 @@ for number in $dataset_numbers; do
   fi
   if [[ $check_pattern_after -le $check_pattern_before ]]; then
     printf 'no CheckPatternX trace captured for %s\n' "$dataset" >&2
+    exit 1
+  fi
+  if [[ $cmaxd_after -le $cmaxd_before ]]; then
+    printf 'no CMaxD2P3 trace captured for %s\n' "$dataset" >&2
     exit 1
   fi
   dd if="$trace_path" \
@@ -144,5 +152,12 @@ for number in $dataset_numbers; do
   "$node_bin" "$project_dir/tools/convert-check-pattern-trace.mjs" \
     "$capture_dir/$dataset-check-pattern-trace.bin" \
     "$capture_dir/$dataset-check-pattern-v1.bin"
+  dd if="$cmaxd_trace_path" \
+    of="$capture_dir/$dataset-cmaxd2p3-trace.bin" \
+    bs=1 skip="$cmaxd_before" count="$((cmaxd_after-cmaxd_before))" \
+    status=none
+  "$node_bin" "$project_dir/tools/convert-cmaxd2p3-trace.mjs" \
+    "$capture_dir/$dataset-cmaxd2p3-trace.bin" \
+    "$capture_dir/$dataset-cmaxd2p3-v1.bin"
   printf '%s captured\n' "$dataset"
 done

@@ -3434,6 +3434,164 @@ RdpFinalTrimState make_rdp_consensus_candidates(
     return state;
 }
 
+RdpMaximumDistanceState calculate_rdp_maximum_distances(
+    const int sequence_length, const int next_no,
+    const std::array<int, 3>& sequences,
+    const int beginning, const int ending,
+    const std::vector<short>& sequence_data,
+    const std::vector<unsigned char>& masked_sequences) {
+    const int count = next_no + 1;
+    const int stride = sequence_length + 1;
+    if (sequence_length < 1 || next_no < 3 || beginning < 1 ||
+        beginning > sequence_length || ending < 1 ||
+        ending > sequence_length ||
+        sequence_data.size() < static_cast<std::size_t>(stride * count) ||
+        masked_sequences.size() != static_cast<std::size_t>(count)) {
+        throw std::runtime_error("CalcMaxD input dimensions differ");
+    }
+
+    RdpMaximumDistanceState state;
+    state.representative_mask.assign(count, 0);
+    state.included_mask.assign(count, 0);
+    for (const int sequence : sequences) {
+        if (sequence < 0 || sequence > next_no) {
+            throw std::runtime_error("CalcMaxD representative is out of range");
+        }
+        state.representative_mask[sequence] = 1;
+        state.included_mask[sequence] = 1;
+    }
+
+    // Module5.CalcMaxD reduces StartSize for very large alignments before it
+    // samples additional rows. All supplied demo runs remain in the branch
+    // that includes every unmasked row, but retain the exact size arithmetic
+    // so a future >30-row fixture can add the VB Rnd selection branch cleanly.
+    int start_size = 0;
+    for (int sequence = 0; sequence <= next_no; ++sequence) {
+        if (masked_sequences[sequence] == 0) ++start_size;
+    }
+    start_size = std::min(start_size, 30);
+    const double target_length =
+        static_cast<double>(start_size) * (start_size - 1) *
+        (start_size - 2) / 6.0 * 40000.0;
+    while (static_cast<double>(start_size) * (start_size - 1) *
+               (start_size - 2) / 6.0 * sequence_length >= target_length) {
+        --start_size;
+        if (start_size < 10) {
+            start_size = 10;
+            break;
+        }
+    }
+    if (start_size > next_no - 3) start_size = next_no - 3;
+    if (next_no <= start_size + 3) {
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            if (masked_sequences[sequence] == 0) {
+                state.included_mask[sequence] = 1;
+            }
+        }
+    } else {
+        throw std::runtime_error(
+            "CalcMaxD VB Rnd sampling requires a captured >30-row fixture");
+    }
+    for (int sequence = 0; sequence <= next_no; ++sequence) {
+        if (state.included_mask[sequence] != 0) {
+            state.included_sequences.push_back(sequence);
+        }
+    }
+    state.included_last =
+        static_cast<int>(state.included_sequences.size()) - 1;
+
+    state.informative_to_position.assign(stride, 0);
+    state.position_to_informative.assign(stride, 0);
+    int informative = 0;
+    for (int position = 1; position <= sequence_length; ++position) {
+        std::array<int, 4> counts{};
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            const short nucleotide =
+                sequence_data[position + sequence * stride];
+            if (nucleotide == 66) ++counts[0];
+            else if (nucleotide == 68) ++counts[1];
+            else if (nucleotide == 72) ++counts[2];
+            else if (nucleotide == 85) ++counts[3];
+        }
+        state.position_to_informative[position] = informative;
+        int repeated_states = 0;
+        for (const int value : counts) {
+            if (value >= 2) ++repeated_states;
+        }
+        if (repeated_states >= 2) {
+            ++informative;
+            state.informative_to_position[informative] = position;
+            state.position_to_informative[position] = informative;
+        }
+    }
+
+    state.nucleotide_map.assign(86, 0);
+    state.nucleotide_map[66] = 1;
+    state.nucleotide_map[68] = 2;
+    state.nucleotide_map[72] = 3;
+    state.nucleotide_map[85] = 4;
+    state.split_scores.assign(1875, 0.0F);
+    // threshold.CPP::MakeVScoreMat. The source fills only states 1..4;
+    // every tuple containing a missing-state zero remains zero-initialized.
+    for (int first = 1; first < 5; ++first) {
+        for (int second = 1; second < 5; ++second) {
+            for (int third = 1; third < 5; ++third) {
+                for (int fourth = 1; fourth < 5; ++fourth) {
+                    const int cell = first + second * 5 + third * 25 +
+                        fourth * 125;
+                    if (first == second) {
+                        if (first != third) {
+                            if (third == fourth) {
+                                state.split_scores[cell] = 1.0F;
+                            } else if (fourth != first) {
+                                state.split_scores[cell] = 0.5F;
+                            }
+                        }
+                    } else if (first == third) {
+                        if (first != fourth) {
+                            state.split_scores[cell + 625] =
+                                fourth == second ? 1.0F : 0.5F;
+                        }
+                    } else if (first == fourth) {
+                        state.split_scores[cell + 1250] =
+                            second == third ? 1.0F : 0.5F;
+                    } else if (second == third) {
+                        if (second != fourth) {
+                            state.split_scores[cell + 1250] = 0.5F;
+                        }
+                    } else if (third == fourth) {
+                        if (second != fourth) state.split_scores[cell] = 0.5F;
+                    } else if (second == fourth) {
+                        state.split_scores[cell + 625] = 0.5F;
+                    }
+                }
+            }
+        }
+    }
+    std::vector<short> sequence_scratch(
+        static_cast<std::size_t>(stride) * count, 0);
+    std::array<float, 3> outside{};
+    std::array<float, 3> inside{};
+    state.result = MathFuncs::MyMathFuncs::CMaxD2P3(
+        state.included_last, sequences[0], sequences[1], sequences[2],
+        beginning, ending, next_no, sequence_length,
+        const_cast<short*>(sequence_data.data()), sequence_scratch.data(),
+        state.informative_to_position.data(),
+        state.position_to_informative.data(), state.nucleotide_map.data(),
+        state.included_sequences.data(), state.included_mask.data(),
+        state.representative_mask.data(), outside.data(), inside.data(),
+        state.split_scores.data(), state.distance_totals.data(),
+        state.distance_counts.data());
+    if (state.distance_counts[0] > 0 && state.distance_counts[1] > 0 &&
+        state.distance_counts[2] > 0) {
+        for (int role = 0; role < 3; ++role) {
+            state.maximum_distances[role] = state.distance_totals[role] /
+                static_cast<float>(state.distance_counts[role]);
+        }
+    }
+    return state;
+}
+
 RdpPhylProScoreState make_rdp_phylpro_scores(
     const int next_no, const double minimum_offset,
     const std::vector<int>& done_this,

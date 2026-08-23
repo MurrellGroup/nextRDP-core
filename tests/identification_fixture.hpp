@@ -144,6 +144,13 @@ struct CheckPatternCaptureHeader {
     std::int32_t next_no;
     std::int32_t sequence_length;
 };
+
+struct CMaxD2P3CaptureHeader {
+    char magic[8];
+    std::uint32_t version;
+    std::int32_t next_no;
+    std::int32_t sequence_length;
+};
 #pragma pack(pop)
 
 static_assert(sizeof(UFDistCaptureHeader) == 32);

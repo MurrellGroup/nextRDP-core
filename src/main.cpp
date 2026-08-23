@@ -875,7 +875,8 @@ int fasta_all_redo_events_fixture(
     const std::string& rcompat_fixture_path,
     const std::string& phpr_fixture_path,
     const std::string& score_support_fixture_path,
-    const std::string& check_pattern_fixture_path) {
+    const std::string& check_pattern_fixture_path,
+    const std::string& cmaxd_fixture_path) {
     const Dna5ScanPreprocessApi preprocess_api{
         &MathFuncs::MyMathFuncs::MakeAListP2,
         &MathFuncs::MyMathFuncs::CountNucs,
@@ -3006,6 +3007,76 @@ int fasta_all_redo_events_fixture(
             std::cerr << '\n';
         }
     }
+    const char cmaxd_magic[8] = {
+        'C', 'M', 'A', 'X', 'D', '3', 'V', '1'};
+    const auto cmaxd_fixture =
+        load_rdp_sectioned_fixture<CMaxD2P3CaptureHeader>(
+            cmaxd_fixture_path, cmaxd_magic);
+    const auto cmaxd_metadata =
+        rdp_fixture_section<unsigned int>(cmaxd_fixture, 1);
+    const auto cmaxd_expected_sequence =
+        rdp_fixture_section<short>(cmaxd_fixture, 2);
+    const std::vector<unsigned char> maximum_distance_mask(
+        static_cast<std::size_t>(scan_state.next_no + 1), 0);
+    const auto maximum_distance = calculate_rdp_maximum_distances(
+        scan_state.sequence_length, scan_state.next_no,
+        correlation_sequences, selected.beginning, selected.ending,
+        scan_state.sequence_data, maximum_distance_mask);
+    const bool cmaxd_sequence_matches =
+        scan_state.sequence_data.size() >= cmaxd_expected_sequence.size() &&
+        std::equal(cmaxd_expected_sequence.begin(),
+                   cmaxd_expected_sequence.end(),
+                   scan_state.sequence_data.begin());
+    const bool cmaxd_matches =
+        cmaxd_fixture.header.next_no == scan_state.next_no &&
+        cmaxd_fixture.header.sequence_length == scan_state.sequence_length &&
+        cmaxd_metadata.size() == 10 &&
+        cmaxd_metadata[2] ==
+            static_cast<unsigned int>(maximum_distance.included_last) &&
+        std::equal(correlation_sequences.begin(), correlation_sequences.end(),
+                   cmaxd_metadata.begin() + 3) &&
+        cmaxd_metadata[6] == static_cast<unsigned int>(selected.beginning) &&
+        cmaxd_metadata[7] == static_cast<unsigned int>(selected.ending) &&
+        cmaxd_sequence_matches &&
+        maximum_distance.informative_to_position ==
+            rdp_fixture_section<int>(cmaxd_fixture, 3) &&
+        maximum_distance.position_to_informative ==
+            rdp_fixture_section<int>(cmaxd_fixture, 4) &&
+        maximum_distance.nucleotide_map ==
+            rdp_fixture_section<unsigned char>(cmaxd_fixture, 5) &&
+        maximum_distance.included_sequences ==
+            rdp_fixture_section<int>(cmaxd_fixture, 6) &&
+        maximum_distance.included_mask ==
+            rdp_fixture_section<unsigned char>(cmaxd_fixture, 7) &&
+        maximum_distance.representative_mask ==
+            rdp_fixture_section<unsigned char>(cmaxd_fixture, 8) &&
+        maximum_distance.split_scores ==
+            rdp_fixture_section<float>(cmaxd_fixture, 9) &&
+        std::vector<int>{maximum_distance.result} ==
+            rdp_fixture_section<int>(cmaxd_fixture, 10) &&
+        as_vector(maximum_distance.distance_totals) ==
+            rdp_fixture_section<float>(cmaxd_fixture, 11) &&
+        as_vector(maximum_distance.distance_counts) ==
+            rdp_fixture_section<int>(cmaxd_fixture, 12);
+    if (!cmaxd_matches) {
+        std::cerr << "CalcMaxD/CMaxD2P3 mismatch: sequence="
+                  << cmaxd_sequence_matches << " map="
+                  << (maximum_distance.informative_to_position ==
+                      rdp_fixture_section<int>(cmaxd_fixture, 3))
+                  << '/' << (maximum_distance.position_to_informative ==
+                      rdp_fixture_section<int>(cmaxd_fixture, 4))
+                  << " included="
+                  << (maximum_distance.included_sequences ==
+                      rdp_fixture_section<int>(cmaxd_fixture, 6))
+                  << " totals=";
+        const auto expected_totals =
+            rdp_fixture_section<float>(cmaxd_fixture, 11);
+        for (int role = 0; role < 3; ++role) {
+            std::cerr << maximum_distance.distance_totals[role] << '/'
+                      << expected_totals[role] << ',';
+        }
+        std::cerr << '\n';
+    }
     std::cout << "RDP all-redo raw event scan: " << events.scanned_triplets
               << " triplets (Alist return " << redo_count << "), "
               << events.significant_candidates << " significant intervals, "
@@ -3048,7 +3119,9 @@ int fasta_all_redo_events_fixture(
               << ", CheckPatternX "
               << (check_pattern_matches ? "PASS" : "FAIL")
               << ", FinalTrim prefix "
-              << (final_trim_prefix_matches ? "PASS" : "FAIL") << "\n";
+              << (final_trim_prefix_matches ? "PASS" : "FAIL")
+              << ", CalcMaxD " << (cmaxd_matches ? "PASS" : "FAIL")
+              << "\n";
 
     return make_test_structure_matches && first_selection_matches &&
             ufdist_matches && region_distance_matches &&
@@ -3057,7 +3130,7 @@ int fasta_all_redo_events_fixture(
          make_rlist_matches && find_actual_matches && strip_dup_matches &&
              rcompat_matches && rcompat_flow_matches && phpr_matches &&
              score_support_matches && check_pattern_matches &&
-             final_trim_prefix_matches
+             final_trim_prefix_matches && cmaxd_matches
              ? 0 : 1) : 1;
 }
 
@@ -3243,13 +3316,13 @@ int main(int argc, char** argv) {
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
             argv[9], argv[10], argv[11]);
     }
-    if (argc == 23 &&
+    if (argc == 24 &&
         std::string_view(argv[1]) == "fasta-all-redo-events-fixture") {
         return fasta_all_redo_events_fixture(
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
             argv[9], argv[10], argv[11], {argv[12], argv[13], argv[14]},
             argv[15], argv[16], argv[17], argv[18], argv[19], argv[20],
-            argv[21], argv[22]);
+            argv[21], argv[22], argv[23]);
     }
     if (argc == 3 && std::string_view(argv[1]) == "alist-rdp4-fixture") {
         return alist_rdp4_fixture(argv[2]);
