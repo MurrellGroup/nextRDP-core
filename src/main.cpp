@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <iostream>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace {
@@ -868,7 +869,10 @@ int fasta_all_redo_events_fixture(
     const std::string& make_sdmp_fixture_path,
     const std::array<std::string, 3>& fill_rmat_fixture_paths,
     const std::string& calcr_fixture_path,
-    const std::string& make_rlist_fixture_path) {
+    const std::string& make_rlist_fixture_path,
+    const std::string& find_actual_events_fixture_path,
+    const std::string& strip_dup_inv_fixture_path,
+    const std::string& rcompat_fixture_path) {
     const Dna5ScanPreprocessApi preprocess_api{
         &MathFuncs::MyMathFuncs::MakeAListP2,
         &MathFuncs::MyMathFuncs::CountNucs,
@@ -2096,6 +2100,304 @@ int fasta_all_redo_events_fixture(
         }
         std::cerr << '\n';
     }
+
+    const char find_actual_magic[8] = {
+        'F', 'A', 'E', 'V', 'E', 'N', 'T', '1'};
+    const auto find_actual_fixture =
+        load_rdp_sectioned_fixture<FindActualEventsCaptureHeader>(
+            find_actual_events_fixture_path, find_actual_magic);
+    std::array<int, 6> actual_starts{};
+    std::array<int, 6> actual_ends{};
+    for (int index = 0; index < 5; ++index) {
+        actual_starts[index] = start_positions[index];
+        actual_ends[index] = end_positions[index];
+    }
+    const auto actual_resolution = resolve_rdp_actual_events(
+        scan_state.sequence_length, scan_state.next_no,
+        correlation_sequences, correlation_comparison,
+        actual_starts, actual_ends, correlation_decisions, candidate_lists,
+        dont_redo, events, scan_state.next_no);
+    const auto as_vector = [](const auto& values) {
+        return std::vector<typename std::decay_t<decltype(values)>::value_type>(
+            values.begin(), values.end());
+    };
+    bool find_actual_matches = make_rlist_matches &&
+        find_actual_fixture.header.sequence_length ==
+            scan_state.sequence_length &&
+        find_actual_fixture.header.next_no == scan_state.next_no;
+    for (int role = 0; role < 3; ++role) {
+        const int base = role * 1000;
+        const auto& call = actual_resolution.calls[role];
+        const auto expected_inversion =
+            rdp_fixture_section<unsigned char>(
+                find_actual_fixture, base + 18);
+        const auto expected_membership =
+            rdp_fixture_section<unsigned char>(
+                find_actual_fixture, base + 24);
+        const bool inputs_match =
+            selected_sequences ==
+                rdp_fixture_section<int>(find_actual_fixture, base + 1) &&
+            as_vector(correlation_comparison) ==
+                rdp_fixture_section<int>(find_actual_fixture, base + 2) &&
+            as_vector(call.region_sizes_before) ==
+                rdp_fixture_section<int>(find_actual_fixture, base + 3) &&
+            dont_redo == rdp_fixture_section<unsigned char>(
+                find_actual_fixture, base + 4) &&
+            call.breakpoint_matches_before ==
+                rdp_fixture_section<int>(find_actual_fixture, base + 5) &&
+            call.best_matches_before ==
+                rdp_fixture_section<float>(find_actual_fixture, base + 6) &&
+            probability_vectors_match(call.acceptable_sequences_before,
+                rdp_fixture_section<double>(find_actual_fixture, base + 7)) &&
+            call.found_before ==
+                rdp_fixture_section<int>(find_actual_fixture, base + 8) &&
+            as_vector(actual_starts) ==
+                rdp_fixture_section<int>(find_actual_fixture, base + 9) &&
+            as_vector(actual_ends) ==
+                rdp_fixture_section<int>(find_actual_fixture, base + 10) &&
+            actual_resolution.correlations.correlations.correlation ==
+                rdp_fixture_section<float>(find_actual_fixture, base + 11) &&
+            actual_resolution.event_overlap_mask ==
+                rdp_fixture_section<int>(find_actual_fixture, base + 12) &&
+            actual_resolution.beginning_overlap_mask ==
+                rdp_fixture_section<int>(find_actual_fixture, base + 13) &&
+            actual_resolution.ending_overlap_mask ==
+                rdp_fixture_section<int>(find_actual_fixture, base + 14) &&
+            as_vector(call.candidate_scratch_before) ==
+                rdp_fixture_section<int>(find_actual_fixture, base + 15) &&
+            as_vector(call.candidate_last_before) ==
+                rdp_fixture_section<int>(find_actual_fixture, base + 16) &&
+            call.candidate_list_before ==
+                rdp_fixture_section<int>(find_actual_fixture, base + 17) &&
+            call.inversion_state_before == expected_inversion &&
+            as_vector(call.trace_sequences_before) ==
+                rdp_fixture_section<int>(find_actual_fixture, base + 19) &&
+            as_vector(call.match_before) ==
+                rdp_fixture_section<double>(find_actual_fixture, base + 20) &&
+            std::vector<short>(events.current_xover.begin(),
+                               events.current_xover.end()) ==
+                rdp_fixture_section<short>(find_actual_fixture, base + 21) &&
+            as_vector(call.sequence_scratch_before) ==
+                rdp_fixture_section<int>(find_actual_fixture, base + 22) &&
+            as_vector(call.tried_permutations_before) ==
+                rdp_fixture_section<unsigned char>(
+                    find_actual_fixture, base + 23) &&
+            call.role_membership_before == expected_membership;
+        const bool outputs_match =
+            std::vector<int>{call.result} ==
+                rdp_fixture_section<int>(find_actual_fixture, base + 101) &&
+            as_vector(call.region_sizes_after) ==
+                rdp_fixture_section<int>(find_actual_fixture, base + 102) &&
+            call.breakpoint_matches_after ==
+                rdp_fixture_section<int>(find_actual_fixture, base + 103) &&
+            call.best_matches_after ==
+                rdp_fixture_section<float>(find_actual_fixture, base + 104) &&
+            probability_vectors_match(call.acceptable_sequences_after,
+                rdp_fixture_section<double>(
+                    find_actual_fixture, base + 105)) &&
+            call.found_after ==
+                rdp_fixture_section<int>(find_actual_fixture, base + 106) &&
+            as_vector(call.candidate_scratch_after) ==
+                rdp_fixture_section<int>(find_actual_fixture, base + 107) &&
+            as_vector(call.trace_sequences_after) ==
+                rdp_fixture_section<int>(find_actual_fixture, base + 108) &&
+            as_vector(call.match_after) ==
+                rdp_fixture_section<double>(find_actual_fixture, base + 109) &&
+            as_vector(call.sequence_scratch_after) ==
+                rdp_fixture_section<int>(find_actual_fixture, base + 110) &&
+            as_vector(call.tried_permutations_after) ==
+                rdp_fixture_section<unsigned char>(
+                    find_actual_fixture, base + 111);
+        if (!inputs_match || !outputs_match) {
+            const auto differences = [](const auto& actual,
+                                        const auto& expected) {
+                std::size_t result = actual.size() == expected.size() ? 0 : 1;
+                for (std::size_t index = 0;
+                     index < std::min(actual.size(), expected.size()); ++index) {
+                    if (actual[index] != expected[index]) ++result;
+                }
+                return result;
+            };
+            const auto maximum_difference = [](const auto& actual,
+                                               const auto& expected) {
+                double result = 0.0;
+                for (std::size_t index = 0;
+                     index < std::min(actual.size(), expected.size()); ++index) {
+                    const double difference = static_cast<double>(std::abs(
+                        static_cast<double>(actual[index]) -
+                        static_cast<double>(expected[index])));
+                    result = std::max(result, difference);
+                }
+                return result;
+            };
+            const auto expected_ok_in = rdp_fixture_section<double>(
+                find_actual_fixture, base + 7);
+            const auto expected_ok_out = rdp_fixture_section<double>(
+                find_actual_fixture, base + 105);
+            std::cerr << "FindActualEvents role " << role
+                      << " mismatch: inputs=" << inputs_match
+                      << " outputs=" << outputs_match
+                      << " rnum=" << differences(
+                             as_vector(call.candidate_last_before),
+                             rdp_fixture_section<int>(
+                                 find_actual_fixture, base + 16))
+                      << " rlist=" << differences(
+                             call.candidate_list_before,
+                             rdp_fixture_section<int>(
+                                 find_actual_fixture, base + 17))
+                      << " invs=" << differences(
+                             call.inversion_state_before, expected_inversion)
+                      << " ok-in=" << differences(
+                             call.acceptable_sequences_before,
+                             expected_ok_in)
+                      << '/' << maximum_difference(
+                             call.acceptable_sequences_before,
+                             expected_ok_in)
+                      << " found=" << differences(
+                             call.found_after,
+                             rdp_fixture_section<int>(
+                                 find_actual_fixture, base + 106))
+                      << " ok-out=" << differences(
+                             call.acceptable_sequences_after,
+                             expected_ok_out)
+                      << '/' << maximum_difference(
+                             call.acceptable_sequences_after,
+                             expected_ok_out)
+                      << " bp=" << differences(
+                             call.breakpoint_matches_after,
+                             rdp_fixture_section<int>(
+                                 find_actual_fixture, base + 103))
+                      << " best=" << differences(
+                             call.best_matches_after,
+                             rdp_fixture_section<float>(
+                                 find_actual_fixture, base + 104))
+                      << '\n';
+        }
+        find_actual_matches =
+            find_actual_matches && inputs_match && outputs_match;
+    }
+    const char strip_dup_magic[8] = {
+        'S', 'T', 'R', 'I', 'P', 'D', 'I', '1'};
+    const auto strip_dup_fixture =
+        load_rdp_sectioned_fixture<StripDupInvCaptureHeader>(
+            strip_dup_inv_fixture_path, strip_dup_magic);
+    const bool strip_dup_matches = find_actual_matches &&
+        strip_dup_fixture.header.next_no == scan_state.next_no &&
+        as_vector(actual_resolution.candidate_last_before_strip) ==
+            rdp_fixture_section<int>(strip_dup_fixture, 1) &&
+        actual_resolution.candidate_list_before_strip ==
+            rdp_fixture_section<int>(strip_dup_fixture, 2) &&
+        actual_resolution.candidate_inverse_before_strip ==
+            rdp_fixture_section<int>(strip_dup_fixture, 3) &&
+        as_vector(actual_resolution.candidates.last) ==
+            rdp_fixture_section<int>(strip_dup_fixture, 101) &&
+        actual_resolution.candidates.list ==
+            rdp_fixture_section<int>(strip_dup_fixture, 102) &&
+        actual_resolution.candidates.inverse ==
+            rdp_fixture_section<int>(strip_dup_fixture, 103) &&
+        as_vector(actual_resolution.inversion_penalty) ==
+            rdp_fixture_section<int>(strip_dup_fixture, 104);
+    if (!strip_dup_matches) {
+        std::cerr << "StripDupInv mismatch: before-last="
+                  << (as_vector(actual_resolution.candidate_last_before_strip) ==
+                      rdp_fixture_section<int>(strip_dup_fixture, 1))
+                  << " before-list="
+                  << (actual_resolution.candidate_list_before_strip ==
+                      rdp_fixture_section<int>(strip_dup_fixture, 2))
+                  << " after-last="
+                  << (as_vector(actual_resolution.candidates.last) ==
+                      rdp_fixture_section<int>(strip_dup_fixture, 101))
+                  << " after-list="
+                  << (actual_resolution.candidates.list ==
+                      rdp_fixture_section<int>(strip_dup_fixture, 102))
+                  << " penalty="
+                  << (as_vector(actual_resolution.inversion_penalty) ==
+                      rdp_fixture_section<int>(strip_dup_fixture, 104))
+                  << '\n';
+    }
+    const char rcompat_magic[8] = {
+        'R', 'C', 'O', 'M', 'P', 'A', 'T', '1'};
+    const auto rcompat_fixture =
+        load_rdp_sectioned_fixture<RCompatCaptureHeader>(
+            rcompat_fixture_path, rcompat_magic);
+    const auto tree_compatibility = evaluate_rdp_tree_compatibility(
+        scan_state.next_no, correlation_sequences, correlation_comparison,
+        actual_resolution.inversion_penalty,
+        actual_resolution.candidates.last,
+        actual_resolution.candidates.list, good_comparisons,
+        background_adjusted, region_adjusted);
+    bool rcompat_matches = strip_dup_matches &&
+        rcompat_fixture.header.next_no == scan_state.next_no &&
+        rcompat_fixture.header.calls == 6;
+    for (int call_index = 0; call_index < 6; ++call_index) {
+        const int base = call_index * 1000;
+        const auto& call = tree_compatibility.calls[call_index];
+        const std::vector<int> metadata{call_index + 1, call.role};
+        const auto& matrix = call_index < 3
+            ? background_adjusted : region_adjusted;
+        const bool call_matches =
+            metadata == rdp_fixture_section<int>(rcompat_fixture, base + 1) &&
+            selected_sequences ==
+                rdp_fixture_section<int>(rcompat_fixture, base + 2) &&
+            as_vector(correlation_comparison) ==
+                rdp_fixture_section<int>(rcompat_fixture, base + 3) &&
+            as_vector(call.compatibility_before) ==
+                rdp_fixture_section<int>(rcompat_fixture, base + 4) &&
+            as_vector(call.reverse_compatibility_before) ==
+                rdp_fixture_section<int>(rcompat_fixture, base + 5) &&
+            as_vector(actual_resolution.inversion_penalty) ==
+                rdp_fixture_section<int>(rcompat_fixture, base + 6) &&
+            as_vector(actual_resolution.candidates.last) ==
+                rdp_fixture_section<int>(rcompat_fixture, base + 7) &&
+            as_vector(call.nonrecombinant_last_before) ==
+                rdp_fixture_section<int>(rcompat_fixture, base + 8) &&
+            good_comparisons ==
+                rdp_fixture_section<int>(rcompat_fixture, base + 9) &&
+            call.done_before ==
+                rdp_fixture_section<int>(rcompat_fixture, base + 10) &&
+            actual_resolution.candidates.list ==
+                rdp_fixture_section<int>(rcompat_fixture, base + 11) &&
+            call.nonrecombinant_list_before ==
+                rdp_fixture_section<int>(rcompat_fixture, base + 12) &&
+            matrix ==
+                rdp_fixture_section<float>(rcompat_fixture, base + 13) &&
+            as_vector(call.list_distances) ==
+                rdp_fixture_section<double>(rcompat_fixture, base + 14) &&
+            as_vector(call.compatibility_after) ==
+                rdp_fixture_section<int>(rcompat_fixture, base + 101) &&
+            as_vector(call.reverse_compatibility_after) ==
+                rdp_fixture_section<int>(rcompat_fixture, base + 102) &&
+            as_vector(call.nonrecombinant_last_after) ==
+                rdp_fixture_section<int>(rcompat_fixture, base + 103);
+        if (!call_matches) {
+            std::cerr << "MakeRCompat call " << call_index
+                      << " mismatch: matrix="
+                      << (matrix == rdp_fixture_section<float>(
+                             rcompat_fixture, base + 13))
+                      << " ldist="
+                      << (as_vector(call.list_distances) ==
+                          rdp_fixture_section<double>(
+                              rcompat_fixture, base + 14))
+                      << " before="
+                      << (as_vector(call.compatibility_before) ==
+                          rdp_fixture_section<int>(
+                              rcompat_fixture, base + 4))
+                      << " after="
+                      << (as_vector(call.compatibility_after) ==
+                          rdp_fixture_section<int>(
+                              rcompat_fixture, base + 101))
+                      << " reverse="
+                      << (as_vector(call.reverse_compatibility_after) ==
+                          rdp_fixture_section<int>(
+                              rcompat_fixture, base + 102))
+                      << " nrnum="
+                      << (as_vector(call.nonrecombinant_last_after) ==
+                          rdp_fixture_section<int>(
+                              rcompat_fixture, base + 103))
+                      << '\n';
+        }
+        rcompat_matches = rcompat_matches && call_matches;
+    }
     std::cout << "RDP all-redo raw event scan: " << events.scanned_triplets
               << " triplets (Alist return " << redo_count << "), "
               << events.significant_candidates << " significant intervals, "
@@ -2122,13 +2424,21 @@ int fasta_all_redo_events_fixture(
               << (fill_rmat_matches ? "PASS" : "FAIL")
               << ", CalCR " << (calcr_matches ? "PASS" : "FAIL")
               << ", MakeRList "
-              << (make_rlist_matches ? "PASS" : "FAIL") << "\n";
+              << (make_rlist_matches ? "PASS" : "FAIL")
+              << ", FindActualEvents "
+              << (find_actual_matches ? "PASS" : "FAIL")
+              << ", StripDupInv "
+              << (strip_dup_matches ? "PASS" : "FAIL")
+              << ", MakeRCompat "
+              << (rcompat_matches ? "PASS" : "FAIL") << "\n";
 
     return make_test_structure_matches && first_selection_matches &&
             ufdist_matches && region_distance_matches &&
             check_matrix_matches && make_nj_matches ?
         (make_sdmp_matches && fill_rmat_matches && calcr_matches &&
-         make_rlist_matches ? 0 : 1) : 1;
+         make_rlist_matches && find_actual_matches && strip_dup_matches &&
+             rcompat_matches
+             ? 0 : 1) : 1;
 }
 
 int alist_rdp4_fixture(const std::string& path) {
@@ -2313,12 +2623,12 @@ int main(int argc, char** argv) {
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
             argv[9], argv[10], argv[11]);
     }
-    if (argc == 17 &&
+    if (argc == 20 &&
         std::string_view(argv[1]) == "fasta-all-redo-events-fixture") {
         return fasta_all_redo_events_fixture(
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
             argv[9], argv[10], argv[11], {argv[12], argv[13], argv[14]},
-            argv[15], argv[16]);
+            argv[15], argv[16], argv[17], argv[18], argv[19]);
     }
     if (argc == 3 && std::string_view(argv[1]) == "alist-rdp4-fixture") {
         return alist_rdp4_fixture(argv[2]);

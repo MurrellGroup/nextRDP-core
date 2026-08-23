@@ -854,3 +854,785 @@ RdpCandidateLists make_rdp_candidate_lists(
     result.result = 1.0;
     return result;
 }
+
+RdpActualEventResolution resolve_rdp_actual_events(
+    const int sequence_length, const int next_no,
+    const std::array<int, 3>& sequences,
+    const std::array<int, 6>& comparison_matrix,
+    const std::array<int, 6>& starts,
+    const std::array<int, 6>& ends,
+    RdpCorrelationDecisionState correlations,
+    RdpCandidateLists candidates,
+    const std::vector<unsigned char>& dont_redo,
+    const RdpRawEventState& events,
+    int permanent_next_no) {
+    const int count = next_no + 1;
+    if (sequence_length < 1 || next_no < 2 ||
+        candidates.list.size() != static_cast<std::size_t>(3 * count) ||
+        candidates.inverse.size() != static_cast<std::size_t>(3 * count) ||
+        candidates.probability_values.size() !=
+            static_cast<std::size_t>(9 * count) ||
+        candidates.list_scores.size() != static_cast<std::size_t>(3 * count) ||
+        correlations.correlations.correlation.size() !=
+            static_cast<std::size_t>(9 * count) ||
+        correlations.correlations.inversion.size() !=
+            static_cast<std::size_t>(9 * count) ||
+        dont_redo.size() != static_cast<std::size_t>(3 * count) ||
+        events.current_xover.size() != static_cast<std::size_t>(count) ||
+        events.xover_list.size() != static_cast<std::size_t>(count)) {
+        throw std::runtime_error("FindActualEvents input dimensions differ");
+    }
+    if (permanent_next_no < 0) permanent_next_no = next_no;
+
+    const auto row = [](const int role, const int sequence) {
+        return static_cast<std::size_t>(role) + sequence * 3;
+    };
+    const auto rc = [](const int role, const int region,
+                       const int sequence) {
+        return static_cast<std::size_t>(role) + region * 3 + sequence * 9;
+    };
+    const auto ok = [](const int role, const int category,
+                       const int sequence) {
+        return static_cast<std::size_t>(role) + category * 3 + sequence * 57;
+    };
+    const auto probability = [count](const int role, const int sequence,
+                                     const int region) {
+        return static_cast<std::size_t>(role) + sequence * 3 +
+            static_cast<std::size_t>(region) * 3 * count;
+    };
+
+    RdpActualEventResolution output;
+    output.candidates = std::move(candidates);
+    output.correlations = std::move(correlations);
+    output.acceptable_sequences.assign(
+        static_cast<std::size_t>(57) * count, 0.0);
+    output.unfound.assign(static_cast<std::size_t>(3) * count, 0);
+    output.breakpoint_matches.assign(static_cast<std::size_t>(6) * count, 0);
+    output.best_matches.assign(static_cast<std::size_t>(3) * count, 0.0F);
+    auto& rlist = output.candidates.list;
+    auto& invlist = output.candidates.inverse;
+    auto& rnum = output.candidates.last;
+    auto& rcorr = output.correlations.correlations.correlation;
+    const auto& rinv = output.correlations.correlations.inversion;
+
+    // Module3.Check6: if direct and inverted evidence contradict each other,
+    // RDP keeps the direct interpretation and zeroes the inverted regions.
+    for (int role = 0; role < 3; ++role) {
+        for (int slot = 0; slot <= rnum[role]; ++slot) {
+            const auto list_index = row(role, slot);
+            const int sequence = rlist[list_index];
+            if (invlist[list_index] == 1) {
+                for (int region = 0; region < 3; ++region) {
+                    if (rcorr[rc(role, region, sequence)] > 0.83F &&
+                        rinv[rc(role, region, sequence)] == 0.0F) {
+                        invlist[list_index] = 0;
+                        for (int other = 0; other < 3; ++other) {
+                            if (rinv[rc(role, other, sequence)] > 0.0F) {
+                                rcorr[rc(role, other, sequence)] = 0.0F;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Module3 category 4 followed by Module2.AddOK1. The legacy category
+    // count is nineteen here even though FindActualEvents itself later uses
+    // its older hard-coded eighteen-category stride when writing category 1.
+    for (int role = 0; role < 3; ++role) {
+        for (int slot = 0; slot <= rnum[role]; ++slot) {
+            output.acceptable_sequences[
+                ok(role, 4, rlist[row(role, slot)])] = 1.0;
+        }
+    }
+    for (int role = 0; role < 3; ++role) {
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            if (dont_redo[row(role, sequence)] == 0) {
+                for (int region = 0; region < 3; ++region) {
+                    const double value = output.candidates.probability_values[
+                        probability(role, sequence, region)];
+                    const auto destination = ok(role, 0, sequence);
+                    if (value > 0.0 &&
+                        (value * permanent_next_no <
+                             output.acceptable_sequences[destination] ||
+                         output.acceptable_sequences[destination] == 0.0)) {
+                        output.acceptable_sequences[destination] =
+                            value * permanent_next_no;
+                    }
+                }
+            } else {
+                output.acceptable_sequences[ok(role, 0, sequence)] = 0.049;
+            }
+        }
+    }
+
+    std::vector<unsigned char> inversion_state(
+        static_cast<std::size_t>(3) * count, 0);
+    for (int role = 0; role < 3; ++role) {
+        for (int slot = 0; slot <= rnum[role]; ++slot) {
+            if (invlist[row(role, slot)] == 1) {
+                inversion_state[row(role, rlist[row(role, slot)])] = 1;
+            }
+        }
+    }
+
+    const auto make_overlap = [&](const int beginning, const int ending,
+                                  const int size_index) {
+        std::vector<int> mask(sequence_length + 1, 0);
+        if (beginning < ending) {
+            output.region_sizes[size_index] = ending - beginning + 1;
+            for (int position = beginning; position <= ending; ++position) {
+                mask[position] = 1;
+            }
+        } else {
+            output.region_sizes[size_index] =
+                ending + sequence_length - beginning + 1;
+            for (int position = 1; position <= ending; ++position) {
+                mask[position] = 1;
+            }
+            for (int position = beginning; position <= sequence_length;
+                 ++position) {
+                mask[position] = 1;
+            }
+        }
+        return mask;
+    };
+    const auto overlap_begin = make_overlap(starts[0], ends[1], 2);
+    const auto overlap_end = make_overlap(starts[2], ends[3], 4);
+    const auto overlap_event = make_overlap(starts[4], ends[4], 0);
+    output.beginning_overlap_mask = overlap_begin;
+    output.ending_overlap_mask = overlap_end;
+    output.event_overlap_mask = overlap_event;
+
+    std::vector<unsigned char> don(static_cast<std::size_t>(3) * count, 0);
+    std::array<int, 2> candidate_scratch{};
+    std::array<int, 3> trace_sequences{};
+    std::array<double, 2> match{};
+    std::array<int, 4> sequence_scratch{};
+    std::array<unsigned char, 6> tried_permutations{};
+
+    const auto overlap_size = [&](const RdpRawEvent& event,
+                                  const std::vector<int>& mask,
+                                  const int size_index) {
+        int overlap = 0;
+        if (event.beginning < event.ending) {
+            output.region_sizes[size_index] =
+                event.ending - event.beginning + 1;
+            for (int position = event.beginning; position <= event.ending;
+                 ++position) {
+                overlap += mask[position];
+            }
+        } else {
+            output.region_sizes[size_index] =
+                event.ending + sequence_length - event.beginning + 1;
+            for (int position = 1; position <= event.ending; ++position) {
+                overlap += mask[position];
+            }
+            for (int position = event.beginning; position <= sequence_length;
+                 ++position) {
+                overlap += mask[position];
+            }
+        }
+        return overlap;
+    };
+    const auto interval_overlap = [&](const int beginning, const int ending,
+                                      const std::vector<int>& mask,
+                                      const int size_index) {
+        int overlap = 0;
+        if (beginning < ending) {
+            output.region_sizes[size_index] = ending - beginning + 1;
+            for (int position = beginning; position <= ending; ++position) {
+                overlap += mask[position];
+            }
+        } else {
+            output.region_sizes[size_index] =
+                ending + sequence_length - beginning + 1;
+            for (int position = 1; position <= ending; ++position) {
+                overlap += mask[position];
+            }
+            for (int position = beginning; position <= sequence_length;
+                 ++position) {
+                overlap += mask[position];
+            }
+        }
+        return overlap;
+    };
+
+    for (int role = 0; role < 3; ++role) {
+        auto& call = output.calls[role];
+        call.role = role;
+        std::vector<unsigned char> role_membership(
+            static_cast<std::size_t>(3) * count, 0);
+        role_membership[row(comparison_matrix[role],
+                            sequences[comparison_matrix[role]])] = 1;
+        role_membership[row(comparison_matrix[role + 3],
+                            sequences[comparison_matrix[role + 3]])] = 1;
+        for (int slot = 0; slot <= rnum[role]; ++slot) {
+            role_membership[row(role, rlist[row(role, slot)])] = 1;
+        }
+        std::vector<int> found(count, 0);
+
+        call.region_sizes_before = output.region_sizes;
+        call.breakpoint_matches_before = output.breakpoint_matches;
+        call.best_matches_before = output.best_matches;
+        call.acceptable_sequences_before = output.acceptable_sequences;
+        call.found_before = found;
+        call.candidate_last_before = rnum;
+        call.candidate_list_before = rlist;
+        call.inversion_state_before = inversion_state;
+        call.candidate_scratch_before = candidate_scratch;
+        call.trace_sequences_before = trace_sequences;
+        call.match_before = match;
+        call.sequence_scratch_before = sequence_scratch;
+        call.tried_permutations_before = tried_permutations;
+        call.role_membership_before = role_membership;
+
+        int old_slot = -1;
+        int repeat_count = 0;
+        for (int daughter = 0; daughter <= next_no; ++daughter) {
+            if (role_membership[row(role, daughter)] == 1 ||
+                sequences[comparison_matrix[role]] == daughter ||
+                sequences[comparison_matrix[role + 3]] == daughter) {
+                old_slot = -1;
+                for (int slot = 1;
+                     slot <= events.current_xover[daughter]; ++slot) {
+                    if (old_slot != slot) {
+                        tried_permutations.fill(0);
+                        old_slot = slot;
+                        repeat_count = 0;
+                    } else {
+                        ++repeat_count;
+                        if (repeat_count > 6) {
+                            tried_permutations.fill(0);
+                            old_slot = slot;
+                            ++slot;
+                            repeat_count = 0;
+                            if (slot > events.current_xover[daughter]) break;
+                        }
+                        if (slot == old_slot) {
+                            int tried = 0;
+                            for (const auto value : tried_permutations) {
+                                tried += value;
+                            }
+                            if (tried == 6) {
+                                ++slot;
+                                tried_permutations.fill(0);
+                                old_slot = slot;
+                                repeat_count = 0;
+                                if (slot > events.current_xover[daughter]) {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    const auto& event = events.xover_list[daughter][slot - 1];
+                    sequence_scratch[1] = event.major_parent;
+                    if (role_membership[row(role, sequence_scratch[1])] == 1 ||
+                        sequences[comparison_matrix[role]] ==
+                            sequence_scratch[1] ||
+                        sequences[comparison_matrix[role + 3]] ==
+                            sequence_scratch[1]) {
+                        int go_on = 0;
+                        sequence_scratch[2] = event.minor_parent;
+                        if (role_membership[row(role, sequence_scratch[2])] == 1 ||
+                            sequences[comparison_matrix[role]] ==
+                                sequence_scratch[2] ||
+                            sequences[comparison_matrix[role + 3]] ==
+                                sequence_scratch[2]) {
+                            sequence_scratch[0] = daughter;
+                            match[0] = 0.0;
+                            const int s0 = sequence_scratch[0];
+                            const int s1 = sequence_scratch[1];
+                            const int s2 = sequence_scratch[2];
+                            const std::array<std::array<int, 3>, 6> orders{{
+                                {{s0, s1, s2}}, {{s0, s2, s1}},
+                                {{s1, s2, s0}}, {{s1, s0, s2}},
+                                {{s2, s1, s0}}, {{s2, s0, s1}},
+                            }};
+                            for (int permutation = 0; permutation < 6;
+                                 ++permutation) {
+                                const auto& order = orders[permutation];
+                                if (tried_permutations[permutation] == 0 &&
+                                    ((role == 0 && don[row(0, order[0])] == 0) ||
+                                     (role == 1 && don[row(1, order[1])] == 0) ||
+                                     (role == 2 && don[row(2, order[2])] == 0)) &&
+                                    role_membership[row(0, order[0])] == 1 &&
+                                    role_membership[row(1, order[1])] == 1 &&
+                                    role_membership[row(2, order[2])] == 1) {
+                                    tried_permutations[permutation] = 1;
+                                    trace_sequences = order;
+                                    match[0] = 3.0;
+                                    break;
+                                }
+                            }
+                            if (match[0] == 3.0) {
+                                if (inversion_state[row(
+                                        comparison_matrix[role],
+                                        trace_sequences[
+                                            comparison_matrix[role]])] == 0 &&
+                                    inversion_state[row(
+                                        comparison_matrix[role + 3],
+                                        trace_sequences[
+                                            comparison_matrix[role + 3]])] == 0) {
+                                    int candidate = 0;
+                                    for (; candidate <= rnum[role]; ++candidate) {
+                                        if (rlist[row(role, candidate)] ==
+                                            trace_sequences[role]) {
+                                            break;
+                                        }
+                                    }
+                                    if (candidate > rnum[role]) {
+                                        match[0] = 0.0;
+                                    } else {
+                                        candidate_scratch[1] = candidate;
+                                        go_on = 1;
+                                    }
+                                } else {
+                                    match[0] = 0.0;
+                                }
+                                if (match[0] == 3.0 && go_on == 1) {
+                                    const int overlap = overlap_size(
+                                        event, overlap_event, 1);
+                                    if (overlap > 0) {
+                                        match[1] =
+                                            (static_cast<double>(overlap) * 2.0) /
+                                            (output.region_sizes[0] +
+                                             output.region_sizes[1]);
+                                    } else {
+                                        match[1] = 0.0;
+                                    }
+                                    const double original_match = match[1];
+                                    if (match[0] * match[1] > 1.0) {
+                                        const int candidate_sequence = rlist[row(
+                                            role, candidate_scratch[1])];
+                                        if (rcorr[rc(role, 2,
+                                                    candidate_sequence)] > 0.83F &&
+                                            match[1] > 0.6) {
+                                            match[0] = 1.0;
+                                        }
+                                        // Literal threshold.CPP indexing is
+                                        // preserved in the second term: it
+                                        // omits the normal three-column stride.
+                                        const auto legacy_slot =
+                                            static_cast<std::size_t>(role) +
+                                            candidate_scratch[1];
+                                        const int legacy_sequence =
+                                            legacy_slot < rlist.size()
+                                                ? rlist[legacy_slot] : 0;
+                                        if (rcorr[rc(role, 2,
+                                                    candidate_sequence)] > 0.83F ||
+                                            rcorr[rc(role, 0,
+                                                    legacy_sequence)] > 0.83F) {
+                                            const int flank_overlap =
+                                                interval_overlap(
+                                                    starts[0], ends[1],
+                                                    overlap_begin, 3);
+                                            if (flank_overlap > 0) {
+                                                match[1] =
+                                                    (static_cast<double>(
+                                                         flank_overlap) * 2.0) /
+                                                    (output.region_sizes[2] +
+                                                     output.region_sizes[3]);
+                                            } else {
+                                                match[1] = 0.0;
+                                            }
+                                            if (match[1] > 0.2) {
+                                                match[0] += 1.0;
+                                            } else if (rcorr[rc(
+                                                           role, 0,
+                                                           candidate_sequence)] >
+                                                       0.83F) {
+                                                if (match[1] == 0.0 ||
+                                                    flank_overlap ==
+                                                        output.region_sizes[2]) {
+                                                    match[0] -= 0.5;
+                                                }
+                                            }
+                                        }
+                                        if (rcorr[rc(role, 2,
+                                                    candidate_sequence)] > 0.83F ||
+                                            rcorr[rc(role, 1,
+                                                    candidate_sequence)] > 0.83F) {
+                                            const int flank_overlap =
+                                                interval_overlap(
+                                                    starts[2], ends[3],
+                                                    overlap_end, 5);
+                                            if (flank_overlap > 0) {
+                                                match[1] =
+                                                    (static_cast<double>(
+                                                         flank_overlap) * 2.0) /
+                                                    (output.region_sizes[4] +
+                                                     output.region_sizes[5]);
+                                            } else {
+                                                match[1] = 0.0;
+                                            }
+                                            if (match[1] > 0.2) {
+                                                match[0] += 1.0;
+                                            } else if (rcorr[rc(
+                                                           role, 0,
+                                                           candidate_sequence)] >
+                                                       0.83F) {
+                                                if (match[1] == 0.0 ||
+                                                    flank_overlap ==
+                                                        output.region_sizes[4]) {
+                                                    match[0] -= 0.5;
+                                                }
+                                            }
+                                        }
+                                        if (match[0] >= 1.0) {
+                                            found[candidate_scratch[1]] = 1;
+                                            const auto best =
+                                                row(role, candidate_sequence);
+                                            if (output.best_matches[best] <
+                                                original_match) {
+                                                // FindActualEvents was compiled
+                                                // for OKSeq(2,17,N), so this
+                                                // write intentionally uses 54,
+                                                // not the caller's 57 stride.
+                                                output.acceptable_sequences[
+                                                    static_cast<std::size_t>(role) +
+                                                    3 +
+                                                    candidate_sequence * 54] =
+                                                    original_match;
+                                                output.best_matches[best] =
+                                                    static_cast<float>(
+                                                        original_match);
+                                                output.breakpoint_matches[
+                                                    static_cast<std::size_t>(role) +
+                                                    candidate_sequence * 6] =
+                                                    event.beginning;
+                                                output.breakpoint_matches[
+                                                    static_cast<std::size_t>(role) +
+                                                    3 +
+                                                    candidate_sequence * 6] =
+                                                    event.ending;
+                                            }
+                                            --slot;
+                                        }
+                                    } else {
+                                        --slot;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        call.result = 0;
+        call.region_sizes_after = output.region_sizes;
+        call.breakpoint_matches_after = output.breakpoint_matches;
+        call.best_matches_after = output.best_matches;
+        call.acceptable_sequences_after = output.acceptable_sequences;
+        call.found_after = found;
+        call.candidate_scratch_after = candidate_scratch;
+        call.trace_sequences_after = trace_sequences;
+        call.match_after = match;
+        call.sequence_scratch_after = sequence_scratch;
+        call.tried_permutations_after = tried_permutations;
+
+        for (int slot = 0; slot <= rnum[role]; ++slot) {
+            if (found[slot] == 0 || invlist[row(role, slot)] == 1) {
+                output.unfound[row(role, rlist[row(role, slot)])] = 1;
+            }
+        }
+
+        // threshold.CPP::StripUnfound, including its swap-with-last ordering.
+        int slot = 0;
+        while (slot <= rnum[role]) {
+            if (found[slot] == 0) {
+                const int sequence = rlist[row(role, slot)];
+                if (invlist[row(role, slot)] == 1 ||
+                    rcorr[rc(role, 0, sequence)] < 0.95F ||
+                    rcorr[rc(role, 1, sequence)] < 0.95F ||
+                    rcorr[rc(role, 2, sequence)] < 0.95F) {
+                    if (slot < rnum[role]) {
+                        output.candidates.list_scores[
+                            row(role, sequence)] = 0.0;
+                        rlist[row(role, slot)] =
+                            rlist[row(role, rnum[role])];
+                        invlist[row(role, slot)] =
+                            invlist[row(role, rnum[role])];
+                        found[slot] = found[rnum[role]];
+                    }
+                    --rnum[role];
+                } else {
+                    ++slot;
+                }
+            } else {
+                ++slot;
+            }
+        }
+    }
+    output.candidate_last_before_strip = rnum;
+    output.candidate_list_before_strip = rlist;
+    output.candidate_inverse_before_strip = invlist;
+
+    // threshold.CPP::StripDupInv. Its duplicate-removal block is dead because
+    // MScore is initialized to zero and tested against ten, so only the
+    // inversion penalty and swap-with-last removal execute.
+    for (int role = 0; role < 3; ++role) {
+        for (int slot = 0; slot <= rnum[role]; ++slot) {
+            if (invlist[row(role, slot)] > 0) {
+                output.inversion_penalty[role] = 1;
+                break;
+            }
+        }
+    }
+    for (int role = 0; role < 3; ++role) {
+        int slot = 0;
+        while (slot <= rnum[role]) {
+            if (invlist[row(role, slot)] == 1) {
+                if (slot < rnum[role]) {
+                    rlist[row(role, slot)] = rlist[row(role, rnum[role])];
+                    invlist[row(role, slot)] =
+                        invlist[row(role, rnum[role])];
+                }
+                --rnum[role];
+            } else {
+                ++slot;
+            }
+        }
+    }
+    return output;
+}
+
+RdpTreeCompatibilityState evaluate_rdp_tree_compatibility(
+    const int next_no, const std::array<int, 3>& sequences,
+    const std::array<int, 6>& comparison_matrix,
+    const std::array<int, 3>& inversion_penalty,
+    const std::array<int, 3>& candidate_last,
+    const std::vector<int>& candidate_list,
+    const std::vector<int>& good_comparisons,
+    const std::vector<float>& background_ancestor_matrix,
+    const std::vector<float>& region_ancestor_matrix) {
+    const int count = next_no + 1;
+    if (candidate_list.size() != static_cast<std::size_t>(3 * count) ||
+        good_comparisons.size() != static_cast<std::size_t>(2 * count) ||
+        background_ancestor_matrix.size() !=
+            static_cast<std::size_t>(count) * count ||
+        region_ancestor_matrix.size() !=
+            static_cast<std::size_t>(count) * count) {
+        throw std::runtime_error("MakeRCompat input dimensions differ");
+    }
+    const auto cell = [](const int role, const int item) {
+        return static_cast<std::size_t>(role) + item * 3;
+    };
+    const auto make_list_distances = [&](const std::vector<float>& matrix) {
+        std::array<double, 3> distances{};
+        for (int role = 0; role < 3; ++role) {
+            for (int first = 0; first < candidate_last[role]; ++first) {
+                const int first_sequence =
+                    candidate_list[cell(role, first)];
+                const auto first_offset =
+                    static_cast<std::size_t>(first_sequence) * count;
+                for (int second = first + 1;
+                     second <= candidate_last[role]; ++second) {
+                    const float distance = matrix[
+                        candidate_list[cell(role, second)] + first_offset];
+                    if (distance > distances[role]) {
+                        distances[role] = distance;
+                    }
+                }
+            }
+        }
+        return distances;
+    };
+
+    RdpTreeCompatibilityState output;
+    output.background_list_distances =
+        make_list_distances(background_ancestor_matrix);
+    output.region_list_distances =
+        make_list_distances(region_ancestor_matrix);
+
+    const auto run_call = [&](const int call_index, const int role,
+                              const std::vector<float>& matrix,
+                              const std::array<double, 3>& list_distances,
+                              std::array<int, 3>& compatibility,
+                              std::array<int, 3>& reverse_compatibility,
+                              std::array<int, 3>& nonrecombinant_last,
+                              std::vector<int>& nonrecombinant_list) {
+        auto& call = output.calls[call_index];
+        call.role = role;
+        std::vector<int> categories(next_no * 3 + 1, 0);
+        std::vector<int> done(count, 0);
+        call.compatibility_before = compatibility;
+        call.reverse_compatibility_before = reverse_compatibility;
+        call.nonrecombinant_last_before = nonrecombinant_last;
+        call.done_before = done;
+        call.nonrecombinant_list_before = nonrecombinant_list;
+        call.list_distances = list_distances;
+
+        const int first_selected =
+            sequences[comparison_matrix[role]];
+        const int second_selected =
+            sequences[comparison_matrix[role + 3]];
+        done[first_selected] = 1;
+        done[second_selected] = 1;
+        for (int slot = 0; slot <= candidate_last[role]; ++slot) {
+            const int recombinant = candidate_list[cell(role, slot)];
+            for (int sequence = 0; sequence <= next_no; ++sequence) {
+                if (done[sequence] == 0 &&
+                    (good_comparisons[sequence] == 1 ||
+                     good_comparisons[sequence + count] == 1) &&
+                    matrix[recombinant +
+                           static_cast<std::size_t>(sequence) * count] <
+                        list_distances[role]) {
+                    int comparison = 0;
+                    for (; comparison <= candidate_last[role]; ++comparison) {
+                        if (sequence == candidate_list[cell(role, comparison)]) {
+                            break;
+                        }
+                    }
+                    if (comparison == candidate_last[role] + 1) {
+                        done[sequence] = 1;
+                        nonrecombinant_list[cell(
+                            role, nonrecombinant_last[role])] = sequence;
+                        ++nonrecombinant_last[role];
+                    }
+                }
+            }
+        }
+        --nonrecombinant_last[role];
+
+        compatibility[role] = 0;
+        for (int slot = 0; slot <= candidate_last[role]; ++slot) {
+            std::fill(categories.begin(), categories.end(), 0);
+            const int recombinant = candidate_list[cell(role, slot)];
+            if (nonrecombinant_last[role] > -1) {
+                for (int item = 0; item <= nonrecombinant_last[role]; ++item) {
+                    const int nonrecombinant =
+                        nonrecombinant_list[cell(role, item)];
+                    const int category = static_cast<int>(
+                        matrix[recombinant +
+                               static_cast<std::size_t>(nonrecombinant) *
+                                   count] *
+                            1000.0F +
+                        0.0000001F);
+                    categories[category] = 1;
+                }
+            }
+            if (matrix[recombinant +
+                       static_cast<std::size_t>(first_selected) * count] <
+                list_distances[role]) {
+                for (int item = 0; item <= candidate_last[role]; ++item) {
+                    const int other = candidate_list[cell(role, item)];
+                    const int category = static_cast<int>(
+                        matrix[other +
+                               static_cast<std::size_t>(first_selected) *
+                                   count] *
+                            1000.0F +
+                        0.0000001F);
+                    categories[category] = 1;
+                }
+            }
+            if (matrix[recombinant +
+                       static_cast<std::size_t>(second_selected) * count] <
+                list_distances[role]) {
+                for (int item = 0; item <= candidate_last[role]; ++item) {
+                    const int other = candidate_list[cell(role, item)];
+                    const int category = static_cast<int>(
+                        matrix[other +
+                               static_cast<std::size_t>(second_selected) *
+                                   count] *
+                            1000.0F +
+                        0.0000001F);
+                    categories[category] = 1;
+                }
+            }
+            int category_count = 0;
+            for (int category = 0; category <= next_no; ++category) {
+                category_count += categories[category];
+            }
+            if (category_count > compatibility[role]) {
+                compatibility[role] = category_count;
+            }
+        }
+
+        int added_first = 0;
+        int added_second = 0;
+        for (int slot = 0; slot <= candidate_last[role]; ++slot) {
+            const int recombinant = candidate_list[cell(role, slot)];
+            if (matrix[recombinant +
+                       static_cast<std::size_t>(first_selected) * count] <
+                    list_distances[role] &&
+                added_first == 0) {
+                ++nonrecombinant_last[role];
+                nonrecombinant_list[cell(
+                    role, nonrecombinant_last[role])] = first_selected;
+                added_first = 1;
+            }
+            if (matrix[recombinant +
+                       static_cast<std::size_t>(second_selected) * count] <
+                    list_distances[role] &&
+                added_second == 0) {
+                ++nonrecombinant_last[role];
+                nonrecombinant_list[cell(
+                    role, nonrecombinant_last[role])] = second_selected;
+                added_second = 1;
+            }
+        }
+        reverse_compatibility[role] = 0;
+        if (nonrecombinant_last[role] > -1) {
+            for (int item = 0; item <= nonrecombinant_last[role]; ++item) {
+                std::fill(categories.begin(), categories.end(), 0);
+                const int nonrecombinant =
+                    nonrecombinant_list[cell(role, item)];
+                for (int slot = 0; slot <= candidate_last[role]; ++slot) {
+                    const int recombinant = candidate_list[cell(role, slot)];
+                    const int category = static_cast<int>(
+                        matrix[nonrecombinant +
+                               static_cast<std::size_t>(recombinant) * count] *
+                            1000.0F +
+                        0.0000001F);
+                    categories[category] = 1;
+                }
+                int category_count = 0;
+                for (int category = 0; category <= next_no; ++category) {
+                    category_count += categories[category];
+                }
+                --category_count;
+                if (category_count > reverse_compatibility[role]) {
+                    reverse_compatibility[role] = category_count;
+                }
+            }
+        }
+        if (nonrecombinant_last[role] > -1 &&
+            reverse_compatibility[role] < compatibility[role]) {
+            compatibility[role] = reverse_compatibility[role];
+        }
+        if (compatibility[role] > candidate_last[role]) {
+            compatibility[role] = candidate_last[role];
+        }
+        if (compatibility[role] > 0) {
+            compatibility[role] += inversion_penalty[role];
+        }
+
+        call.compatibility_after = compatibility;
+        call.reverse_compatibility_after = reverse_compatibility;
+        call.nonrecombinant_last_after = nonrecombinant_last;
+    };
+
+    std::array<int, 3> background_last{};
+    std::vector<int> background_list(static_cast<std::size_t>(3) * count, 0);
+    for (int role = 0; role < 3; ++role) {
+        run_call(role, role, background_ancestor_matrix,
+                 output.background_list_distances,
+                 output.background_compatibility,
+                 output.background_reverse_compatibility,
+                 background_last, background_list);
+    }
+    for (int role = 0; role < 3; ++role) {
+        // The VB caller ReDims NRNum2 and NRList2 inside this loop, so every
+        // region-matrix role starts with a completely fresh list family.
+        std::array<int, 3> region_last{};
+        std::vector<int> region_list(static_cast<std::size_t>(3) * count, 0);
+        run_call(3 + role, role, region_ancestor_matrix,
+                 output.region_list_distances,
+                 output.region_compatibility,
+                 output.region_reverse_compatibility,
+                 region_last, region_list);
+    }
+    return output;
+}

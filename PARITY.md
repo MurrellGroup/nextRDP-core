@@ -38,6 +38,9 @@ outputs use the user's accepted platform-math tolerance when Windows and WASM
 | 29 | `MakeGoodC` | first-event `MakeRList` input on all ten datasets | byte-identical overlap eligibility |
 | 30 | `MakeINList` / `MakeACOR` | first-event `MakeRList` input on all ten datasets | byte-identical role map and acceptable-correlation mask |
 | 31 | `MakeRList` | first live call from each of ten fresh local-RDP runs | exact row bounds, candidate membership, list order, and inversion flags; accepted platform-math tolerance for derived probability cells |
+| 32 | `FindActualEvents` / `StripUnfound` | all three first-event role calls from fresh local-RDP runs on all ten datasets | exact candidate inputs, found-slot sets, overlap scores, breakpoint matches, swap-last pruning, and structural `OKSeq` state; accepted p-value tolerance |
+| 33 | `StripDupInv` | first live call from each of ten fresh local-RDP runs | exact pre/post row bounds, list order, inverse removal, and inversion penalties |
+| 34 | `MakeLDist` / `MakeRCompat` | first six FAMat/SAMat calls from fresh local-RDP runs on all ten datasets | byte-identical list distances, compatibility/reverse-compatibility scores, and non-recombinant list bounds |
 
 The live `AlistRDP4` fixture covers 2,300 triplets and changes 709 redo states.
 Because the exact C++ implementation calls `FastRecCheckPB` internally, that
@@ -123,6 +126,13 @@ the old-DNA `QuickDist6`, `MakeDMatS`, and `MakeGoodC` loops, constructs the
 compact three-row matrix panels used by `MakeINList`/`MakeACOR`, and executes a
 direct source port of `MakeRList`. Fresh first-call traces from the locally
 compiled RDP match all structural inputs and outputs on all ten datasets.
+The same connected path now executes Module3's active `FindActualEventsVB`
+wrapper, the compiled `FindActualEvents` body, `StripUnfound`, and
+`StripDupInv`, preserving their swap-last ordering and two confirmed legacy
+indexing bugs. It then runs `MakeLDist` and the first six FAMat/SAMat
+`MakeRCompat` calls. Every structural boundary matches fresh oracle runs on
+all ten datasets; carried probability cells use the approved `1e-12`
+tolerance.
 
 The orchestration preserves two otherwise easy-to-collapse state values:
 RDP passes the FASTA length to `FindSubSeqPB3` but the FASTA length plus one to

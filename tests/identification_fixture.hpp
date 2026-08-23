@@ -100,6 +100,27 @@ struct MakeRListCaptureHeader {
     std::uint32_t version;
     std::int32_t next_no;
 };
+
+struct FindActualEventsCaptureHeader {
+    char magic[8];
+    std::uint32_t version;
+    std::int32_t sequence_length;
+    std::int32_t next_no;
+    std::int32_t event_list_ub;
+};
+
+struct StripDupInvCaptureHeader {
+    char magic[8];
+    std::uint32_t version;
+    std::int32_t next_no;
+};
+
+struct RCompatCaptureHeader {
+    char magic[8];
+    std::uint32_t version;
+    std::int32_t next_no;
+    std::uint32_t calls;
+};
 #pragma pack(pop)
 
 static_assert(sizeof(UFDistCaptureHeader) == 32);
@@ -111,6 +132,9 @@ static_assert(sizeof(MakeSDMP2CaptureHeader) == 20);
 static_assert(sizeof(FillRmatCaptureHeader) == 40);
 static_assert(sizeof(CalCRChainCaptureHeader) == 16);
 static_assert(sizeof(MakeRListCaptureHeader) == 16);
+static_assert(sizeof(FindActualEventsCaptureHeader) == 24);
+static_assert(sizeof(StripDupInvCaptureHeader) == 16);
+static_assert(sizeof(RCompatCaptureHeader) == 20);
 
 template <typename UFDistFn>
 inline int run_ufdist_fixture(
