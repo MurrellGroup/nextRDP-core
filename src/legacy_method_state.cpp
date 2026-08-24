@@ -897,7 +897,7 @@ void run_rdp_maxchi_recheck(
     const std::vector<double>& store_lpv, const int store_lpv_ub,
     const RdpProbabilitySettings& settings,
     RdpLegacyEventAllocator& allocator, const int event_beginning,
-    const int event_ending) {
+    const int event_ending, const bool initial_scan) {
     constexpr int window_size = 70;
     constexpr int max_window = ChiLookupTable::max_window;
     const int length = scan_state.sequence_length;
@@ -912,9 +912,19 @@ void run_rdp_maxchi_recheck(
         const_cast<short*>(scan_state.sequence_data.data()),
         difference_position.data(), position_difference.data());
     if (informative < critical * 2 || informative < 7) return;
-    half_window = event_half_window(
-        event_beginning, event_ending, informative, critical, half_window,
-        position_difference);
+    if (initial_scan) {
+        // MakeWindowSize takes the configured fixed width when BEP=ENP=0,
+        // including the exploratory FindAllFlag=1 path.
+        if (half_window * 2 > informative)
+            half_window = vb_clng(informative * 0.75 / 2.0 + 0.00001) - 1;
+        if (half_window <= critical)
+            half_window = vb_clng(informative / 2.0 + 0.00001) - 1;
+        if (half_window < 6) return;
+    } else {
+        half_window = event_half_window(
+            event_beginning, event_ending, informative, critical, half_window,
+            position_difference);
+    }
     if (half_window < 0) return;
     const int win_upper = length + half_window * 2;
     const int win_stride = win_upper + 1;

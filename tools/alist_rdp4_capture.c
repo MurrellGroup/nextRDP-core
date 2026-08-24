@@ -61,6 +61,9 @@ typedef int(STDCALL *CleanXOSNWFn)(int, int, int, char *);
 typedef int(STDCALL *FindSubSeqGCAP7Fn)(
     int, unsigned char *, int, unsigned char *, char, int, int, int, int,
     char *, int *, int *, int *);
+typedef int(STDCALL *FindSubSeqMCPBFn)(
+    int, int, int, int, int, int, unsigned char *, int *, int *,
+    unsigned char *);
 
 typedef struct XOVERDEFINE {
   unsigned char OutsideFlag;
@@ -602,6 +605,7 @@ static void write_section(HANDLE file, u32 id, const void *data, u32 bytes) {
 }
 
 static int geneconv_invocation;
+static int maxchi_invocation;
 
 int STDCALL XOHomologyPCapture(
     short inlyer, int sequence_length, int xover_length, short xover_window,
@@ -1182,6 +1186,15 @@ int STDCALL MakeTestPVsCapture(
     if (file != INVALID_HANDLE_VALUE) {
       write_bytes(file, &geneconv_invocation,
                   (DWORD)sizeof(geneconv_invocation));
+      CloseHandle(file);
+    }
+    file = CreateFileA(
+        "maxchi-count-at-first-make-test.bin", GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, (void *)0, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
+    if (file != INVALID_HANDLE_VALUE) {
+      write_bytes(file, &maxchi_invocation,
+                  (DWORD)sizeof(maxchi_invocation));
       CloseHandle(file);
     }
   }
@@ -2224,6 +2237,48 @@ int STDCALL FindSubSeqGCAP7Capture(
       FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
   if (file != INVALID_HANDLE_VALUE) {
     if (geneconv_invocation != 1)
+      SetFilePointer(file, 0, (long *)0, FILE_END);
+    write_bytes(file, record, (DWORD)sizeof(record));
+    CloseHandle(file);
+  }
+  return result;
+}
+
+/* Record the source-order triplets that enter the active compressed
+ * MCXoverF path before the first shared MakeTestPVs boundary. */
+int STDCALL FindSubSeqMCPBCapture(
+    int fss_ub, int compressed_ub, int next_no, int seq1, int seq2, int seq3,
+    unsigned char *compressed, int *difference_position,
+    int *position_difference, unsigned char *fss) {
+  static FindSubSeqMCPBFn original;
+  int record[8];
+  HANDLE file;
+  int result;
+  if (!original) {
+    HMODULE module = LoadLibraryA("DNA5_original.dll");
+    if (module)
+      original = (FindSubSeqMCPBFn)GetProcAddress(module, "FindSubSeqMCPB");
+  }
+  if (!original) return 0;
+  result = original(
+      fss_ub, compressed_ub, next_no, seq1, seq2, seq3, compressed,
+      difference_position, position_difference, fss);
+  ++maxchi_invocation;
+  record[0] = maxchi_invocation;
+  record[1] = fss_ub;
+  record[2] = compressed_ub;
+  record[3] = next_no;
+  record[4] = seq1;
+  record[5] = seq2;
+  record[6] = seq3;
+  record[7] = result;
+  file = CreateFileA(
+      "maxchi-call-order.bin", GENERIC_WRITE,
+      FILE_SHARE_READ | FILE_SHARE_WRITE, (void *)0,
+      maxchi_invocation == 1 ? CREATE_ALWAYS : OPEN_EXISTING,
+      FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
+  if (file != INVALID_HANDLE_VALUE) {
+    if (maxchi_invocation != 1)
       SetFilePointer(file, 0, (long *)0, FILE_END);
     write_bytes(file, record, (DWORD)sizeof(record));
     CloseHandle(file);

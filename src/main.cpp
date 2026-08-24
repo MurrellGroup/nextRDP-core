@@ -5701,7 +5701,10 @@ int fasta_geneconv_events_fixture(
     const std::string& make_test_fixture_path,
     const std::string& geneconv_order_path = {},
     const std::string& geneconv_count_path = {},
-    const int geneconv_call_limit = -1) {
+    const int geneconv_call_limit = -1,
+    const bool enable_maxchi = false,
+    const std::string& maxchi_order_path = {},
+    const std::string& maxchi_count_path = {}) {
     const Dna5ScanPreprocessApi preprocess_api{
         &MathFuncs::MyMathFuncs::MakeAListP2,
         &MathFuncs::MyMathFuncs::CountNucs,
@@ -5779,7 +5782,7 @@ int fasta_geneconv_events_fixture(
         xover_settings, probability_settings, probability_estimate,
         fact_three, fact, xover_api);
     const auto rdp_only_counts = events.current_xover;
-    RdpLegacyEventAllocator allocator(events, 2);
+    RdpLegacyEventAllocator allocator(events, enable_maxchi ? 3 : 2);
     std::vector<GeneconvEmissionTrace> geneconv_trace;
     const auto run_geneconv = [&](std::array<int, 3> sequences) {
         run_rdp_geneconv_recheck(
@@ -5809,6 +5812,37 @@ int fasta_geneconv_events_fixture(
                 scan_state.analysis_list[triplet * 3 + 1],
                 scan_state.analysis_list[triplet * 3 + 2],
             });
+        }
+    }
+    if (enable_maxchi) {
+        const auto run_maxchi = [&](const std::array<int, 3>& sequences) {
+            run_rdp_maxchi_recheck(
+                scan_state, sequences, store_lpv, h.store_lpv_ub,
+                probability_settings, allocator, 0, 0, true);
+        };
+        if (!maxchi_order_path.empty()) {
+            std::ifstream count_input(maxchi_count_path, std::ios::binary);
+            int call_count = 0;
+            count_input.read(
+                reinterpret_cast<char*>(&call_count), sizeof(call_count));
+            std::ifstream order_input(maxchi_order_path, std::ios::binary);
+            for (int call = 0; call < call_count; ++call) {
+                std::array<int, 8> record{};
+                order_input.read(
+                    reinterpret_cast<char*>(record.data()), sizeof(record));
+                if (!order_input)
+                    throw std::runtime_error("truncated MaxChi call-order fixture");
+                run_maxchi({record[4], record[5], record[6]});
+            }
+        } else {
+            for (int triplet = 0; triplet <= scan_state.analysis_list_last;
+                 ++triplet) {
+                run_maxchi({
+                    scan_state.analysis_list[triplet * 3],
+                    scan_state.analysis_list[triplet * 3 + 1],
+                    scan_state.analysis_list[triplet * 3 + 2],
+                });
+            }
         }
     }
 
@@ -6042,7 +6076,9 @@ int fasta_geneconv_events_fixture(
         matching_rows == scan_state.next_no + 1 &&
         matching_identity == compared && matching_probability == compared &&
         compared == native_total;
-    std::cout << "RDP+GENECONV initial events " << (pass ? "PASS" : "FAIL")
+    std::cout << (enable_maxchi ? "RDP+GENECONV+MAXCHI"
+                               : "RDP+GENECONV")
+              << " initial events " << (pass ? "PASS" : "FAIL")
               << ": total=" << actual_total << '/' << native_total
               << " rows=" << matching_rows << '/' << scan_state.next_no + 1
               << " identities=" << matching_identity << '/' << compared
@@ -6243,11 +6279,21 @@ int main(int argc, char** argv) {
             argv[27], argv[28], argv[29], argv[30]);
     }
     if ((argc == 6 || argc == 8 || argc == 9) &&
-        std::string_view(argv[1]) == "fasta-geneconv-events-fixture") {
+        (std::string_view(argv[1]) == "fasta-geneconv-events-fixture" ||
+         std::string_view(argv[1]) == "fasta-geneconv-maxchi-events-fixture")) {
         return fasta_geneconv_events_fixture(
             argv[2], argv[3], argv[4], argv[5],
-            argc >= 8 ? argv[6] : "", argc >= 8 ? argv[7] : "",
-            argc == 9 ? std::stoi(argv[8]) : -1);
+            argc >= 8 && std::string_view(argv[1]) ==
+                    "fasta-geneconv-events-fixture" ? argv[6] : "",
+            argc >= 8 && std::string_view(argv[1]) ==
+                    "fasta-geneconv-events-fixture" ? argv[7] : "",
+            argc == 9 ? std::stoi(argv[8]) : -1,
+            std::string_view(argv[1]) ==
+                "fasta-geneconv-maxchi-events-fixture",
+            argc >= 8 && std::string_view(argv[1]) ==
+                    "fasta-geneconv-maxchi-events-fixture" ? argv[6] : "",
+            argc >= 8 && std::string_view(argv[1]) ==
+                    "fasta-geneconv-maxchi-events-fixture" ? argv[7] : "");
     }
     if (argc == 3 && std::string_view(argv[1]) == "alist-rdp4-fixture") {
         return alist_rdp4_fixture(argv[2]);

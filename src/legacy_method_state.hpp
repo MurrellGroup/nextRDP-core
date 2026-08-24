@@ -55,7 +55,8 @@ void run_rdp_maxchi_recheck(
     const RdpScanState& scan_state, const std::array<int, 3>& sequences,
     const std::vector<double>& store_lpv, int store_lpv_ub,
     const RdpProbabilitySettings& settings,
-    RdpLegacyEventAllocator& allocator, int event_beginning, int event_ending);
+    RdpLegacyEventAllocator& allocator, int event_beginning, int event_ending,
+    bool initial_scan = false);
 
 // Module30.CXoverA(2), the Chimaera recheck used in each of FinalTrim's three
 // source-order role rotations.
