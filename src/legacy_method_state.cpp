@@ -59,7 +59,7 @@ std::array<int, 3> choose_active(
     return {third, first, second};
 }
 
-// VB6 CLng uses bankers' rounding.  The values passed here are non-negative.
+// VB6 CLng uses bankers' rounding.
 int vb_clng(const double value) {
     const double floor_value = std::floor(value);
     const double fraction = value - floor_value;
@@ -67,6 +67,90 @@ int vb_clng(const double value) {
     if (fraction > 0.5) return static_cast<int>(floor_value + 1.0);
     const int lower = static_cast<int>(floor_value);
     return (lower & 1) == 0 ? lower : lower + 1;
+}
+
+// Module8.QCTopolChange, used by the GENECONV and MaxChi paths before their
+// breakpoints are centred.  Scores is Module30.SubSeq, whose second dimension
+// uses the alignment-length stride even though only informative sites are read.
+std::uint8_t legacy_qc_topology_change(
+    const int beginning, const int ending,
+    const std::vector<int>& position_difference,
+    const std::vector<char>& scores, const int score_stride,
+    const int informative) {
+    const int left = position_difference[beginning];
+    const int right = position_difference[ending];
+    std::array<int, 3> outside{};
+    std::array<int, 3> inside{};
+    const auto add = [&](std::array<int, 3>& totals, const int position) {
+        for (int comparison = 0; comparison < 3; ++comparison) {
+            totals[comparison] += static_cast<unsigned char>(
+                scores[position + comparison * score_stride]);
+        }
+    };
+    if (left < right) {
+        for (int position = 0; position < left; ++position)
+            add(outside, position);
+        for (int position = left; position <= right; ++position)
+            add(inside, position);
+        for (int position = right + 1; position <= informative; ++position)
+            add(outside, position);
+    } else {
+        for (int position = 0; position <= right; ++position)
+            add(inside, position);
+        for (int position = right + 1; position < left; ++position)
+            add(outside, position);
+        for (int position = left; position <= informative; ++position)
+            add(inside, position);
+    }
+    for (int comparison = 0; comparison < 3; ++comparison) {
+        const int other_a = (comparison + 1) % 3;
+        const int other_b = (comparison + 2) % 3;
+        if (inside[comparison] > inside[other_a] &&
+            inside[comparison] > inside[other_b] &&
+            outside[comparison] > outside[other_a] &&
+            outside[comparison] > outside[other_b]) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Module3.CentreBP(0, 0, ...), restricted to the initial scan where
+// SEventNumber=0.  The omitted missing-data branches are guarded by
+// SEventNumber > 0 in the VB source; the circular/linear clamps remain exact.
+void legacy_centre_geneconv_breakpoints(
+    const int length, const int circular, const int informative,
+    std::vector<int>& position_difference,
+    const std::vector<int>& difference_position,
+    int& beginning, int& ending) {
+    if (position_difference[beginning] - 1 > 0) {
+        beginning -= vb_clng(
+            ((beginning -
+              difference_position[position_difference[beginning] - 1]) /
+             2.0) - 0.1);
+    } else {
+        beginning -= vb_clng(
+            ((beginning + length - difference_position[informative]) / 2.0) -
+            0.1);
+    }
+    if (beginning == 0) {
+        beginning = 1;
+    } else if (beginning < 1) {
+        beginning = circular == 0 ? 1 : length + beginning;
+    }
+
+    position_difference[length] = informative;
+    if (position_difference[ending] + 1 <= informative) {
+        ending += vb_clng(
+            ((difference_position[position_difference[ending] + 1] - ending) /
+             2.0) - 0.1);
+    } else {
+        ending += vb_clng(
+            ((difference_position[1] + (length - ending)) / 2.0) - 0.1);
+    }
+    if (ending > length) {
+        ending = circular == 0 ? length : ending - length;
+    }
 }
 
 int critical_difference(const int window_size, const double lowest_probability) {
@@ -526,7 +610,7 @@ void run_rdp_geneconv_recheck(
     const RdpScanState& scan_state, std::array<int, 3>& sequences,
     const std::vector<double>& store_lpv, const int store_lpv_ub,
     const RdpProbabilitySettings& settings,
-    RdpLegacyEventAllocator& allocator) {
+    RdpLegacyEventAllocator& allocator, const bool long_winded) {
     constexpr short mismatch_penalty = 1;
     constexpr short max_overlap_fragments = 1;
     const int length = scan_state.sequence_length;
@@ -644,12 +728,25 @@ void run_rdp_geneconv_recheck(
                 pvalues.data(), fragment_count.data(), fragment_start.data(),
                 fragment_end.data(), max_score_position.data(),
                 deleted.data()) == 1 && pvalues[y + comparison * stride] < cutoff) {
-            const auto active = choose_active(
-                sequences, 1, store_lpv, store_lpv_ub, allocator);
+            std::array<int, 3> active{};
+            if (long_winded) {
+                active = choose_active(
+                    sequences, 1, store_lpv, store_lpv_ub, allocator);
+            } else if (comparison == 0 || comparison == 3) {
+                active = {sequences[0], sequences[1], sequences[2]};
+            } else if (comparison == 1) {
+                active = {sequences[0], sequences[2], sequences[1]};
+            } else if (comparison == 2) {
+                active = {sequences[1], sequences[2], sequences[0]};
+            } else if (comparison == 4) {
+                active = {sequences[1], sequences[0], sequences[2]};
+            } else {
+                active = {sequences[2], sequences[1], sequences[0]};
+            }
             const double adjusted = settings.mc_flag == 0
                 ? pvalues[y + comparison * stride] * settings.mc_correction
                 : pvalues[y + comparison * stride];
-            if (adjusted > store_probability(
+            if (long_winded && adjusted > store_probability(
                     store_lpv, store_lpv_ub, 1, active[0])) {
                 return;
             }
@@ -659,17 +756,34 @@ void run_rdp_geneconv_recheck(
                 event.daughter = static_cast<std::int16_t>(active[0]);
                 event.minor_parent = static_cast<std::int16_t>(active[1]);
                 event.major_parent = static_cast<std::int16_t>(active[2]);
-                event.beginning = difference_position[
-                    fragment_start[y + comparison * stride]];
-                event.ending = difference_position[
-                    fragment_end[max_score_position[y + comparison * stride] +
-                                 comparison * stride]];
+                const int fragment_begin =
+                    fragment_start[y + comparison * stride];
+                const int fragment_finish = fragment_end[
+                    max_score_position[y + comparison * stride] +
+                    comparison * stride];
+                if (long_winded) {
+                    event.beginning = difference_position[fragment_begin];
+                    event.ending = difference_position[fragment_finish];
+                } else {
+                    event.beginning = fragment_begin > 0
+                        ? difference_position[fragment_begin - 1] + 1 : 1;
+                    event.ending = difference_position[fragment_finish + 1] - 1;
+                }
+                event.outside_flag = legacy_qc_topology_change(
+                    event.beginning, event.ending, position_difference,
+                    subsequence, stride, informative);
+                // CheckEndsVB and FixEnds precede CentreBP in GCXoverD.  At
+                // this first MakeTestPVs boundary SEventNumber is zero and
+                // MissingData is the zero-filled initial matrix, hence both
+                // warnings and FixEnds are no-ops.
+                legacy_centre_geneconv_breakpoints(
+                    length, settings.circular, informative,
+                    position_difference, difference_position,
+                    event.beginning, event.ending);
                 event.program_flag = 1;
                 event.probability = adjusted;
-                // GCXoverD calls FindDaughter after storing the event. The
-                // VB routine works on module globals and leaves Seq1/2/3 in
-                // daughter/minor/major order for the following method calls.
-                sequences = active;
+                // The current GCXoverD source restores ActiveSeq/Minor/Major
+                // after each peak and does not rewrite Seq1/Seq2/Seq3.
             }
         }
         MathFuncs::MyMathFuncs::MakeDeleteArrayP(

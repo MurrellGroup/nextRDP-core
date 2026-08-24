@@ -37,7 +37,7 @@ void run_rdp_geneconv_recheck(
     const RdpScanState& scan_state, std::array<int, 3>& sequences,
     const std::vector<double>& store_lpv, int store_lpv_ub,
     const RdpProbabilitySettings& settings,
-    RdpLegacyEventAllocator& allocator);
+    RdpLegacyEventAllocator& allocator, bool long_winded = true);
 
 // Module5.MCXoverF(1), the MaxChi recheck used by FinalTrim.  This is the
 // enumerating VB path (not DNA5.FastRecCheckMC2, which deliberately returns
