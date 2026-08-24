@@ -5709,7 +5709,8 @@ int fasta_geneconv_events_fixture(
     const std::string& maxchi_count_path = {},
     const bool enable_chimaera = false,
     const std::string& chimaera_order_path = {},
-    const std::string& chimaera_count_path = {}) {
+    const std::string& chimaera_count_path = {},
+    const bool enable_geneconv = true) {
     const Dna5ScanPreprocessApi preprocess_api{
         &MathFuncs::MyMathFuncs::MakeAListP2,
         &MathFuncs::MyMathFuncs::CountNucs,
@@ -5788,36 +5789,42 @@ int fasta_geneconv_events_fixture(
         fact_three, fact, xover_api);
     const auto rdp_only_counts = events.current_xover;
     RdpLegacyEventAllocator allocator(
-        events, enable_chimaera ? 4 : (enable_maxchi ? 3 : 2));
+        events, 1 + static_cast<int>(enable_geneconv) +
+                    static_cast<int>(enable_maxchi) +
+                    static_cast<int>(enable_chimaera));
     std::vector<GeneconvEmissionTrace> geneconv_trace;
     const auto run_geneconv = [&](std::array<int, 3> sequences) {
         run_rdp_geneconv_recheck(
             scan_state, sequences, store_lpv, h.store_lpv_ub,
             probability_settings, allocator, true, &geneconv_trace);
     };
-    if (!geneconv_order_path.empty()) {
-        std::ifstream count_input(geneconv_count_path, std::ios::binary);
-        int call_count = 0;
-        count_input.read(reinterpret_cast<char*>(&call_count), sizeof(call_count));
-        if (geneconv_call_limit >= 0)
-            call_count = std::min(call_count, geneconv_call_limit);
-        std::ifstream order_input(geneconv_order_path, std::ios::binary);
-        for (int call = 0; call < call_count; ++call) {
-            std::array<int, 9> record{};
-            order_input.read(
-                reinterpret_cast<char*>(record.data()), sizeof(record));
-            if (!order_input)
-                throw std::runtime_error("truncated GENECONV call-order fixture");
-            run_geneconv({record[5], record[6], record[7]});
-        }
-    } else {
-        for (int triplet = 0; triplet <= scan_state.analysis_list_last;
-             ++triplet) {
-            run_geneconv({
-                scan_state.analysis_list[triplet * 3],
-                scan_state.analysis_list[triplet * 3 + 1],
-                scan_state.analysis_list[triplet * 3 + 2],
-            });
+    if (enable_geneconv) {
+        if (!geneconv_order_path.empty()) {
+            std::ifstream count_input(geneconv_count_path, std::ios::binary);
+            int call_count = 0;
+            count_input.read(
+                reinterpret_cast<char*>(&call_count), sizeof(call_count));
+            if (geneconv_call_limit >= 0)
+                call_count = std::min(call_count, geneconv_call_limit);
+            std::ifstream order_input(geneconv_order_path, std::ios::binary);
+            for (int call = 0; call < call_count; ++call) {
+                std::array<int, 9> record{};
+                order_input.read(
+                    reinterpret_cast<char*>(record.data()), sizeof(record));
+                if (!order_input)
+                    throw std::runtime_error(
+                        "truncated GENECONV call-order fixture");
+                run_geneconv({record[5], record[6], record[7]});
+            }
+        } else {
+            for (int triplet = 0; triplet <= scan_state.analysis_list_last;
+                 ++triplet) {
+                run_geneconv({
+                    scan_state.analysis_list[triplet * 3],
+                    scan_state.analysis_list[triplet * 3 + 1],
+                    scan_state.analysis_list[triplet * 3 + 2],
+                });
+            }
         }
     }
     struct MaxchiEmissionTrace {
@@ -6256,9 +6263,11 @@ int fasta_geneconv_events_fixture(
         matching_rows == scan_state.next_no + 1 &&
         matching_identity == compared && matching_probability == compared &&
         compared == native_total;
-    std::cout << (enable_chimaera ? "RDP+GENECONV+MAXCHI+CHIMAERA" :
-                  (enable_maxchi ? "RDP+GENECONV+MAXCHI"
-                                  : "RDP+GENECONV"))
+    std::string method_label = "RDP";
+    if (enable_geneconv) method_label += "+GENECONV";
+    if (enable_maxchi) method_label += "+MAXCHI";
+    if (enable_chimaera) method_label += "+CHIMAERA";
+    std::cout << method_label
               << " initial events " << (pass ? "PASS" : "FAIL")
               << ": total=" << actual_total << '/' << native_total
               << " rows=" << matching_rows << '/' << scan_state.next_no + 1
@@ -6458,6 +6467,14 @@ int main(int argc, char** argv) {
             argv[15], argv[16], argv[17], argv[18], argv[19], argv[20],
             argv[21], argv[22], argv[23], argv[24], argv[25], argv[26],
             argv[27], argv[28], argv[29], argv[30]);
+    }
+    if (argc == 13 &&
+        std::string_view(argv[1]) == "fasta-method-combo-events-fixture") {
+        const int mask = std::stoi(argv[12]);
+        return fasta_geneconv_events_fixture(
+            argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], -1,
+            (mask & 2) != 0, argv[8], argv[9], (mask & 4) != 0, argv[10],
+            argv[11], (mask & 1) != 0);
     }
     if ((argc == 6 || argc == 8 || argc == 9 || argc == 10) &&
         (std::string_view(argv[1]) == "fasta-geneconv-events-fixture" ||
