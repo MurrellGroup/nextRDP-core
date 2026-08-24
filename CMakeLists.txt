@@ -65,4 +65,21 @@ if(EMSCRIPTEN)
         "-sEXIT_RUNTIME=1"
         "-sNODERAWFS=1"
     )
+
+    add_executable(next-rdp-core-web src/web_api.cpp)
+    target_link_libraries(next-rdp-core-web PRIVATE next_rdp_core)
+    target_compile_options(next-rdp-core-web PRIVATE
+        "-ffp-eval-method=extended"
+    )
+    set_target_properties(next-rdp-core-web PROPERTIES SUFFIX ".mjs")
+    target_link_options(next-rdp-core-web PRIVATE
+        "--no-entry"
+        "-sENVIRONMENT=web,worker,node"
+        "-sMODULARIZE=1"
+        "-sEXPORT_ES6=1"
+        "-sEXPORT_NAME=createNextRdpCore"
+        "-sALLOW_MEMORY_GROWTH=1"
+        "-sEXPORTED_FUNCTIONS=['_malloc','_free','_next_rdp_analyze','_next_rdp_result_json','_next_rdp_error','_next_rdp_version']"
+        "-sEXPORTED_RUNTIME_METHODS=['UTF8ToString','HEAPU8']"
+    )
 endif()
