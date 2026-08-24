@@ -6063,7 +6063,7 @@ int fasta_geneconv_events_fixture(
                 event.Beginning, event.Ending};
         };
         std::set<std::array<int, 3>> checked;
-        for (const auto& trace : maxchi_trace) {
+        for (const auto& trace : maxchi_peak_trace) {
             auto sorted_input = trace.input;
             std::sort(sorted_input.begin(), sorted_input.end());
             if (!checked.insert(sorted_input).second) continue;
@@ -6112,9 +6112,7 @@ int fasta_geneconv_events_fixture(
                           << ',' << std::get<3>(value) << ','
                           << std::get<4>(value) << '\n';
             }
-            for (const auto& call : maxchi_peak_trace) {
-                if (call.invocation != trace.invocation) continue;
-                for (const auto& peak : call.peaks) {
+            for (const auto& peak : trace.peaks) {
                     std::cerr << "  peak r=" << peak.repetition
                               << " pos=" << peak.maximum_position
                               << " cmp=" << peak.comparison
@@ -6144,8 +6142,6 @@ int fasta_geneconv_events_fixture(
                               << peak.centered_ending << " delete="
                               << peak.destroy_left << ','
                               << peak.destroy_right << '\n';
-                }
-                break;
             }
             break;
         }
