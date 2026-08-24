@@ -41,6 +41,16 @@ struct TraceRecord {
 
 static int trace_invocation;
 
+static unsigned long long hash_bytes(const char *data, int count) {
+  unsigned long long hash = 1469598103934665603ULL;
+  int index;
+  for (index = 0; index < count; ++index) {
+    hash ^= (unsigned char)data[index];
+    hash *= 1099511628211ULL;
+  }
+  return hash;
+}
+
 static void append_record(struct TraceRecord *record) {
   HANDLE file = CreateFileA(
       "dna-maxchi-helpers.bin", GENERIC_WRITE,
@@ -93,6 +103,7 @@ static int capture_opt(
     double high, int top, int maximum, int comparison, int window,
     int informative, int sequence_length, char *scores, char *missing_map) {
   struct TraceRecord record = {0};
+  unsigned long long missing_hash;
   int result;
   if (!*original) {
     HMODULE module = LoadLibraryA("dna_original.dll");
@@ -102,6 +113,7 @@ static int capture_opt(
   result = (*original)(
       edge, high, top, maximum, comparison, window, informative,
       sequence_length, scores, missing_map);
+  missing_hash = hash_bytes(missing_map, informative + 1);
   record.function = function;
   record.values[0] = edge;
   record.values[1] = top;
@@ -111,6 +123,8 @@ static int capture_opt(
   record.values[5] = informative;
   record.values[6] = sequence_length;
   record.values[7] = result;
+  record.values[8] = (int)(missing_hash & 0xffffffffULL);
+  record.values[9] = (int)(missing_hash >> 32);
   record.doubles[0] = high;
   append_record(&record);
   return result;
