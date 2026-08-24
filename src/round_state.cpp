@@ -86,6 +86,59 @@ std::vector<float> make_zero_rep_collapsed_matrix(
     return collapsed;
 }
 
+void apply_rdp_alignment_quality_filter(
+    const int next_no,
+    const std::array<int, 3>& sequences,
+    const RdpDistanceState& full_distance,
+    const RdpDistanceState& region_distance,
+    std::vector<int>& done) {
+    const int count = next_no + 1;
+    const auto matrix_cells = static_cast<std::size_t>(count) * count;
+    if (full_distance.valid_sites.size() != matrix_cells ||
+        full_distance.differences.size() != matrix_cells ||
+        region_distance.valid_sites.size() != matrix_cells ||
+        region_distance.differences.size() != matrix_cells ||
+        done.size() != static_cast<std::size_t>(2 * count)) {
+        throw std::runtime_error(
+            "RDP alignment-quality filter input dimensions differ");
+    }
+
+    // Module3.bas applies these tests immediately after each MakeDoneThis3
+    // call. SubValid/SubDiffs have already been compressed to the three
+    // ISeqs rows; PermValidSmall/PermDiffsSmall are the same three rows from
+    // the permanent matrices. Both tests set both DoneThis columns.
+    for (int sequence = 0; sequence <= next_no; ++sequence) {
+        if (done[sequence * 2] != 0 && done[sequence * 2 + 1] != 0) {
+            continue;
+        }
+        bool all_region_valid = true;
+        bool poor_region_alignment = false;
+        bool all_full_valid = true;
+        bool poor_full_alignment = false;
+        for (int role = 0; role < 3; ++role) {
+            const auto cell = static_cast<std::size_t>(
+                sequences[role] + sequence * count);
+            const float region_valid = region_distance.valid_sites[cell];
+            const float full_valid = full_distance.valid_sites[cell];
+            all_region_valid = all_region_valid && region_valid > 0.0F;
+            all_full_valid = all_full_valid && full_valid > 0.0F;
+            if (region_valid > 0.0F &&
+                region_distance.differences[cell] / region_valid > 0.6F) {
+                poor_region_alignment = true;
+            }
+            if (full_valid > 0.0F &&
+                full_distance.differences[cell] / full_valid > 0.6F) {
+                poor_full_alignment = true;
+            }
+        }
+        if ((all_region_valid && poor_region_alignment) ||
+            (all_full_valid && poor_full_alignment)) {
+            done[sequence * 2] = 1;
+            done[sequence * 2 + 1] = 1;
+        }
+    }
+}
+
 }  // namespace
 
 RdpRoundPrefixState identify_rdp_round_prefix(
@@ -121,26 +174,32 @@ RdpRoundPrefixState identify_rdp_round_prefix(
     std::vector<unsigned char> minimum_pair{3, 3, 0};
     std::vector<unsigned char> sequence_pair(3, 0);
     constexpr std::array<int, 3> role_outlier{2, 1, 0};
-    float minimum_background = 1000000.0F;
-    float minimum_region = 1000000.0F;
-    int pair = 0;
+    // TestMoveInTreeAlt's normal (< MemPoc) path chooses MinPair from the
+    // direct FMat/SMat entries produced by vQuickDist, not from UFDist's
+    // BT/RT quick-rejection panels.  The strict VB comparisons also leave a
+    // tied slot at its initial value (3).
+    float best_background = 1000000.0F;
+    float best_region = 1000000.0F;
+    int role_pair = 0;
     for (int first = 0; first < 2; ++first) {
         for (int second = first + 1; second < 3; ++second) {
-            const auto offset = static_cast<std::size_t>(
-                state.sequences[first] + state.sequences[second] * stride);
-            if (state.matrices.background[offset] < minimum_background) {
-                minimum_background = state.matrices.background[offset];
-                minimum_pair[0] = static_cast<unsigned char>(pair);
+            const auto background = state.matrices.background[
+                state.sequences[first] + state.sequences[second] * stride];
+            const auto region = state.matrices.event_region[
+                state.sequences[first] + state.sequences[second] * stride];
+            if (background < best_background) {
+                best_background = background;
+                minimum_pair[0] = static_cast<unsigned char>(role_pair);
                 sequence_pair = {
                     static_cast<unsigned char>(first),
                     static_cast<unsigned char>(second),
-                    static_cast<unsigned char>(role_outlier[pair])};
+                    static_cast<unsigned char>(role_outlier[role_pair])};
             }
-            if (state.matrices.event_region[offset] < minimum_region) {
-                minimum_region = state.matrices.event_region[offset];
-                minimum_pair[1] = static_cast<unsigned char>(pair);
+            if (region < best_region) {
+                best_region = region;
+                minimum_pair[1] = static_cast<unsigned char>(role_pair);
             }
-            ++pair;
+            ++role_pair;
         }
     }
     for (int sequence = 0; sequence <= next_no; ++sequence) {
@@ -232,6 +291,11 @@ RdpRoundPrefixState identify_rdp_round_prefix(
         state.region_adjusted.data(), redo.data(), background_holder.data(),
         region_holder.data(), temporary_background.data(),
         temporary_region.data());
+    state.background_adjusted_before_collapse = state.background_adjusted;
+    state.region_adjusted_before_collapse = state.region_adjusted;
+    state.matrix_redo = redo;
+    state.background_tree_holder = background_holder;
+    state.region_tree_holder = region_holder;
     state.region_collapsed = make_zero_rep_collapsed_matrix(
         next_no, local_last, 0, trace, redo,
         state.matrices.event_region, state.region_adjusted,
@@ -282,6 +346,7 @@ RdpRoundPrefixState identify_rdp_round_prefix(
         mutable_missing.data(),
         const_cast<short*>(scan_state.sequence_data.data()),
         state.summary_matrix.data(), state.regional_distance_matrix.data());
+    state.missing_data = mutable_missing;
     std::vector<unsigned char> correlation_positions(2, 0);
     for (int target = 0; target < 3; ++target) {
         auto& matrix = state.correlation_matrices[target];
@@ -329,7 +394,7 @@ RdpRoundPrefixState identify_rdp_round_prefix(
     state.region_adjusted_small = make_small(state.region_adjusted);
     std::array<unsigned char, 2> final_pair{};
     std::array<float, 2> final_distance{1000000.0F, 1000000.0F};
-    pair = 0;
+    int pair = 0;
     for (int first = 0; first < 2; ++first) {
         for (int second = first + 1; second < 3; ++second) {
             const auto offset = static_cast<std::size_t>(
@@ -412,6 +477,9 @@ RdpCompleteRoundState identify_rdp_complete_round(
     state.score_filters[0] = make_rdp_score_filter(
         next_no, sequences, prefix.first_direct_small,
         prefix.first_direct_small, prefix.region_direct_small);
+    apply_rdp_alignment_quality_filter(
+        next_no, sequences, full_distance, prefix.region_distance,
+        state.score_filters[0]);
     state.phylpro[0] = make_rdp_phylpro_scores(
         next_no, 1.0e-14, state.score_filters[0], sequences,
         prefix.matrices.background, prefix.matrices.event_region);
@@ -421,6 +489,9 @@ RdpCompleteRoundState identify_rdp_complete_round(
     state.score_filters[1] = make_rdp_score_filter(
         next_no, sequences, prefix.first_direct_small,
         prefix.first_direct_small, prefix.region_direct_small);
+    apply_rdp_alignment_quality_filter(
+        next_no, sequences, full_distance, prefix.region_distance,
+        state.score_filters[1]);
     state.phylpro[2] = make_rdp_phylpro_scores(
         next_no, 1.0e-14, state.score_filters[1], sequences,
         prefix.background_collapsed, prefix.region_collapsed);
@@ -459,15 +530,16 @@ RdpCompleteRoundState identify_rdp_complete_round(
         std::all_of(initial_compatibility.region_compatibility.begin(),
                     initial_compatibility.region_compatibility.end(),
                     [](const int value) { return value > 0; });
-    if (state.consensus_retrimmed) {
+    const auto run_full_candidate_maintenance = [&](const int rwinpp) {
         auto trimmed = run_rdp_final_trim_candidate_maintenance(
-            next_no, sequences, comparison, prefix.minimum_pair,
+            next_no, rwinpp, sequences, comparison, prefix.minimum_pair,
             prefix.role_lists.inside,
             prefix.correlation_decisions.warnings,
             prefix.actual_resolution.unfound,
             prefix.actual_resolution.correlations.correlations.correlation,
             prefix.actual_resolution.correlations.correlations.inversion,
-            prefix.local_distance_panels, prefix.first_adjusted_small,
+            prefix.local_distance_panels, prefix.first_direct_small,
+            prefix.region_direct_small, prefix.first_adjusted_small,
             prefix.region_adjusted_small, prefix.first_collapsed_small,
             prefix.region_collapsed_small,
             prefix.actual_resolution.candidates.last,
@@ -476,7 +548,7 @@ RdpCompleteRoundState identify_rdp_complete_round(
         trimmed.acceptable_sequences = calculate_rdp_match_evidence(
             scan_state.sequence_length, next_no, selected.beginning,
             selected.ending, sequences, comparison, scan_state.sequence_data,
-            trimmed.acceptable_sequences, true);
+            trimmed.acceptable_sequences, false);
         state.consensus_candidates = make_rdp_consensus_candidates(
             next_no, sequences, comparison,
             prefix.correlation_decisions.warnings,
@@ -487,7 +559,14 @@ RdpCompleteRoundState identify_rdp_complete_round(
             prefix.first_direct_small, prefix.region_direct_small,
             prefix.first_adjusted_small, prefix.region_adjusted_small,
             prefix.first_collapsed_small, prefix.region_collapsed_small,
-            std::move(trimmed), true);
+            std::move(trimmed), false);
+    };
+
+    // FinalTrim's RFF=0 body runs exactly once on both source paths.  With
+    // RetrimFlag set it is the early RWinPP=4 call; otherwise it is deferred
+    // until after MakeConsensusC chooses WinPP below.
+    if (state.consensus_retrimmed) {
+        run_full_candidate_maintenance(4);
     }
 
     const std::vector<unsigned char> maximum_distance_mask(
@@ -511,8 +590,8 @@ RdpCompleteRoundState identify_rdp_complete_round(
         state.list_correlations = calculate_rdp_list_correlations(
             next_no, sequences, prefix.role_lists.inside,
             prefix.correlation_decisions.warnings,
-            prefix.actual_resolution.candidates.last,
-            prefix.actual_resolution.candidates.list,
+            prefix.actual_resolution.calls[0].candidate_last_before,
+            prefix.actual_resolution.calls[0].candidate_list_before,
             prefix.actual_resolution.correlations.correlations.inversion,
             prefix.actual_resolution.correlations.correlations
                 .tested_correlation,
@@ -602,6 +681,9 @@ RdpCompleteRoundState identify_rdp_complete_round(
         state.maximum_distance.maximum_distances;
     consensus_inputs.ranks = state.simple_distances.ranks;
     state.consensus = make_rdp_consensus(std::move(consensus_inputs));
+    if (!state.consensus_retrimmed) {
+        run_full_candidate_maintenance(state.consensus.winning_role);
+    }
     state.final_candidates = apply_rdp_strict_group_constraints(
         next_no, sequences, comparison, prefix.matrices.background,
         prefix.matrices.event_region, prefix.first_direct_small,

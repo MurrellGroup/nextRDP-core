@@ -78,9 +78,14 @@ RdpAdjustedEvents adjust_rdp_events_exact(
 struct RdpDroppedFragmentEvents {
     int next_no = -1;
     RdpRawEventState events;
+    RdpRawEventState events_before_drop;
     std::vector<int> reference_counts;
+    std::vector<int> reference_counts_before_drop;
     std::vector<int> trace_sub;
     std::vector<int> actual_sequence_sizes;
+    std::vector<int> actual_sequence_sizes_before_drop;
+    std::vector<short> sequence_data;
+    std::vector<unsigned char> missing_data;
 };
 
 RdpRedistributedEvents redistribute_rdp_events(
@@ -91,8 +96,11 @@ RdpRedistributedEvents redistribute_rdp_events(
     const RdpRawEventState& source_events);
 
 RdpDroppedFragmentEvents drop_rdp_unused_fragment_events(
-    int original_next_no, int expanded_next_no, int minimum_sequence_size,
+    int original_next_no, int current_next_no, int expanded_next_no,
+    int sequence_length, int minimum_sequence_size,
     const std::vector<int>& trace_sub,
     const std::vector<int>& actual_sequence_sizes,
+    const std::vector<short>& sequence_data,
+    const std::vector<unsigned char>& missing_data,
     const RdpRawEventState& events_before_outer_scan,
     const RdpRawEventState& outer_scan_events);

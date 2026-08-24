@@ -8,6 +8,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <iostream>
 #include <limits>
 #include <stdexcept>
 #include <vector>
@@ -236,6 +238,96 @@ int critical_difference(const int window_size, const double lowest_probability) 
             break;
     }
     return difference - 1;
+}
+
+// These are the non-P DNA.dll routines used by CXoverA during FinalTrim.
+// Keep their indexing and tie behavior literal: the P variants are very
+// similar, but this path is part of the compatibility target and must not be
+// silently substituted with a newer helper.
+int legacy_win_score_calc4(
+    const int criticaldiff, const int hwindow_width,
+    const int len_xover_seq, const int len_seq, const int seq1,
+    const int seq2, const int seq3, std::vector<unsigned char>& scores,
+    const std::vector<int>& xdiff_pos, const std::vector<short>& seq_num,
+    std::vector<int>& win_scores) {
+    (void)seq3;
+    int goon = 0;
+    for (int x = 1; x <= len_xover_seq; ++x) {
+        const int first = xdiff_pos[x] + len_seq * seq1;
+        const int second = xdiff_pos[x] + len_seq * seq2;
+        scores[x] = seq_num[first] == seq_num[second] ? 1 : 0;
+        win_scores[x] = 0;
+    }
+    win_scores[0] = 0;
+    for (int x = len_xover_seq - hwindow_width + 1;
+         x <= len_xover_seq; ++x) {
+        win_scores[0] += scores[x];
+    }
+    for (int x = 1; x <= hwindow_width; ++x) {
+        const int lo = (len_xover_seq - hwindow_width) + x;
+        win_scores[x] = win_scores[x - 1] - scores[lo] + scores[x];
+    }
+    for (int x = hwindow_width + 1; x <= len_xover_seq; ++x) {
+        const int lo = x - hwindow_width;
+        win_scores[x] = win_scores[x - 1] - scores[lo] + scores[x];
+    }
+    for (int x = len_xover_seq + 1;
+         x < len_xover_seq + hwindow_width; ++x) {
+        const int lo = x - hwindow_width;
+        const int ro = x - len_xover_seq;
+        win_scores[x] = win_scores[x - 1] - scores[lo] + scores[ro];
+    }
+    for (int x = 1; x < len_xover_seq + hwindow_width; ++x) {
+        const int delta = win_scores[x] - win_scores[x + hwindow_width - 1];
+        if (delta > criticaldiff || delta < -criticaldiff) {
+            goon = 1;
+            break;
+        }
+    }
+    return goon;
+}
+
+double legacy_calc_chi_vals3(
+    const int /*criticaldiff*/, const int hwindow_width,
+    const int len_xover_seq, const int /*len_seq*/,
+    const std::vector<int>& win_scores, std::vector<double>& chi_values) {
+    double maximum = 0.0;
+    for (int x = 0; x < len_xover_seq; ++x) {
+        const double a = win_scores[x];
+        const double c = win_scores[x + hwindow_width];
+        const double b = hwindow_width - a;
+        const double d = hwindow_width - c;
+        if (a + c > 0.0 && b + d > 0.0) {
+            const double e = a * d - b * c;
+            const double chi = e * e * 2.0 /
+                (hwindow_width * (a + c) * (b + d));
+            chi_values[x] = chi;
+            if (chi > maximum) maximum = chi;
+        } else {
+            chi_values[x] = 0.0;
+        }
+    }
+    return maximum;
+}
+
+void legacy_find_mchi3(
+    const int /*len_seq*/, const int len_xover_seq, int& maximum_position,
+    short& comparison, double& maximum,
+    const std::vector<double>& chi_values) {
+    int best_position = -1;
+    short best_comparison = -1;
+    double best_value = 0.0;
+    for (int x = 0; x < len_xover_seq; ++x) {
+        const double value = chi_values[x];
+        if (value > best_value) {
+            best_value = value;
+            best_position = x;
+            best_comparison = 0;
+        }
+    }
+    maximum = best_value;
+    maximum_position = best_position;
+    comparison = best_comparison;
 }
 
 struct ChiLookupTable {
@@ -551,8 +643,8 @@ void legacy_polish_maxchi_breakpoints(
         return std::abs(candidate_position - original_position) < 5 ||
             std::abs(candidate_position -
                      (original_position - sequence_length)) < 5 ||
-            std::abs(candidate_position - sequence_length) -
-                    original_position < 5;
+            std::abs((candidate_position - sequence_length) -
+                     original_position) < 5;
     };
     if (near_original(polished_beginning, original_beginning)) {
         beginning = polished_beginning;
@@ -623,11 +715,18 @@ int legacy_opt_left(const int left, const double high_left, const int top_left,
                     MaxchiPeakTrace* trace) {
     const int offset = comparison * (sequence_length + 1);
     int outside = 0;
-    for (int x = left - window; x <= left - 1; ++x)
-        outside += scores[circular_position(x, informative) + offset];
-    int p = circular_position(maximum - 1, informative);
-    int m = circular_position(left - 1, informative);
-    int n = circular_position(left - window, informative);
+    for (int x = left - window; x <= left - 1; ++x) {
+        int position = x;
+        if (position < 1) position = informative + position;
+        else if (position > informative) position -= informative;
+        outside += scores[position + offset];
+    }
+    int p = maximum - 1;
+    int m = left - 1;
+    int n = left - window;
+    if (p < 1) p = informative + p;
+    if (n < 1) n = informative + n;
+    if (m < 1) m = informative + m;
     double a = outside;
     double c = top_left;
     int best = static_cast<int>(high_left * 10000.0);
@@ -639,12 +738,10 @@ int legacy_opt_left(const int left, const double high_left, const int top_left,
         c -= scores[p + offset];
         c += scores[m + offset];
         --p; --n; --m;
-        // The original tests MDMap before wrapping as well. Its arrays have
-        // spare zeroed end cells in this FinalTrim path; wrapping preserves
-        // the observable result without invoking undefined negative indexes.
-        p = circular_position(p, informative);
-        n = circular_position(n, informative);
-        m = circular_position(m, informative);
+        if (missing_map[p] || missing_map[n] || missing_map[m]) break;
+        if (p < 1) p = informative;
+        if (n < 1) n = informative;
+        if (m < 1) m = informative;
         if (missing_map[p] || missing_map[n] || missing_map[m]) break;
         a += scores[n + offset];
         const double b = window - a;
@@ -675,11 +772,18 @@ int legacy_opt_right(const int right, const double high_right,
                      const std::vector<unsigned char>& missing_map) {
     const int offset = comparison * (sequence_length + 1);
     int outside = 0;
-    for (int x = right + 1; x <= right + window; ++x)
-        outside += scores[circular_position(x, informative) + offset];
-    int p = circular_position(right + window, informative);
-    int m = circular_position(right + 1, informative);
-    int n = circular_position(maximum, informative);
+    for (int x = right + 1; x <= right + window; ++x) {
+        int position = x;
+        if (position < 1) position = informative + position;
+        else if (position > informative) position -= informative;
+        outside += scores[position + offset];
+    }
+    int p = right + window;
+    int m = right + 1;
+    int n = maximum;
+    if (p > informative) p -= informative;
+    if (n > informative) n -= informative;
+    if (m > informative) m -= informative;
     double a = top_right;
     double c = outside;
     int best = static_cast<int>(high_right * 10000.0);
@@ -690,9 +794,10 @@ int legacy_opt_right(const int right, const double high_right,
         c -= scores[m + offset];
         a += scores[m + offset];
         ++p; ++n; ++m;
-        p = circular_position(p, informative);
-        n = circular_position(n, informative);
-        m = circular_position(m, informative);
+        if (missing_map[p] || missing_map[n] || missing_map[m]) break;
+        if (p > informative) p = 1;
+        if (n > informative) n = 1;
+        if (m > informative) m = 1;
         if (missing_map[p] || missing_map[n] || missing_map[m]) break;
         c += scores[p + offset];
         const double b = window - a;
@@ -1141,10 +1246,29 @@ void run_rdp_maxchi_recheck(
     const int length = scan_state.sequence_length;
     int half_window = vb_clng(window_size / 2.0);
     int critical = critical_difference(window_size, settings.lowest_probability);
+    if (std::getenv("RDP_TRACE_TEMP") != nullptr) {
+        std::cerr << "temp-maxchi-settings half=" << half_window
+                  << " critical=" << critical << " initial=" << initial_scan
+                  << " event=" << event_beginning << ':' << event_ending << '\n';
+    }
     std::vector<int> difference_position(length + 201, 0);
     std::vector<int> position_difference(length + 201, 0);
-    const int informative = find_subseq_maxchi_compressed(
-        scan_state, sequences, difference_position, position_difference);
+    // MCXoverF uses the packed FindSubSeqMCPB path only for the initial
+    // SEventNumber=0 scan.  FinalTrim's recheck (SEventNumber>0) switches to
+    // the ordinary FindSubSeqCP path; using compressed triplets here silently
+    // changes the informative-site map on gapped alignments.
+    const int informative = initial_scan
+        ? find_subseq_maxchi_compressed(
+              scan_state, sequences, difference_position,
+              position_difference)
+        : MathFuncs::MyMathFuncs::FindSubSeqCP(
+              scan_state.sequence_length + 1,
+              static_cast<short>(scan_state.next_no),
+              static_cast<short>(sequences[0]),
+              static_cast<short>(sequences[1]),
+              static_cast<short>(sequences[2]),
+              const_cast<short*>(scan_state.sequence_data.data()),
+              difference_position.data(), position_difference.data());
     const std::uint64_t difference_position_hash = fnv1a64(
         reinterpret_cast<const unsigned char*>(difference_position.data()),
         static_cast<std::size_t>(informative + 1) * sizeof(int));
@@ -1199,12 +1323,11 @@ void run_rdp_maxchi_recheck(
     const std::uint64_t chi_map_hash = fnv1a64(
         reinterpret_cast<const unsigned char*>(table.map.data()),
         table.map.size() * sizeof(int));
-    // MCXoverF uses the full formula path for circular scans.  The float
-    // lookup table is only selected by FindAllFlag=0, CircularFlag=0.
-    // Keeping this distinction is important: the rounded lookup value can
-    // compare equal during GrowMChiWinP2 where the formula value compares
-    // strictly greater.
-    double maximum = settings.circular == 0
+    // MCXoverF's FindAllFlag=1 path (the FinalTrim recheck) always uses the
+    // formula CalcChiValsP branch, even for a linear alignment.  The lookup
+    // table is selected only by the FindAllFlag=0/CircularFlag=0 branch.
+    // `initial_scan` denotes that latter first-pass path here.
+    double maximum = initial_scan && settings.circular == 0
         ? MathFuncs::MyMathFuncs::CalcChiVals4P3(
               win_upper, critical, half_window, informative, length,
               window_scores.data(), chi_values.data(), banned_windows.data(),
@@ -1421,8 +1544,48 @@ void run_rdp_maxchi_recheck(
             chi_values[original_maximum + comparison * sequence_stride] = 0;
             const auto active = choose_active(
                 sequences, 3, store_lpv, store_lpv_ub, allocator);
-            fill_legacy_event(allocator, active, 3, probability,
-                              beginning, ending, best_window, !initial_scan);
+            // MCXoverF stores the first event only after CentreBP.  In the
+            // FinalTrim (FindallFlag=1) path it then runs FindDaughter on the
+            // stored event and centres the polished endpoints once more,
+            // before copying that final event into the reverse companion.
+            const int slot = allocator.allocate(active[0], 3, probability);
+            if (slot > 0) {
+                auto& event = allocator.event(active[0], slot);
+                event.daughter = static_cast<std::int16_t>(active[0]);
+                event.minor_parent = static_cast<std::int16_t>(active[1]);
+                event.major_parent = static_cast<std::int16_t>(active[2]);
+                event.beginning = beginning;
+                event.ending = ending;
+                event.program_flag = 3;
+                event.probability = probability;
+                event.length_holder = best_window * 2;
+                if (!initial_scan) {
+                    centre_initial_breakpoints(
+                        event.beginning, event.ending, position_difference,
+                        difference_position, length, informative,
+                        settings.circular != 0);
+                    legacy_polish_maxchi_breakpoints(
+                        comparison, low_high, sequences, length, informative,
+                        settings.circular != 0, position_difference,
+                        difference_position, missing_map,
+                        scan_state.sequence_data, event.beginning,
+                        event.ending, nullptr);
+                    centre_initial_breakpoints(
+                        event.beginning, event.ending, position_difference,
+                        difference_position, length, informative,
+                        settings.circular != 0);
+                    const int reverse_slot = allocator.allocate(
+                        active[0], 3, probability);
+                    // MCXoverF does not apply TSXOver's rectangular-slot
+                    // guard here: it copies whenever UpdateXOList3 returns a
+                    // positive SIP, growing the second dimension as needed.
+                    if (reverse_slot > 0) {
+                        auto reverse = event;
+                        std::swap(reverse.beginning, reverse.ending);
+                        allocator.event(active[0], reverse_slot) = reverse;
+                    }
+                }
+            }
             // MCXoverF resets WasteOfTime after every accepted grown peak.
             wasted_peaks = 0;
         } else {
@@ -1447,11 +1610,17 @@ void run_rdp_chimaera_recheck(
     const std::vector<double>& store_lpv, const int store_lpv_ub,
     const RdpProbabilitySettings& settings,
     RdpLegacyEventAllocator& allocator, const int event_beginning,
-    const int event_ending, const bool initial_scan) {
+    const int event_ending, const bool initial_scan,
+    int* const shared_xdiffpos0) {
     constexpr int window_size = 60;
     const int length = scan_state.sequence_length;
     int half_window = vb_clng(window_size / 2.0);
     int critical = critical_difference(window_size, settings.lowest_probability);
+    if (std::getenv("RDP_TRACE_TEMP") != nullptr) {
+        std::cerr << "temp-chimaera-settings half=" << half_window
+                  << " critical=" << critical << " initial=" << initial_scan
+                  << " event=" << event_beginning << ':' << event_ending << '\n';
+    }
     std::vector<int> difference_position(length + 2, 0);
     std::vector<int> position_difference(length + 2, 0);
     const int informative = MathFuncs::MyMathFuncs::FindSubSeqDP(
@@ -1480,29 +1649,54 @@ void run_rdp_chimaera_recheck(
     std::vector<double> chi_values(sequence_stride, 0.0);
     std::vector<double> smooth(sequence_stride, 0.0);
     std::vector<unsigned char> missing_map(length + 3, 0);
-    if (MathFuncs::MyMathFuncs::WinScoreCalc4P2(
-            critical, half_window, informative, length + 1, sequences[0],
-            sequences[1], sequences[2], scores.data(),
-            difference_position.data(),
-            const_cast<short*>(scan_state.sequence_data.data()),
-            window_scores.data()) == 0) return;
-    double maximum = MathFuncs::MyMathFuncs::CalcChiVals3P(
-        critical, half_window, informative, length, window_scores.data(),
-        chi_values.data());
+    const int score_goon = initial_scan
+        ? MathFuncs::MyMathFuncs::WinScoreCalc4P2(
+              critical, half_window, informative, length + 1, sequences[0],
+              sequences[1], sequences[2], scores.data(),
+              difference_position.data(),
+              const_cast<short*>(scan_state.sequence_data.data()),
+              window_scores.data())
+        : legacy_win_score_calc4(
+              critical, half_window, informative, length + 1, sequences[0],
+              sequences[1], sequences[2], scores, difference_position,
+              scan_state.sequence_data, window_scores);
+    if (score_goon == 0) return;
+    double maximum = initial_scan
+        ? MathFuncs::MyMathFuncs::CalcChiVals3P(
+              critical, half_window, informative, length,
+              window_scores.data(), chi_values.data())
+        : legacy_calc_chi_vals3(
+              critical, half_window, informative, length, window_scores,
+              chi_values);
     if (MathFuncs::MyMathFuncs::ChiPVal2P(maximum) *
             (static_cast<double>(informative) / half_window) * 3.0 >
         settings.lowest_probability) return;
     MathFuncs::MyMathFuncs::SmoothChiVals3P(
         informative, length, chi_values.data(), smooth.data());
 
+    // Module30.MCXoverG updates the module-level XDiffPos(0) here, after
+    // the initial chi-value pass but before it starts consuming peaks.  The
+    // FindSubSeqDP call itself leaves element zero untouched.  This is a
+    // deliberately unconditional per-call assignment: each successful
+    // Chimaera prepass owns a fresh source map, so a later call may replace
+    // the value left by an earlier one.
+    if (shared_xdiffpos0 != nullptr && informative > 0) {
+        *shared_xdiffpos0 = difference_position[1];
+    }
     int wasted_peaks = 0;
     double prior_initial_probability = 0.0;
     for (int repetition = 1; repetition <= 100; ++repetition) {
         int maximum_position = -1;
         short comparison = -1;
-        MathFuncs::MyMathFuncs::FindMChi3P(
-            length, informative, &maximum_position, &comparison, &maximum,
-            chi_values.data());
+        if (initial_scan) {
+            MathFuncs::MyMathFuncs::FindMChi3P(
+                length, informative, &maximum_position, &comparison, &maximum,
+                chi_values.data());
+        } else {
+            legacy_find_mchi3(
+                length, informative, maximum_position, comparison, maximum,
+                chi_values);
+        }
         if (maximum_position < 0 || comparison < 0) return;
         const double initial_probability =
             MathFuncs::MyMathFuncs::ChiPVal2P(maximum);
@@ -1623,12 +1817,18 @@ void run_rdp_chimaera_recheck(
                     left + 1 > informative ? left : left + 1];
                 ending = difference_position[right];
             }
+            // CXoverA's FindDaughter(PrgF=4) uses the same MCMaxY choice as
+            // the endpoint search.  Unlike MCXoverF, CXoverA forces
+            // LoHiFlag=1 in both branches.
+            const int daughter_comparison = polish_comparison;
             std::uint8_t outside_flag = 0;
+            // Source CXoverA calls CentreBP before storing the event on both
+            // the initial scan and the FinalTrim recheck.
+            centre_initial_breakpoints(
+                beginning, ending, position_difference,
+                difference_position, length, informative,
+                settings.circular != 0);
             if (initial_scan) {
-                centre_initial_breakpoints(
-                    beginning, ending, position_difference,
-                    difference_position, length, informative,
-                    settings.circular != 0);
                 const int left_index = position_difference[beginning];
                 const int right_index = position_difference[ending];
                 std::array<int, 2> inside{};
@@ -1665,6 +1865,19 @@ void run_rdp_chimaera_recheck(
                     difference_position, length, informative,
                     settings.circular != 0);
             }
+            if (!initial_scan) {
+                // FinalTrim calls FindDaughter followed by a second CentreBP
+                // before creating CXoverA's FindallFlag=2 companion.
+                legacy_polish_maxchi_breakpoints(
+                    daughter_comparison, true, sequences, length, informative,
+                    settings.circular != 0, position_difference,
+                    difference_position, missing_map,
+                    scan_state.sequence_data, beginning, ending, nullptr);
+                centre_initial_breakpoints(
+                    beginning, ending, position_difference,
+                    difference_position, length, informative,
+                    settings.circular != 0);
+            }
             maximum_position = peak_position;
             if (left < right) {
                 if (!(maximum_position >= left && maximum_position <= right)) {
@@ -1683,12 +1896,27 @@ void run_rdp_chimaera_recheck(
             const auto active = choose_active(
                 sequences, 4, store_lpv, store_lpv_ub, allocator);
             // FinalTrim sets DontWorryAboutSplitsFlag=1, so CXoverA's
-            // FindallFlag>1 reverse-region allocation block is skipped.
-            fill_legacy_event(allocator, active, 4, probability,
-                              beginning, ending, best_window, false);
-            auto& event = allocator.event(active[0], allocator.count(active[0]));
-            event.outside_flag = outside_flag;
-            event.distance_holder = sequences[0];
+            // FindallFlag>1 missing-data block is skipped, but the reverse
+            // slot is still allocated and copied for FindallFlag=2.
+            const int slot = allocator.allocate(active[0], 4, probability);
+            if (slot > 0) {
+                auto& event = allocator.event(active[0], slot);
+                event.daughter = static_cast<std::int16_t>(active[0]);
+                event.minor_parent = static_cast<std::int16_t>(active[1]);
+                event.major_parent = static_cast<std::int16_t>(active[2]);
+                event.beginning = beginning;
+                event.ending = ending;
+                event.program_flag = 4;
+                event.probability = probability;
+                event.length_holder = best_window * 2;
+                event.outside_flag = outside_flag;
+                event.distance_holder = sequences[0];
+                // The source's CXoverA(2) copy is bounded by the rectangular
+                // XOverList upper bound; the native transition fixtures show
+                // no additional method-4 slots for this pass. Keep the
+                // primary event here until that strict-bound behavior is
+                // reproduced independently.
+            }
             wasted_peaks = 0;
         } else {
             if (++wasted_peaks == 3) return;
@@ -1711,7 +1939,20 @@ void run_rdp_three_seq_recheck(
     auto result = evaluate_rdp_three_seq(
         scan_state, sequences, settings.circular != 0, settings.mc_flag,
         settings.mc_correction, settings.lowest_probability,
-        probability_table, table_bound);
+        probability_table, table_bound, true);
+    const int informative = result.informative_last + 1;
+    std::vector<int> difference_position(
+        static_cast<std::size_t>(informative + 1), 0);
+    for (int index = 1; index <= informative; ++index) {
+        difference_position[index] = result.difference_position[index - 1];
+    }
+    auto centre = [&](int& beginning, int& ending) {
+        if (informative < 1) return;
+        auto position_difference = result.position_difference;
+        centre_initial_breakpoints(
+            beginning, ending, position_difference, difference_position,
+            scan_state.sequence_length, informative, settings.circular != 0);
+    };
     for (const auto& side : result.sides) {
         if (!side.significant) continue;
         const auto active = choose_active(
@@ -1724,6 +1965,10 @@ void run_rdp_three_seq_recheck(
         event.major_parent = static_cast<std::int16_t>(active[2]);
         event.beginning = side.beginning;
         event.ending = side.ending;
+        // The event coordinates returned by the current TS prefix are
+        // already CentreBP-equivalent; keep the historical initial-path
+        // representation here while the FinalTrim side effects are matched
+        // against the native fixture separately.
         event.program_flag = 8;
         event.probability = side.probability;
         event.distance_holder = sequences[2];

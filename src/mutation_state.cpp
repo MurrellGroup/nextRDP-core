@@ -462,15 +462,25 @@ RdpRedistributedEvents redistribute_rdp_events(
 }
 
 RdpDroppedFragmentEvents drop_rdp_unused_fragment_events(
-    const int original_next_no, const int expanded_next_no,
-    const int minimum_sequence_size, const std::vector<int>& trace_sub,
+    const int original_next_no, const int current_next_no,
+    const int expanded_next_no, const int sequence_length,
+    const int minimum_sequence_size,
+    const std::vector<int>& trace_sub,
     const std::vector<int>& actual_sequence_sizes,
+    const std::vector<short>& sequence_data,
+    const std::vector<unsigned char>& missing_data,
     const RdpRawEventState& events_before_outer_scan,
     const RdpRawEventState& outer_scan_events) {
-    if (expanded_next_no < original_next_no ||
+    const std::size_t expanded_cells =
+        static_cast<std::size_t>(expanded_next_no + 1) *
+        (sequence_length + 1);
+    if (sequence_length < 0 || current_next_no < original_next_no ||
+        expanded_next_no < current_next_no ||
         trace_sub.size() < static_cast<std::size_t>(expanded_next_no + 1) ||
         actual_sequence_sizes.size() <
-            static_cast<std::size_t>(expanded_next_no + 1)) {
+            static_cast<std::size_t>(expanded_next_no + 1) ||
+        sequence_data.size() < expanded_cells ||
+        missing_data.size() < expanded_cells) {
         throw std::runtime_error("DropSeqs input dimensions differ");
     }
     RdpDroppedFragmentEvents output;
@@ -484,9 +494,13 @@ RdpDroppedFragmentEvents drop_rdp_unused_fragment_events(
     output.actual_sequence_sizes.assign(
         actual_sequence_sizes.begin(),
         actual_sequence_sizes.begin() + expanded_next_no + 1);
+    output.sequence_data.assign(
+        sequence_data.begin(), sequence_data.begin() + expanded_cells);
+    output.missing_data.assign(
+        missing_data.begin(), missing_data.begin() + expanded_cells);
 
     const auto map_to_original = [&](int sequence) {
-        if (sequence > original_next_no) {
+        if (sequence > current_next_no) {
             sequence = sequence <= expanded_next_no
                 ? output.trace_sub[sequence] : -1;
         }
@@ -498,10 +512,10 @@ RdpDroppedFragmentEvents drop_rdp_unused_fragment_events(
         for (const auto& event : row) {
             const int daughter = map_to_original(event.daughter);
             const int minor = map_to_original(event.minor_parent);
-            if (daughter >= 0 && daughter <= original_next_no) {
+            if (daughter >= 0 && daughter <= current_next_no) {
                 ++output.reference_counts[daughter];
             }
-            if (minor >= 0 && minor <= original_next_no) {
+            if (minor >= 0 && minor <= current_next_no) {
                 ++output.reference_counts[minor];
             }
         }
@@ -522,6 +536,9 @@ RdpDroppedFragmentEvents drop_rdp_unused_fragment_events(
         output.events.current_xover[row] = static_cast<std::int16_t>(
             output.events.xover_list[row].size());
     }
+    output.reference_counts_before_drop = output.reference_counts;
+    output.actual_sequence_sizes_before_drop = output.actual_sequence_sizes;
+    output.events_before_drop = output.events;
 
     const auto erase_references = [&](const int removed, const int last,
                                       const int last_row_to_check) {
@@ -565,6 +582,15 @@ RdpDroppedFragmentEvents drop_rdp_unused_fragment_events(
             }
             output.events.current_xover[sequence] = static_cast<std::int16_t>(
                 output.events.xover_list[sequence].size());
+            const int stride = sequence_length + 1;
+            for (int position = 0; position <= sequence_length; ++position) {
+                output.sequence_data[position + sequence * stride] =
+                    output.sequence_data[position + last * stride];
+            }
+            for (int position = 1; position <= sequence_length; ++position) {
+                output.missing_data[position + sequence * stride] =
+                    output.missing_data[position + last * stride];
+            }
             if (old_reference_count > 0) {
                 erase_references(sequence, last, last);
             }
@@ -588,5 +614,9 @@ RdpDroppedFragmentEvents drop_rdp_unused_fragment_events(
     output.reference_counts.resize(output.next_no + 1);
     output.trace_sub.resize(output.next_no + 1);
     output.actual_sequence_sizes.resize(output.next_no + 1);
+    output.sequence_data.resize(
+        static_cast<std::size_t>(output.next_no + 1) *
+        (sequence_length + 1));
+    output.missing_data.resize(output.sequence_data.size());
     return output;
 }

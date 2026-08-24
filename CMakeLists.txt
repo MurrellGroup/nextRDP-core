@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(rdp_dna5_exact STATIC
     src/msvcrt_compat.cpp
+    src/rdp_nj_legacy.cpp
     vendor/dna5/MathFuncsDll.cpp
 )
 target_compile_definitions(rdp_dna5_exact PRIVATE MATHFUNCSDLL_EXPORTS)
@@ -18,6 +19,18 @@ target_compile_options(rdp_dna5_exact PRIVATE
     -Wno-unknown-pragmas
     -Wno-deprecated-volatile
 )
+
+# The original RDP tree path was built through the 32-bit x87 evaluation
+# model.  Keep this isolated to the literal Clearcut/NJ translation unit;
+# applying it to the complete DNA5 DLL changes upstream matrix generation.
+set_source_files_properties(src/rdp_nj_legacy.cpp PROPERTIES
+    COMPILE_OPTIONS "-O0"
+)
+if(NOT EMSCRIPTEN)
+    set_property(SOURCE src/rdp_nj_legacy.cpp APPEND PROPERTY COMPILE_OPTIONS
+        "-mfpmath=387" "-mno-sse2"
+    )
+endif()
 
 add_library(next_rdp_core STATIC
     src/analysis.cpp

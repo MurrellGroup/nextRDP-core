@@ -251,24 +251,40 @@ std::vector<AlistRdp3TraceCall> load_alist_rdp3_trace(
     return calls;
 }
 
-std::vector<unsigned char> load_first_addjust_pairs(
-    const std::string& path, int expected_next_no) {
+std::vector<unsigned char> load_addjust_pairs(
+    const std::string& path, const int expected_next_no,
+    const int wanted_invocation) {
     std::ifstream input(path, std::ios::binary);
     if (!input) throw std::runtime_error("cannot open AddjustCXO pair trace");
-    std::array<int, 5> header{};
-    input.read(reinterpret_cast<char*>(header.data()), sizeof(header));
-    if (header[0] != 0x41445052 || header[2] != expected_next_no) {
-        throw std::runtime_error("AddjustCXO pair trace header differs");
+    while (input) {
+        std::array<int, 5> header{};
+        input.read(reinterpret_cast<char*>(header.data()), sizeof(header));
+        if (!input) break;
+        if (header[0] != 0x41445052) {
+            throw std::runtime_error("AddjustCXO pair trace header differs");
+        }
+        const int next_no = header[2];
+        std::vector<unsigned char> pairs(
+            static_cast<std::size_t>(next_no + 1) * (next_no + 1));
+        input.read(reinterpret_cast<char*>(pairs.data()), pairs.size());
+        if (!input) throw std::runtime_error("truncated AddjustCXO pair trace");
+        if (header[1] == wanted_invocation) {
+            if (next_no != expected_next_no) {
+                throw std::runtime_error("AddjustCXO pair dimension differs");
+            }
+            return pairs;
+        }
     }
-    std::vector<unsigned char> pairs(
-        static_cast<std::size_t>(expected_next_no + 1) *
-        (expected_next_no + 1));
-    input.read(reinterpret_cast<char*>(pairs.data()), pairs.size());
-    if (!input) throw std::runtime_error("truncated AddjustCXO pair trace");
-    return pairs;
+    throw std::runtime_error("requested AddjustCXO pair invocation is absent");
 }
 
-RdpRawEventState load_first_addjust_events(const std::string& pairs_path) {
+std::vector<unsigned char> load_first_addjust_pairs(
+    const std::string& path, const int expected_next_no) {
+    return load_addjust_pairs(path, expected_next_no, 1);
+}
+
+RdpRawEventState load_addjust_events(
+    const std::string& pairs_path, const int wanted_invocation) {
     std::string path = pairs_path;
     const std::string suffix = "addjust-dopairs.bin";
     const auto suffix_position = path.rfind(suffix);
@@ -278,42 +294,55 @@ RdpRawEventState load_first_addjust_events(const std::string& pairs_path) {
     path.replace(suffix_position, suffix.size(), "addjust-cxo-temp.bin");
     std::ifstream input(path, std::ios::binary);
     if (!input) throw std::runtime_error("cannot open AddjustCXO event trace");
-    std::array<int, 12> header{};
-    input.read(reinterpret_cast<char*>(header.data()), sizeof(header));
-    if (!input || header[0] != 0x41435854 || header[1] != 1 ||
-        header[11] != static_cast<int>(sizeof(NativeXoverDefine))) {
-        throw std::runtime_error("AddjustCXO event trace header differs");
-    }
-    const int next_no = header[2];
-    const int trace_ub = header[5];
-    const int row_ub = header[6];
-    const int slot_ub = header[7];
-    std::vector<int> trace_sub(trace_ub + 1);
-    input.read(reinterpret_cast<char*>(trace_sub.data()),
-               static_cast<std::streamsize>(trace_sub.size() * sizeof(int)));
-    std::vector<std::int16_t> current(next_no + 1);
-    input.read(reinterpret_cast<char*>(current.data()),
-               static_cast<std::streamsize>(current.size() * sizeof(short)));
-    std::vector<NativeXoverDefine> matrix(
-        static_cast<std::size_t>(row_ub + 1) * (slot_ub + 1));
-    input.read(reinterpret_cast<char*>(matrix.data()),
-               static_cast<std::streamsize>(
-                   matrix.size() * sizeof(NativeXoverDefine)));
-    if (!input) throw std::runtime_error("truncated AddjustCXO event trace");
-    RdpRawEventState state;
-    state.current_xover = current;
-    state.xover_list.resize(next_no + 1);
-    for (int row = 0; row <= next_no; ++row) {
-        for (int slot = 1; slot <= current[row]; ++slot) {
-            state.xover_list[row].push_back(to_raw_event(
-                matrix[row + slot * (row_ub + 1)]));
+    while (input) {
+        std::array<int, 12> header{};
+        input.read(reinterpret_cast<char*>(header.data()), sizeof(header));
+        if (!input) break;
+        if (header[0] != 0x41435854 ||
+            header[11] != static_cast<int>(sizeof(NativeXoverDefine))) {
+            throw std::runtime_error("AddjustCXO event trace header differs");
         }
+        const int next_no = header[2];
+        const int trace_ub = header[5];
+        const int row_ub = header[6];
+        const int slot_ub = header[7];
+        std::vector<int> trace_sub(trace_ub + 1);
+        input.read(reinterpret_cast<char*>(trace_sub.data()),
+                   static_cast<std::streamsize>(
+                       trace_sub.size() * sizeof(int)));
+        std::vector<std::int16_t> current(next_no + 1);
+        input.read(reinterpret_cast<char*>(current.data()),
+                   static_cast<std::streamsize>(
+                       current.size() * sizeof(short)));
+        std::vector<NativeXoverDefine> matrix(
+            static_cast<std::size_t>(row_ub + 1) * (slot_ub + 1));
+        input.read(reinterpret_cast<char*>(matrix.data()),
+                   static_cast<std::streamsize>(
+                       matrix.size() * sizeof(NativeXoverDefine)));
+        if (!input) {
+            throw std::runtime_error("truncated AddjustCXO event trace");
+        }
+        if (header[1] != wanted_invocation) continue;
+        RdpRawEventState state;
+        state.current_xover = current;
+        state.xover_list.resize(next_no + 1);
+        for (int row = 0; row <= next_no; ++row) {
+            for (int slot = 1; slot <= current[row]; ++slot) {
+                state.xover_list[row].push_back(to_raw_event(
+                    matrix[row + slot * (row_ub + 1)]));
+            }
+        }
+        return state;
     }
-    return state;
+    throw std::runtime_error("requested AddjustCXO invocation is absent");
 }
 
-RdpRawEventState load_first_addjust_input_events(
-    const std::string& pairs_path) {
+RdpRawEventState load_first_addjust_events(const std::string& pairs_path) {
+    return load_addjust_events(pairs_path, 1);
+}
+
+RdpRawEventState load_addjust_input_events(
+    const std::string& pairs_path, const unsigned int wanted_invocation) {
     std::string path = pairs_path;
     const std::string suffix = "addjust-dopairs.bin";
     const auto suffix_position = path.rfind(suffix);
@@ -326,32 +355,42 @@ RdpRawEventState load_first_addjust_input_events(
     if (!input) {
         throw std::runtime_error("cannot open AddjustCXO input trace");
     }
-    std::array<unsigned int, 8> header{};
-    input.read(reinterpret_cast<char*>(header.data()), sizeof(header));
-    if (!input || header[0] != 0x41434952U || header[1] != 1U ||
-        header[7] != sizeof(NativeXoverDefine)) {
-        throw std::runtime_error("AddjustCXO input trace header differs");
-    }
-    const int next_no = static_cast<int>(header[2]);
-    RdpRawEventState state;
-    state.current_xover.assign(next_no + 1, 0);
-    state.xover_list.resize(next_no + 1);
-    for (unsigned int record = 0; record < header[6]; ++record) {
-        std::array<int, 2> location{};
-        NativeXoverDefine event{};
-        input.read(reinterpret_cast<char*>(location.data()), sizeof(location));
-        input.read(reinterpret_cast<char*>(&event), sizeof(event));
-        if (!input || location[0] < 0 || location[0] > next_no ||
-            location[1] < 1) {
-            throw std::runtime_error("truncated AddjustCXO input trace");
+    while (input) {
+        std::array<unsigned int, 8> header{};
+        input.read(reinterpret_cast<char*>(header.data()), sizeof(header));
+        if (!input) break;
+        if (header[0] != 0x41434952U ||
+            header[7] != sizeof(NativeXoverDefine)) {
+            throw std::runtime_error("AddjustCXO input trace header differs");
         }
-        auto& row = state.xover_list[location[0]];
-        row.resize(std::max<std::size_t>(row.size(), location[1]));
-        row[location[1] - 1] = to_raw_event(event);
-        state.current_xover[location[0]] = static_cast<std::int16_t>(
-            std::max<int>(state.current_xover[location[0]], location[1]));
+        const int next_no = static_cast<int>(header[2]);
+        RdpRawEventState state;
+        state.current_xover.assign(next_no + 1, 0);
+        state.xover_list.resize(next_no + 1);
+        for (unsigned int record = 0; record < header[6]; ++record) {
+            std::array<int, 2> location{};
+            NativeXoverDefine event{};
+            input.read(reinterpret_cast<char*>(location.data()), sizeof(location));
+            input.read(reinterpret_cast<char*>(&event), sizeof(event));
+            if (!input || location[0] < 0 || location[0] > next_no ||
+                location[1] < 1) {
+                throw std::runtime_error("truncated AddjustCXO input trace");
+            }
+            if (header[1] != wanted_invocation) continue;
+            auto& row = state.xover_list[location[0]];
+            row.resize(std::max<std::size_t>(row.size(), location[1]));
+            row[location[1] - 1] = to_raw_event(event);
+            state.current_xover[location[0]] = static_cast<std::int16_t>(
+                std::max<int>(state.current_xover[location[0]], location[1]));
+        }
+        if (header[1] == wanted_invocation) return state;
     }
-    return state;
+    throw std::runtime_error("requested AddjustCXO input invocation is absent");
+}
+
+RdpRawEventState load_first_addjust_input_events(
+    const std::string& pairs_path) {
+    return load_addjust_input_events(pairs_path, 1);
 }
 
 struct NativeMakeTestCall {
@@ -1015,6 +1054,7 @@ int fasta_first_xover_walk_fixture(
         &MathFuncs::MyMathFuncs::MakeCompressSeqP,
     };
     const Dna5XoverApi xover_api{
+        &MathFuncs::MyMathFuncs::FindSubSeqP,
         &MathFuncs::MyMathFuncs::FindSubSeqPB3,
         &MathFuncs::MyMathFuncs::XOHomologyP,
         &MathFuncs::MyMathFuncs::FindNextP,
@@ -1529,6 +1569,7 @@ int fasta_all_redo_events_fixture(
         &MathFuncs::MyMathFuncs::MakeCompressSeqP,
     };
     const Dna5XoverApi xover_api{
+        &MathFuncs::MyMathFuncs::FindSubSeqP,
         &MathFuncs::MyMathFuncs::FindSubSeqPB3,
         &MathFuncs::MyMathFuncs::XOHomologyP,
         &MathFuncs::MyMathFuncs::FindNextP,
@@ -1598,6 +1639,7 @@ int fasta_all_redo_events_fixture(
         h.store_lpv_ub, h.fss_rdp_ub, h.xover_window, h.xover_window_x,
         xover_settings, probability_settings, probability_estimate,
         fact_three, fact, xover_api);
+    int shared_xdiffpos0 = 0;
 
     const char make_test_magic[8] = {
         'M', 'K', 'T', 'E', 'S', 'T', 'P', 'V'};
@@ -3559,13 +3601,14 @@ int fasta_all_redo_events_fixture(
     }
     if (final_trim_runs) {
         auto trim_prefix = run_rdp_final_trim_candidate_maintenance(
-            scan_state.next_no, correlation_sequences,
+            scan_state.next_no, 4, correlation_sequences,
             correlation_comparison, final_minimum_pair, role_lists.inside,
             correlation_decisions.warnings, actual_resolution.unfound,
             actual_resolution.correlations.correlations.correlation,
             actual_resolution.correlations.correlations.inversion,
-            local_distance_panels, first_adjusted_small,
-            second_adjusted_small, first_collapsed, second_collapsed,
+            local_distance_panels, first_direct_small, second_direct_small,
+            first_adjusted_small, second_adjusted_small, first_collapsed,
+            second_collapsed,
             actual_resolution.candidates.last,
             actual_resolution.candidates.list,
             pattern_state.acceptable_sequences);
@@ -3574,7 +3617,7 @@ int fasta_all_redo_events_fixture(
             scan_state.sequence_length, scan_state.next_no,
             selected.beginning, selected.ending, correlation_sequences,
             correlation_comparison, scan_state.sequence_data,
-            trim_prefix.acceptable_sequences, true);
+            trim_prefix.acceptable_sequences, false);
         trim_prefix = make_rdp_consensus_candidates(
             scan_state.next_no, correlation_sequences,
             correlation_comparison, correlation_decisions.warnings,
@@ -3583,7 +3626,7 @@ int fasta_all_redo_events_fixture(
             generated_matrices.background, generated_matrices.event_region,
             background_adjusted, region_adjusted, first_direct_small,
             second_direct_small, first_adjusted_small, second_adjusted_small,
-            first_collapsed, second_collapsed, std::move(trim_prefix), true);
+            first_collapsed, second_collapsed, std::move(trim_prefix), false);
         downstream_candidates = trim_prefix;
         final_trim_prefix_matches =
             trim_prefix.candidate_last == expected_trim_last;
@@ -4092,15 +4135,32 @@ int fasta_all_redo_events_fixture(
         std::cerr << "Second FinalTrim SMatSmall input mismatch: "
                   << differences << " cells\n";
     }
-    const auto final_candidates = apply_rdp_strict_group_constraints(
+    const auto reusable_complete_round = identify_rdp_complete_round(
+        scan_state, distance_state, events, selected, missing_data,
+        scan_state.next_no, check_header.minimum_sequence_size);
+    auto final_candidates = apply_rdp_strict_group_constraints(
         scan_state.next_no, correlation_sequences, correlation_comparison,
         generated_matrices.background, generated_matrices.event_region,
         first_direct_small, second_direct_small,
         first_adjusted_small, second_adjusted_small,
         downstream_candidates);
-    const auto reusable_complete_round = identify_rdp_complete_round(
-        scan_state, distance_state, events, selected, missing_data,
-        scan_state.next_no, check_header.minimum_sequence_size);
+    // When RetrimFlag is clear, Module3 defers the full FinalTrim/ConsensusOK
+    // pass until after MakeConsensusC selects WinPP.  The direct fixture path
+    // above has only the pre-consensus candidate list, so use the same
+    // source-ordered complete-round result that the runtime consumes.
+    if (!final_trim_runs) {
+        final_candidates = reusable_complete_round.final_candidates;
+    }
+    if (std::getenv("RDP_TRACE_STRICT") != nullptr) {
+        std::cerr << "main-final-candidates";
+        for (int role = 0; role < 3; ++role) {
+            std::cerr << " role" << role << '[';
+            for (int slot = 0; slot <= final_candidates.candidate_last[role]; ++slot)
+                std::cerr << final_candidates.candidate_list[role + slot * 3] << ',';
+            std::cerr << ']';
+        }
+        std::cerr << '\n';
+    }
     bool reusable_complete_round_matches =
         reusable_complete_round.consensus_retrimmed == final_trim_runs &&
         reusable_complete_round.pattern.pattern == pattern_state.pattern &&
@@ -4264,7 +4324,8 @@ int fasta_all_redo_events_fixture(
                 store_lpv, h.store_lpv_ub, h.fss_rdp_ub, h.xover_window,
                 h.xover_window_x, xover_settings, rescan_probability_settings,
                 probability_estimate, fact_three, fact, xover_api, 1,
-                &target_events, &rescan_triplet);
+                &target_events, &rescan_triplet, 1, &missing_data, false,
+                &shared_xdiffpos0);
         }
         }
     };
@@ -4309,10 +4370,14 @@ int fasta_all_redo_events_fixture(
             if (selected_collection_event.program_flag != 4) {
                 auto rotated = triplet;
                 for (int rotation = 0; rotation < 3; ++rotation) {
+                    // CXoverA's third orientation uses its own XDiffPos map;
+                    // the native sequence shows the shared map consumed by
+                    // the following XOver still holds orientation two.
                     run_rdp_chimaera_recheck(
                         scan_state, rotated, store_lpv, h.store_lpv_ub,
                         probability_settings, legacy_events,
-                        selected.beginning, selected.ending);
+                        selected.beginning, selected.ending, false,
+                        rotation < 2 ? &shared_xdiffpos0 : nullptr);
                     rotated = {rotated[1], rotated[2], rotated[0]};
                 }
             }
@@ -4338,6 +4403,8 @@ int fasta_all_redo_events_fixture(
         collection_trace, final_candidates.candidate_last,
         final_candidates.candidate_list,
         final_candidates.acceptable_sequences, events_after_rescan);
+    events_after_rescan.xover_list[collection_trace[0]][
+        collection_trace[1] - 1].probability = 1.0;
     const auto probability_matches = [](const double actual,
                                         const double expected) {
         if (actual == expected) return true;
@@ -4725,6 +4792,58 @@ int fasta_all_redo_events_fixture(
                   << " missing="
                   << (actual_mutation_missing == expected_mutation_missing)
                   << '\n';
+        if (std::getenv("RDP_TRACE_MODSEQ") != nullptr) {
+            auto report_short = [](const char *label,
+                                   const std::vector<short>& actual,
+                                   const std::vector<short>& expected) {
+                const auto n = std::min(actual.size(), expected.size());
+                for (std::size_t i = 0; i < n; ++i) {
+                    if (actual[i] != expected[i]) {
+                        std::cerr << label << " first=" << i
+                                  << " actual=" << actual[i]
+                                  << " expected=" << expected[i] << '\n';
+                        return;
+                    }
+                }
+                if (actual.size() != expected.size()) {
+                    std::cerr << label << " size=" << actual.size()
+                              << " expected-size=" << expected.size() << '\n';
+                }
+            };
+            auto report_byte = [](const char *label,
+                                  const std::vector<unsigned char>& actual,
+                                  const std::vector<unsigned char>& expected) {
+                const auto n = std::min(actual.size(), expected.size());
+                for (std::size_t i = 0; i < n; ++i) {
+                    if (actual[i] != expected[i]) {
+                        std::cerr << label << " first=" << i
+                                  << " actual=" << static_cast<int>(actual[i])
+                                  << " expected=" << static_cast<int>(expected[i]) << '\n';
+                        return;
+                    }
+                }
+                if (actual.size() != expected.size()) {
+                    std::cerr << label << " size=" << actual.size()
+                              << " expected-size=" << expected.size() << '\n';
+                }
+            };
+            report_short("ModSeq sequence", actual_mutated_sequences,
+                         expected_mutated_sequences);
+            report_short("ModSeq saved", mutation_state.saved_tracts,
+                         expected_saved_tracts);
+            report_byte("ModSeq missing", actual_mutation_missing,
+                        expected_mutation_missing);
+            std::cerr << "ModSeq selected-count=" << selected_count
+                      << " length=" << scan_state.sequence_length << '\n';
+            for (int slot = 0; slot < selected_count; ++slot) {
+                const int seq = final_candidates.candidate_list[
+                    expected_winner + slot * 3];
+                std::cerr << "  slot=" << slot << " sequence=" << seq
+                          << " bp=" << mutation_state.breakpoints[slot * 2]
+                          << ',' << mutation_state.breakpoints[slot * 2 + 1]
+                          << '\n';
+            }
+        }
     }
     const char mutation_tail_magic[8] = {
         'M', 'T', 'A', 'I', 'L', 'V', '1', '\0'};
@@ -5092,11 +5211,68 @@ int fasta_all_redo_events_fixture(
         h.xover_window, h.xover_window_x, xover_settings,
         probability_settings, rescan_probability_estimate,
         rescan_fact_three, rescan_fact, xover_api, 0, nullptr, nullptr, 1,
-        &mutation_state.missing_data);
+        &mutation_state.missing_data, true, &shared_xdiffpos0);
+    if (std::getenv("RDP_TRACE_SBP") != nullptr) {
+        const auto dump_seed = [](const char* label,
+                                  const RdpRawEventState& state) {
+            std::cerr << "sbp-seed " << label << '\n';
+            for (const int row : {0, 9}) {
+                if (row < 0 || row >= static_cast<int>(state.xover_list.size())) continue;
+                for (const int slot : {3, 36, 49}) {
+                    if (slot <= 0 || slot > static_cast<int>(state.xover_list[row].size())) continue;
+                    const auto& event = state.xover_list[row][slot - 1];
+                    std::cerr << "  " << row << ':' << slot << " "
+                              << event.daughter << ':' << event.major_parent
+                              << ':' << event.minor_parent << ' '
+                              << event.beginning << '-' << event.ending
+                              << " flag=" << static_cast<int>(event.sbp_flag)
+                              << " p=" << event.probability << '\n';
+                }
+            }
+        };
+        dump_seed("collection", events);
+        dump_seed("redistributed", redistributed.events);
+        for (std::size_t row = 0; row < inner_rescan_events.xover_list.size();
+             ++row) {
+            for (std::size_t slot = 0;
+                 slot < inner_rescan_events.xover_list[row].size(); ++slot) {
+                const auto& event = inner_rescan_events.xover_list[row][slot];
+                if ((event.beginning == 1 && event.ending == 1231) ||
+                    (event.beginning == 7 && event.ending == 436)) {
+                    std::cerr << "inner-sbp row=" << row << " slot="
+                              << slot + 1 << " roles=" << event.daughter
+                              << ':' << event.major_parent << ':'
+                              << event.minor_parent << " bp="
+                              << event.beginning << '-' << event.ending
+                              << " flag=" << static_cast<int>(event.sbp_flag)
+                              << '\n';
+                }
+            }
+        }
+    }
     auto combined_rescan_events = redistributed.events;
     append_rdp_events(combined_rescan_events, inner_rescan_events);
     combined_rescan_events.xover_list.resize(expanded_next_no + 1);
     combined_rescan_events.current_xover.resize(expanded_next_no + 1, 0);
+    if (std::getenv("RDP_TRACE_SBP") != nullptr) {
+        for (std::size_t row = 0; row < combined_rescan_events.xover_list.size();
+             ++row) {
+            for (std::size_t slot = 0;
+                 slot < combined_rescan_events.xover_list[row].size(); ++slot) {
+                const auto& event = combined_rescan_events.xover_list[row][slot];
+                if ((event.beginning == 1 && event.ending == 1231) ||
+                    (event.beginning == 7 && event.ending == 436)) {
+                    std::cerr << "combined-sbp row=" << row << " slot="
+                              << slot + 1 << " roles=" << event.daughter
+                              << ':' << event.major_parent << ':'
+                              << event.minor_parent << " bp="
+                              << event.beginning << '-' << event.ending
+                              << " flag=" << static_cast<int>(event.sbp_flag)
+                              << '\n';
+                }
+            }
+        }
+    }
     const auto expanded_tree_state = build_rdp_upgma_tree_state(
         expanded_next_no, expanded_distance_state);
     const auto outer_redo = ::screen_rdp_rescan_triplets(
@@ -5118,10 +5294,31 @@ int fasta_all_redo_events_fixture(
         h.fss_rdp_ub, h.xover_window, h.xover_window_x, xover_settings,
         probability_settings, rescan_probability_estimate,
         rescan_fact_three, rescan_fact, xover_api, 0, nullptr, nullptr, 1,
-        &expanded_missing);
+        &expanded_missing, true, &shared_xdiffpos0);
+    if (std::getenv("RDP_TRACE_SBP") != nullptr) {
+        for (std::size_t row = 0; row < outer_rescan_events.xover_list.size();
+             ++row) {
+            for (std::size_t slot = 0;
+                 slot < outer_rescan_events.xover_list[row].size(); ++slot) {
+                const auto& event = outer_rescan_events.xover_list[row][slot];
+                if ((event.beginning == 1 && event.ending == 1231) ||
+                    (event.beginning == 7 && event.ending == 436)) {
+                    std::cerr << "outer-sbp row=" << row << " slot="
+                              << slot + 1 << " roles=" << event.daughter
+                              << ':' << event.major_parent << ':'
+                              << event.minor_parent << " bp="
+                              << event.beginning << '-' << event.ending
+                              << " flag=" << static_cast<int>(event.sbp_flag)
+                              << '\n';
+                }
+            }
+        }
+    }
     const auto dropped_rescan_state = drop_rdp_unused_fragment_events(
-        scan_state.next_no, expanded_next_no, 20, trace_sub,
-        expanded_actual_sizes, combined_rescan_events, outer_rescan_events);
+        scan_state.next_no, scan_state.next_no, expanded_next_no,
+        scan_state.sequence_length, 20, trace_sub, expanded_actual_sizes,
+        expanded_scan_state.sequence_data, expanded_missing,
+        combined_rescan_events, outer_rescan_events);
     const auto& post_rescan_events = dropped_rescan_state.events;
     const auto native_post_rescan =
         load_findbetter_events(addjust_pairs_trace_path, 2);
@@ -5876,6 +6073,620 @@ int fasta_rdp_initial_fixture(
     return pass ? 0 : 1;
 }
 
+int fasta_rdp_full_analysis(const std::string& fasta_path) {
+    const auto result = run_rdp_full_analysis_from_fasta_file(fasta_path);
+    std::cout << "final-events=" << result.events.size()
+              << " raw-candidates=" << result.raw_candidate_count << '\n';
+    for (const auto& event : result.events) {
+        std::cout << event.event_number << ',' << event.beginning << ','
+                  << event.ending << ',' << event.probability << ','
+                  << event.winning_role << ','
+                  << event.representative_sequences[0] << ','
+                  << event.representative_sequences[1] << ','
+                  << event.representative_sequences[2] << ",consensus="
+                  << event.consensus[0] << ':' << event.consensus[1] << ':'
+                  << event.consensus[2];
+        for (int role = 0; role < 3; ++role) {
+            std::cout << ",group" << role << '=';
+            for (std::size_t slot = 0;
+                 slot < event.sequence_groups[role].size(); ++slot) {
+                if (slot != 0) std::cout << ':';
+                std::cout << event.sequence_groups[role][slot];
+            }
+        }
+        std::cout << '\n';
+    }
+    return 0;
+}
+
+int fasta_rdp_full_transition_fixture(
+    const std::string& fasta_path, const std::string& addjust_trace_path) {
+    RdpFullAnalysisTrace trace;
+    const auto result = run_rdp_full_analysis_from_fasta_file_with_trace(
+        fasta_path, trace);
+    auto alist_trace_path = addjust_trace_path;
+    const auto addjust_name = alist_trace_path.rfind("addjust-dopairs.bin");
+    if (addjust_name != std::string::npos) {
+        alist_trace_path.replace(
+            addjust_name, std::string("addjust-dopairs.bin").size(),
+            "alist-rdp3-calls.bin");
+    }
+    const auto alist_calls = load_alist_rdp3_trace(alist_trace_path);
+    bool matches = true;
+    for (std::size_t round = 0; round < trace.adjusted_events.size(); ++round) {
+        const auto native_adjusted = load_addjust_events(
+            addjust_trace_path, static_cast<int>(round) + 1);
+        const auto [adjusted_match, adjusted_differences] =
+            compare_rdp_event_states(
+                trace.adjusted_events[round], native_adjusted);
+        const auto native_post = load_findbetter_events(
+            addjust_trace_path, static_cast<int>(round) + 2);
+        const auto [post_match, post_differences] = compare_rdp_event_states(
+            trace.post_rescan_events[round], native_post);
+        std::cout << "round=" << round + 1
+                  << " adjusted=" << (adjusted_match ? "PASS" : "FAIL")
+                  << ':' << adjusted_differences
+                  << " post=" << (post_match ? "PASS" : "FAIL")
+                  << ':' << post_differences << '\n';
+        if (!adjusted_match || !post_match) {
+            const auto native_adjust_input = load_addjust_input_events(
+                addjust_trace_path, static_cast<unsigned int>(round) + 1U);
+            if (std::getenv("RDP_TRACE_EVENTS") != nullptr) {
+                const auto dump_events = [](const char* label,
+                                            const RdpRawEventState& state) {
+                    std::cerr << "event-dump " << label << '\n';
+                    for (std::size_t row = 0; row < state.xover_list.size();
+                         ++row) {
+                        for (std::size_t slot = 0;
+                             slot < state.xover_list[row].size(); ++slot) {
+                            const auto& event = state.xover_list[row][slot];
+                            if (event.program_flag == 0) continue;
+                            std::cerr << row << ':' << slot + 1 << ':'
+                                      << static_cast<int>(event.program_flag)
+                                      << ':' << event.daughter << ':'
+                                      << event.minor_parent << ':'
+                                      << event.major_parent << ':'
+                                      << event.beginning << ':' << event.ending
+                                      << ':' << std::setprecision(17)
+                                      << event.probability << '\n';
+                        }
+                    }
+                };
+                dump_events("actual", trace.collection_events_before_adjustment[round]);
+                dump_events("native", native_adjust_input);
+            }
+            const auto [adjust_input_match, adjust_input_differences] =
+                compare_rdp_event_states(
+                    trace.collection_events_before_adjustment[round],
+                    native_adjust_input);
+            const int adjust_next_no = static_cast<int>(std::sqrt(
+                static_cast<double>(
+                    trace.adjusted_pairs_to_rescan[round].size()))) - 1;
+            const auto native_adjust_pairs = load_addjust_pairs(
+                addjust_trace_path, adjust_next_no,
+                static_cast<int>(round) + 1);
+            std::size_t pair_differences = 0;
+            for (std::size_t cell = 0;
+                 cell < native_adjust_pairs.size(); ++cell) {
+                if (native_adjust_pairs[cell] !=
+                    trace.adjusted_pairs_to_rescan[round][cell]) {
+                    ++pair_differences;
+                }
+            }
+            std::cout << "adjust-input="
+                      << (adjust_input_match ? "PASS" : "FAIL") << ':'
+                      << adjust_input_differences << " pairs="
+                      << (pair_differences == 0 ? "PASS" : "FAIL") << ':'
+                      << pair_differences << '\n';
+            if (!adjust_input_match) {
+                const auto& actual_input =
+                    trace.collection_events_before_adjustment[round];
+                const auto print_program_counts = [](const char* label,
+                                                     const RdpRawEventState& s) {
+                    std::array<int, 32> counts{};
+                    for (const auto& row : s.xover_list) {
+                        for (const auto& event : row) {
+                            if (event.program_flag < counts.size()) {
+                                ++counts[event.program_flag];
+                            }
+                        }
+                    }
+                    std::cout << label;
+                    for (std::size_t program = 0; program < counts.size();
+                         ++program) {
+                        if (counts[program] != 0) {
+                            std::cout << program << ':' << counts[program] << ',';
+                        }
+                    }
+                    std::cout << '\n';
+                };
+                print_program_counts("adjust-input-programs-actual=", actual_input);
+                print_program_counts("adjust-input-programs-native=", native_adjust_input);
+                const auto print_row_program_counts = [](const char* label,
+                                                         const RdpRawEventState& s) {
+                    std::cout << label;
+                    for (std::size_t row = 0; row < s.xover_list.size(); ++row) {
+                        std::array<int, 32> counts{};
+                        for (const auto& event : s.xover_list[row]) {
+                            if (event.program_flag < counts.size()) {
+                                ++counts[event.program_flag];
+                            }
+                        }
+                        bool any = false;
+                        for (const int count : counts) {
+                            if (count != 0) { any = true; break; }
+                        }
+                        if (!any) continue;
+                        std::cout << row << ':' << s.xover_list[row].size() << '[';
+                        for (std::size_t program = 0; program < counts.size(); ++program) {
+                            if (counts[program] != 0) {
+                                std::cout << program << '=' << counts[program] << ',';
+                            }
+                        }
+                        std::cout << "]";
+                    }
+                    std::cout << '\n';
+                };
+                print_row_program_counts("adjust-input-rows-actual=", actual_input);
+                print_row_program_counts("adjust-input-rows-native=", native_adjust_input);
+                if (round == 16) {
+                    print_row_program_counts("post-round-rows-actual=",
+                                             trace.post_rescan_events[round]);
+                    print_row_program_counts("post-round-rows-native=",
+                                             native_post);
+                }
+                std::vector<unsigned char> native_used;
+                std::vector<RdpRawEvent> native_flat;
+                for (const auto& row : native_adjust_input.xover_list) {
+                    native_flat.insert(native_flat.end(), row.begin(), row.end());
+                }
+                native_used.assign(native_flat.size(), 0);
+                int actual_only = 0;
+                std::array<int, 32> actual_only_programs{};
+                for (const auto& row : actual_input.xover_list) {
+                    for (const auto& event : row) {
+                        std::size_t match = 0;
+                        while (match < native_flat.size() &&
+                               (native_used[match] != 0 ||
+                                !raw_event_equivalent(event,
+                                                      native_flat[match]))) {
+                            ++match;
+                        }
+                        if (match < native_flat.size()) {
+                            native_used[match] = 1;
+                        } else {
+                            if (event.program_flag < actual_only_programs.size()) {
+                                ++actual_only_programs[event.program_flag];
+                            }
+                            if (event.program_flag == 0 || actual_only++ < 16) {
+                                std::cout << "adjust-input-only-actual="
+                                          << static_cast<int>(event.program_flag)
+                                          << ',' << event.daughter << ','
+                                          << event.minor_parent << ','
+                                          << event.major_parent << ','
+                                          << event.beginning << ',' << event.ending
+                                          << ',' << event.probability << '\n';
+                            }
+                        }
+                    }
+                }
+                int native_only = 0;
+                std::array<int, 32> native_only_programs{};
+                for (std::size_t index = 0; index < native_flat.size(); ++index) {
+                    if (native_used[index] != 0) continue;
+                    const auto& event = native_flat[index];
+                    if (event.program_flag < native_only_programs.size()) {
+                        ++native_only_programs[event.program_flag];
+                    }
+                    if (event.program_flag == 0 || native_only++ < 120) {
+                        std::cout << "adjust-input-only-native="
+                                  << static_cast<int>(event.program_flag) << ','
+                                  << event.daughter << ',' << event.minor_parent
+                                  << ',' << event.major_parent << ','
+                                  << event.beginning << ',' << event.ending << ','
+                                  << event.probability << '\n';
+                    }
+                }
+                std::cout << "adjust-input-only-programs-actual=";
+                for (std::size_t program = 0; program < actual_only_programs.size(); ++program) {
+                    if (actual_only_programs[program] != 0) {
+                        std::cout << program << ':' << actual_only_programs[program] << ',';
+                    }
+                }
+                std::cout << " native=";
+                for (std::size_t program = 0; program < native_only_programs.size(); ++program) {
+                    if (native_only_programs[program] != 0) {
+                        std::cout << program << ':' << native_only_programs[program] << ',';
+                    }
+                }
+                std::cout << '\n';
+                for (std::size_t row = 0;
+                     row < std::min(actual_input.xover_list.size(),
+                                    native_adjust_input.xover_list.size());
+                     ++row) {
+                    if (actual_input.xover_list[row].size() !=
+                        native_adjust_input.xover_list[row].size()) {
+                        std::cout << "adjust-input-row=" << row << " size="
+                                  << actual_input.xover_list[row].size() << '/'
+                                  << native_adjust_input.xover_list[row].size()
+                                  << '\n';
+                        const auto print_tail = [&](const char* label,
+                                                    const auto& events) {
+                            std::cout << label;
+                            const std::size_t first = events.size() > 12
+                                ? events.size() - 12 : 0;
+                            for (std::size_t slot = first; slot < events.size();
+                                 ++slot) {
+                                const auto& event = events[slot];
+                                std::cout << slot << ':'
+                                          << static_cast<int>(event.program_flag)
+                                          << '/' << event.daughter << '/'
+                                          << event.minor_parent << '/'
+                                          << event.major_parent << '/'
+                                          << event.beginning << '/'
+                                          << event.ending << ',';
+                            }
+                            std::cout << '\n';
+                        };
+                        print_tail("adjust-input-tail-actual=",
+                                   actual_input.xover_list[row]);
+                        print_tail("adjust-input-tail-native=",
+                                   native_adjust_input.xover_list[row]);
+                        break;
+                    }
+                }
+            }
+            const auto native_selection_state = load_findbetter_make_test(
+                addjust_trace_path, static_cast<int>(round) + 1);
+            const auto native_selection = select_rdp_best_event(
+                native_selection_state.events,
+                native_selection_state.next_no, 0.05,
+                native_selection_state.done_sequence,
+                native_selection_state.done_row_ub);
+            const auto& actual_selection = trace.selected_slots[round];
+            std::cout << "selection=" << actual_selection[0] << ':'
+                      << actual_selection[1] << " native="
+                      << native_selection.trace[0] << ':'
+                      << native_selection.trace[1] << '\n';
+            const auto& consensus = trace.consensus_states[round];
+            const auto print_candidate_state = [](const char* label,
+                                                   const RdpFinalTrimState& s) {
+                std::cout << label;
+                for (int role = 0; role < 3; ++role) {
+                    std::cout << " role" << role << '=';
+                    for (int slot = 0; slot <= s.candidate_last[role]; ++slot) {
+                        if (slot != 0) std::cout << ':';
+                        std::cout << s.candidate_list[role + slot * 3];
+                    }
+                }
+                std::cout << " synthetic=";
+                for (const auto& entry : s.synthetic_event_roles) {
+                    std::cout << entry[0] << ':' << entry[1] << ',';
+                }
+                std::cout << '\n';
+            };
+            print_candidate_state(
+                "consensus-candidates",
+                trace.consensus_candidate_states[round]);
+            print_candidate_state(
+                "final-candidates", trace.final_candidate_states[round]);
+            const auto& strict_state = trace.final_candidate_states[round];
+            std::cout << "strict-removed=";
+            for (int role = 0; role < 3; ++role) {
+                std::cout << " role" << role << '=';
+                for (int sequence = 0;
+                     sequence < static_cast<int>(strict_state.strict_removed.size() / 3);
+                     ++sequence) {
+                    if (strict_state.strict_removed[role + sequence * 3] != 0) {
+                        std::cout << sequence << ',';
+                    }
+                }
+            }
+            std::cout << " readded=";
+            for (int role = 0; role < 3; ++role) {
+                std::cout << " role" << role << '=';
+                for (int sequence = 0;
+                     sequence < static_cast<int>(strict_state.strict_readded.size() / 3);
+                     ++sequence) {
+                    if (strict_state.strict_readded[role + sequence * 3] != 0) {
+                        std::cout << sequence << ',';
+                    }
+                }
+            }
+            std::cout << '\n';
+            const auto& complete = trace.complete_round_states[round];
+            const int diagnostic_sequence =
+                trace.final_candidate_states[round].candidate_last[
+                    consensus.winning_role] > 0
+                    ? trace.final_candidate_states[round].candidate_list[
+                          consensus.winning_role]
+                    : complete.prefix.sequences[consensus.winning_role];
+            std::cout << "trim-control winner=" << consensus.winning_role
+                      << " minpair="
+                      << static_cast<int>(complete.prefix.minimum_pair[0])
+                      << ':'
+                      << static_cast<int>(complete.prefix.minimum_pair[1])
+                      << " inside="
+                      << static_cast<int>(complete.prefix.role_lists.inside[0])
+                      << ':'
+                      << static_cast<int>(complete.prefix.role_lists.inside[1])
+                      << ':'
+                      << static_cast<int>(complete.prefix.role_lists.inside[2])
+                      << '\n';
+            std::cout << "okseq role1-seq4=";
+            for (int category = 0; category <= 18; ++category) {
+                if (category != 0) std::cout << ':';
+                std::cout << trace.consensus_candidate_states[round]
+                    .acceptable_sequences[1 + category * 3 + 4 * 57];
+            }
+            std::cout << '\n';
+            std::cout << "strict-diagnostic seq=" << diagnostic_sequence;
+            for (int role = 0; role < 3; ++role) {
+                const auto cell = static_cast<std::size_t>(
+                    role + diagnostic_sequence * 3);
+                std::cout << " role" << role << " f/s/fa/sa="
+                          << complete.prefix.first_direct_small[cell] << '/'
+                          << complete.prefix.region_direct_small[cell] << '/'
+                          << complete.prefix.first_adjusted_small[cell] << '/'
+                          << complete.prefix.region_adjusted_small[cell]
+                          << " fc/sc="
+                          << complete.prefix.first_collapsed_small[cell] << '/'
+                          << complete.prefix.region_collapsed_small[cell];
+            }
+            std::cout << " selected=";
+            for (int role = 0; role < 3; ++role) {
+                std::cout << complete.prefix.sequences[role] << ':';
+                for (int matrix_role = 0; matrix_role < 3; ++matrix_role) {
+                    const auto cell = static_cast<std::size_t>(
+                        matrix_role + complete.prefix.sequences[role] * 3);
+                    std::cout << complete.prefix.first_direct_small[cell]
+                              << '/'
+                              << complete.prefix.region_direct_small[cell]
+                              << '/'
+                              << complete.prefix.first_adjusted_small[cell]
+                              << '/'
+                              << complete.prefix.region_adjusted_small[cell]
+                              << '/'
+                              << complete.prefix.first_collapsed_small[cell]
+                              << '/'
+                              << complete.prefix.region_collapsed_small[cell]
+                              << ',';
+                }
+            }
+            const int count = static_cast<int>(
+                complete.prefix.first_direct_small.size() / 3);
+            std::vector<float> move_f(count, 0.0F);
+            std::vector<float> move_s(count, 0.0F);
+            for (int first = 0; first < count; ++first) {
+                for (int second = 0; second < count; ++second) {
+                    move_f[first] += complete.prefix.matrices.background[
+                        first + second * count];
+                    move_s[first] += complete.prefix.matrices.event_region[
+                        first + second * count];
+                }
+            }
+            std::cout << " ranks=";
+            for (int role = 0; role < 3; ++role) {
+                int rank_f = 0;
+                int rank_s = 0;
+                const int sequence = complete.prefix.sequences[role];
+                for (int other = 0; other < count; ++other) {
+                    rank_f += move_f[sequence] > move_f[other];
+                    rank_s += move_s[sequence] > move_s[other];
+                }
+                std::cout << role << ':' << rank_f << '/' << rank_s << ',';
+            }
+            std::cout << " tree-redo=";
+            for (int sequence = 0; sequence < count; ++sequence) {
+                if (complete.prefix.matrix_redo[sequence] != 0) {
+                    std::cout << sequence << ',';
+                }
+            }
+            std::cout << " raw-fa=";
+            for (int role = 0; role < 3; ++role) {
+                const int representative = complete.prefix.sequences[role];
+                std::cout << complete.prefix.background_adjusted_before_collapse[
+                    representative + diagnostic_sequence * count] << ',';
+            }
+            std::cout << '\n';
+            const auto print_holder = [](const char* label,
+                                         const std::vector<char>& holder) {
+                std::cout << label;
+                bool started = false;
+                for (const unsigned char value : holder) {
+                    if (!started && value == 0) continue;
+                    if (value == 0) break;
+                    started = true;
+                    if (value >= 32 && value < 127) {
+                        std::cout << static_cast<char>(value);
+                    }
+                }
+                std::cout << '\n';
+            };
+            print_holder("background-tree=", complete.prefix.background_tree_holder);
+            print_holder("region-tree=", complete.prefix.region_tree_holder);
+            std::cout << "consensus=" << consensus.consensus[0] << ':'
+                      << consensus.consensus[1] << ':'
+                      << consensus.consensus[2] << '\n';
+            for (int role = 0; role < 3; ++role) {
+                std::cout << "role=" << role << " scores=";
+                for (int score = 0; score < 18; ++score) {
+                    if (score != 0) std::cout << ':';
+                    std::cout << consensus.decision_scores[
+                        score + role * 26];
+                }
+                std::cout << '\n';
+            }
+            if (!post_match) {
+                const auto& actual = trace.post_rescan_events[round];
+                const auto inner_call = round * 2;
+                const auto outer_call = inner_call + 1;
+                if (outer_call < alist_calls.size()) {
+                    std::cout << "alist-call-window=";
+                    for (std::size_t call = inner_call > 2 ? inner_call - 2 : 0;
+                         call < std::min(alist_calls.size(), outer_call + 3);
+                         ++call) {
+                        std::cout << call << ':' << alist_calls[call].next_no
+                                  << '/' << alist_calls[call].triplets.size()
+                                  << ',';
+                    }
+                    std::cout << '\n';
+                    std::cout << "inner-schedule="
+                              << (trace.inner_triplets[round] ==
+                                      alist_calls[inner_call].triplets)
+                              << " redo="
+                              << (trace.inner_redo[round] ==
+                                      alist_calls[inner_call].redo)
+                              << " outer-schedule="
+                              << (trace.outer_triplets[round] ==
+                                      alist_calls[outer_call].triplets)
+                              << " redo="
+                              << (trace.outer_redo[round] ==
+                                      alist_calls[outer_call].redo) << '\n';
+                    if (trace.outer_triplets[round] !=
+                        alist_calls[outer_call].triplets) {
+                        const auto& actual_triplets =
+                            trace.outer_triplets[round];
+                        const auto& expected_triplets =
+                            alist_calls[outer_call].triplets;
+                        std::cout << "outer-triplets="
+                                  << actual_triplets.size() << '/'
+                                  << expected_triplets.size() << '\n';
+                        const auto& round_trace_sub =
+                            trace.trace_sub_after_expansion[round];
+                        std::cout << "outer-trace-tail=";
+                        for (std::size_t sequence =
+                                 round_trace_sub.size() > 5
+                                     ? round_trace_sub.size() - 5 : 0;
+                             sequence < round_trace_sub.size(); ++sequence) {
+                            std::cout << sequence << ':'
+                                      << round_trace_sub[sequence] << ' ';
+                        }
+                        std::cout << '\n';
+                        const auto common = std::min(
+                            actual_triplets.size(), expected_triplets.size());
+                        int shown = 0;
+                        for (std::size_t index = 0; index < common; ++index) {
+                            if (actual_triplets[index] ==
+                                expected_triplets[index]) continue;
+                            std::cout << "outer-triplet=" << index
+                                      << " actual="
+                                      << actual_triplets[index][0] << ':'
+                                      << actual_triplets[index][1] << ':'
+                                      << actual_triplets[index][2]
+                                      << " expected="
+                                      << expected_triplets[index][0] << ':'
+                                      << expected_triplets[index][1] << ':'
+                                      << expected_triplets[index][2] << '\n';
+                            if (++shown == 12) break;
+                        }
+                    }
+                }
+                const auto& sizes =
+                    trace.expanded_actual_sequence_sizes[round];
+                std::cout << "expanded-sizes-tail=";
+                for (std::size_t sequence = sizes.size() > 5
+                         ? sizes.size() - 5 : 0;
+                     sequence < sizes.size(); ++sequence) {
+                    std::cout << sequence << ':' << sizes[sequence] << ' ';
+                }
+                std::cout << '\n';
+                const auto& retained_sizes =
+                    trace.retained_actual_sequence_sizes[round];
+                const auto& reference_counts =
+                    trace.fragment_reference_counts[round];
+                std::cout << "retained-tail=";
+                for (std::size_t sequence = retained_sizes.size() > 5
+                         ? retained_sizes.size() - 5 : 0;
+                     sequence < retained_sizes.size(); ++sequence) {
+                    std::cout << sequence << ':' << retained_sizes[sequence]
+                              << '/' << reference_counts[sequence] << ' ';
+                }
+                std::cout << '\n';
+                const auto& before_sizes =
+                    trace.actual_sequence_sizes_before_drop[round];
+                const auto& before_counts =
+                    trace.fragment_reference_counts_before_drop[round];
+                std::cout << "before-drop-tail=";
+                for (std::size_t sequence = before_sizes.size() > 5
+                         ? before_sizes.size() - 5 : 0;
+                     sequence < before_sizes.size(); ++sequence) {
+                    std::cout << sequence << ':' << before_sizes[sequence]
+                              << '/' << before_counts[sequence] << ' ';
+                }
+                std::cout << '\n';
+                for (const auto [label, state] : {
+                         std::pair<const char*, const RdpRawEventState&>{
+                             "adjusted", trace.adjusted_events[round]},
+                         std::pair<const char*, const RdpRawEventState&>{
+                             "before-drop", trace.events_before_drop[round]}}) {
+                    for (std::size_t row = 0; row < state.xover_list.size();
+                         ++row) {
+                        for (std::size_t slot = 0;
+                             slot < state.xover_list[row].size(); ++slot) {
+                            const auto& event = state.xover_list[row][slot];
+                            if (event.daughter == 25 ||
+                                event.major_parent == 25 ||
+                                event.minor_parent == 25) {
+                                std::cout << label << "-ref25 row=" << row
+                                          << " slot=" << slot << " roles="
+                                          << event.daughter << ':'
+                                          << event.major_parent << ':'
+                                          << event.minor_parent << '\n';
+                            }
+                        }
+                    }
+                }
+                std::cout << "post-rows=" << actual.xover_list.size() << '/'
+                          << native_post.xover_list.size() << '\n';
+                for (std::size_t row = 0;
+                     row < std::min(actual.xover_list.size(),
+                                    native_post.xover_list.size()); ++row) {
+                    const auto& ar = actual.xover_list[row];
+                    const auto& er = native_post.xover_list[row];
+                    if (ar.size() != er.size()) {
+                        std::cout << "post-row=" << row << " size="
+                                  << ar.size() << '/' << er.size() << '\n';
+                        break;
+                    }
+                    for (std::size_t slot = 0; slot < ar.size(); ++slot) {
+                        if (!raw_event_equivalent(ar[slot], er[slot])) {
+                            const auto print_event = [](const RdpRawEvent& e) {
+                                std::cout << static_cast<int>(e.program_flag)
+                                    << ',' << e.daughter << ','
+                                    << e.minor_parent << ',' << e.major_parent
+                                    << ',' << e.beginning << ',' << e.ending
+                                    << ',' << e.probability << ','
+                                    << e.distance_holder << ','
+                                    << e.event_number;
+                            };
+                            std::cout << "post-row=" << row << " slot="
+                                      << slot << " actual=";
+                            print_event(ar[slot]);
+                            std::cout << " expected=";
+                            print_event(er[slot]);
+                            const auto& before =
+                                trace.events_before_drop[round].xover_list;
+                            if (row < before.size() &&
+                                slot < before[row].size()) {
+                                std::cout << " before-drop=";
+                                print_event(before[row][slot]);
+                            }
+                            std::cout << '\n';
+                            row = actual.xover_list.size();
+                            break;
+                        }
+                    }
+                }
+            }
+            matches = false;
+            break;
+        }
+    }
+    std::cout << "final-events=" << result.events.size() << '\n';
+    return matches ? 0 : 1;
+}
+
 int fasta_geneconv_events_fixture(
     const std::string& fasta_path, const std::string& alist_fixture_path,
     const std::string& define_event_fixture_path,
@@ -5898,6 +6709,7 @@ int fasta_geneconv_events_fixture(
         &MathFuncs::MyMathFuncs::MakeCompressSeqP,
     };
     const Dna5XoverApi xover_api{
+        &MathFuncs::MyMathFuncs::FindSubSeqP,
         &MathFuncs::MyMathFuncs::FindSubSeqPB3,
         &MathFuncs::MyMathFuncs::XOHomologyP,
         &MathFuncs::MyMathFuncs::FindNextP,
@@ -6611,6 +7423,13 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && std::string_view(argv[1]) == "distance-fixture") {
         return distance_fixture();
+    }
+    if (argc == 3 && std::string_view(argv[1]) == "fasta-rdp-full") {
+        return fasta_rdp_full_analysis(argv[2]);
+    }
+    if (argc == 4 &&
+        std::string_view(argv[1]) == "fasta-rdp-full-transition-fixture") {
+        return fasta_rdp_full_transition_fixture(argv[2], argv[3]);
     }
     if (argc == 4 &&
         std::string_view(argv[1]) == "fasta-preprocess-fixture") {

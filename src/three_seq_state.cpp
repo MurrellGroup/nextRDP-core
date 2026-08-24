@@ -7,6 +7,72 @@
 
 namespace {
 
+float get_three_seq_probability(
+    const int upper_bound, const float m, const float n, const float k,
+    const float j, std::vector<float>& memo) {
+    if (m > upper_bound - 1 || n > upper_bound - 1) return 111.0F;
+    if (k > upper_bound - 1 || j > upper_bound - 1) return 222.0F;
+    const int width = upper_bound + 1;
+    const auto index = static_cast<std::size_t>(m) +
+        static_cast<std::size_t>(n) * width +
+        static_cast<std::size_t>(k) * width * width +
+        static_cast<std::size_t>(j) * width * width * width;
+    if (memo[index] >= 0.0F) return memo[index];
+    float value = -1.0F;
+    if (j > k || k > n || k < n - m || j > n || j < n - m) {
+        return 0.0F;
+    }
+    if (n == 0.0F) {
+        return k == 0.0F && j == 0.0F ? 1.0F : 0.0F;
+    }
+    if (m == 0.0F) {
+        return k == n && j == n ? 1.0F : 0.0F;
+    }
+    if (k == 0.0F && j == 0.0F) {
+        return n == 0.0F ? 1.0F : 0.0F;
+    }
+    if (j == 0.0F) {
+        value = (m / (n + m)) * (
+            get_three_seq_probability(
+                upper_bound, m - 1.0F, n, k, 1.0F, memo) +
+            get_three_seq_probability(
+                upper_bound, m - 1.0F, n, k, 0.0F, memo));
+    } else if (k == j) {
+        value = (n / (n + m)) * (
+            get_three_seq_probability(
+                upper_bound, m, n - 1.0F, j - 1.0F, j - 1.0F, memo) +
+            get_three_seq_probability(
+                upper_bound, m, n - 1.0F, j, j - 1.0F, memo));
+    } else {
+        value = (m / (n + m)) * get_three_seq_probability(
+                    upper_bound, m - 1.0F, n, k, j + 1.0F, memo) +
+            (n / (n + m)) * get_three_seq_probability(
+                    upper_bound, m, n - 1.0F, k, j - 1.0F, memo);
+    }
+    memo[index] = value;
+    return value;
+}
+
+float sum_three_seq_probability(
+    const int upper_bound, const int m, const int n, const int k,
+    std::vector<float>& memo) {
+    if (k == 0 || m == 0 || n == 0 || m < 0 || n < 0 || k < 0) {
+        return 1.0F;
+    }
+    float result = 0.0F;
+    for (float current = static_cast<float>(k);
+         current <= static_cast<float>(n); current += 1.0F) {
+        if (current <= n && current >= n - m) {
+            for (float j = 0.0F; j <= current; j += 1.0F) {
+                result += get_three_seq_probability(
+                    upper_bound, static_cast<float>(m),
+                    static_cast<float>(n), current, j, memo);
+            }
+        }
+    }
+    return result;
+}
+
 double approx_norm_pdf(const double x) {
     constexpr double pi = 3.14159265359;
     return std::exp(-0.5 * x * x) / std::sqrt(2.0 * pi);
@@ -155,11 +221,36 @@ void check_wrap(const int sequence_length, const int informative_last,
 
 }  // namespace
 
+std::vector<float> make_rdp_three_seq_probability_table(
+    const int maximum_permutation_distance) {
+    if (maximum_permutation_distance < 1) {
+        throw std::runtime_error("3Seq table maximum must be positive");
+    }
+    const int upper_bound = maximum_permutation_distance + 1;
+    const int width = upper_bound + 1;
+    std::vector<float> memo(
+        static_cast<std::size_t>(width) * width * width * width, -1.0F);
+    std::vector<float> table(
+        static_cast<std::size_t>(width) * width * width, 0.0F);
+    for (int m = 0; m <= maximum_permutation_distance; ++m) {
+        for (int n = 0; n <= maximum_permutation_distance; ++n) {
+            for (int k = 0; k <= maximum_permutation_distance; ++k) {
+                table[static_cast<std::size_t>(m) +
+                      static_cast<std::size_t>(n) * width +
+                      static_cast<std::size_t>(k) * width * width] =
+                    sum_three_seq_probability(
+                        upper_bound, m, n, k, memo);
+            }
+        }
+    }
+    return table;
+}
+
 RdpThreeSeqResult evaluate_rdp_three_seq(
     const RdpScanState& scan_state, const std::array<int, 3>& sequences,
     const bool circular, const int mc_flag, const int mc_correction,
     const double lowest_probability, const std::vector<float>& table,
-    const int table_bound) {
+    const int table_bound, const bool use_ts2) {
     const int length = scan_state.sequence_length;
     const int stride = length + 1;
     for (const int sequence : sequences) {
@@ -185,7 +276,11 @@ RdpThreeSeqResult evaluate_rdp_three_seq(
     int ending2 = 0;
     const auto& data = scan_state.sequence_data;
     for (int position = 0; position <= length; ++position) {
-        position_difference[position] = informative;
+        // FindSubSeqTS2 (used once SEventNumber is nonzero) writes XPosDiff
+        // for every alignment position before filtering gaps; FindSubSeqTS
+        // leaves skipped positions untouched. FinalTrim's TSXOver(1) calls
+        // the TS2 variant during its recheck pass.
+        if (use_ts2) position_difference[position] = informative;
         const short first = data[position + sequences[0] * stride];
         const short second = data[position + sequences[1] * stride];
         if (second == first || first == 46 || second == 46) continue;
@@ -224,6 +319,8 @@ RdpThreeSeqResult evaluate_rdp_three_seq(
         }
     }
     result.informative_last = informative - 1;
+    result.difference_position = difference_position;
+    result.position_difference = position_difference;
     auto& first = result.sides[0];
     auto& second = result.sides[1];
     first = {beginning, ending, first_count, second_count,
@@ -257,4 +354,3 @@ RdpThreeSeqResult evaluate_rdp_three_seq(
         passes(second_corrected, second_product, lowest_probability);
     return result;
 }
-

@@ -16,6 +16,11 @@ struct RdpRoundPrefixState {
     std::array<unsigned char, 3> sequence_pair{};
     std::vector<float> background_adjusted;
     std::vector<float> region_adjusted;
+    std::vector<float> background_adjusted_before_collapse;
+    std::vector<float> region_adjusted_before_collapse;
+    std::vector<int> matrix_redo;
+    std::vector<char> background_tree_holder;
+    std::vector<char> region_tree_holder;
     std::vector<float> background_collapsed;
     std::vector<float> region_collapsed;
     RdpBreakpointFlanks breakpoint_flanks;
@@ -24,6 +29,7 @@ struct RdpRoundPrefixState {
     std::vector<double> summary_matrix;
     std::vector<double> regional_distance_matrix;
     std::array<std::vector<double>, 3> correlation_matrices;
+    std::vector<unsigned char> missing_data;
     RdpCorrelationDecisionState correlation_decisions;
     std::vector<float> local_distance_panels;
     std::vector<int> good_comparisons;

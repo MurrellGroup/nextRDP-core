@@ -3,6 +3,7 @@
 #include "MathFuncsDll.h"
 
 #include <stdexcept>
+#include <cmath>
 
 namespace {
 
@@ -16,6 +17,16 @@ void validate_pairs(int upper_bound,
     if (pairs.size() < stride * stride) {
         throw std::runtime_error("RDP rescan pair matrix differs");
     }
+}
+
+int pair_upper_bound(const std::vector<unsigned char>& pairs) {
+    const auto stride = static_cast<int>(std::sqrt(
+        static_cast<double>(pairs.size())));
+    if (stride <= 0 ||
+        static_cast<std::size_t>(stride) * stride != pairs.size()) {
+        throw std::runtime_error("pair-rescan matrix is not square");
+    }
+    return stride - 1;
 }
 
 }  // namespace
@@ -104,7 +115,10 @@ std::vector<std::array<int, 3>> make_rdp_inner_scan_triplets(
     const std::vector<int>& actual_sequence_sizes,
     const int permanent_next_no, const int minimum_sequence_size,
     const std::vector<unsigned char>& pairs_to_rescan) {
-    const int next_no = original_scan_state.next_no;
+    // AnalysisList remains the permanent-sequence list while DoPairs grows
+    // and shrinks with fragment rows. Its upper bound therefore comes from
+    // the pair matrix, not the permanent analysis-list state.
+    const int next_no = pair_upper_bound(pairs_to_rescan);
     validate_pairs(next_no, pairs_to_rescan);
     if (initially_screened_triplets.size() <
             static_cast<std::size_t>(original_scan_state.analysis_list_last + 1) ||
@@ -165,9 +179,9 @@ std::vector<std::array<int, 3>> make_rdp_outer_scan_triplets(
     const std::vector<unsigned char>& pairs_to_rescan,
     const int subvalid_upper_bound, const std::vector<float>& subvalid) {
     (void)winning_role;
-    const int pair_upper_bound = original_scan_state.next_no;
-    validate_pairs(pair_upper_bound, pairs_to_rescan);
-    const int pair_stride = pair_upper_bound + 1;
+    const int pair_ub = pair_upper_bound(pairs_to_rescan);
+    validate_pairs(pair_ub, pairs_to_rescan);
+    const int pair_stride = pair_ub + 1;
     const int valid_stride = subvalid_upper_bound + 1;
     if (trace_sub.size() < static_cast<std::size_t>(current_next_no + 1) ||
         actual_sequence_sizes.size() <

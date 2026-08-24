@@ -2,6 +2,8 @@
 
 #include <cstddef>
 #include <cmath>
+#include <cstdlib>
+#include <iostream>
 #include <limits>
 #include <stdexcept>
 
@@ -122,12 +124,24 @@ void centre_mapped_breakpoints(
     const int xover_window, const RdpXoverSettings& settings,
     int& beginning, int& ending, int& beginning_warning,
     int& ending_warning, const int sequence_event_number,
-    const std::vector<unsigned char>* missing_data) {
-    // The compressed PB3 path sets XPDDone before the scan. Consequently the
-    // source calls CentreBP with OBE=oEN=0, not the saved variable-site
-    // coordinates. SEventNumber is zero during this initial scan, so the
-    // missing-data branches are intentionally absent here.
-    if (state.xposdiff[beginning] - 1 > 0) {
+    const std::vector<unsigned char>* missing_data,
+    const int original_beginning = 0, const int original_ending = 0,
+    const bool use_compress = false) {
+    // XOver has two distinct CentreBP call forms. The compressed initial scan
+    // has XPDDone set and passes (0, 0), while FinalTrim/rescans use the plain
+    // FindSubSeqP path and pass the saved variable-site OBE/oEN values.
+    const bool use_original_positions = sequence_event_number > 0 &&
+        !use_compress &&
+        (original_beginning > 0 || original_ending > 0);
+    if (use_original_positions && original_beginning - 1 > 0) {
+        beginning -= vb_clng(
+            ((beginning - state.xdiffpos[original_beginning - 1]) / 2.0) -
+            0.1);
+    } else if (use_original_positions) {
+        beginning -= vb_clng(
+            ((beginning + scan_state.sequence_length -
+                 state.xdiffpos[state.homology_length]) / 2.0) - 0.1);
+    } else if (state.xposdiff[beginning] - 1 > 0) {
         beginning -= vb_clng(
             ((beginning - state.xdiffpos[state.xposdiff[beginning] - 1]) /
                 2.0) -
@@ -168,13 +182,30 @@ void centre_mapped_breakpoints(
             if (!has_missing(beginning)) break;
         }
     }
-    if (settings.circular == 0 &&
-        state.xposdiff[beginning] < xover_window) {
-        beginning_warning = 1;
+    if (settings.circular == 0) {
+        if (!use_original_positions &&
+            state.xposdiff[beginning] < xover_window) {
+            beginning_warning = 1;
+        } else if (use_original_positions) {
+            for (int variable = 1; variable <= xover_window; ++variable) {
+                if (variable < static_cast<int>(state.xdiffpos.size()) &&
+                    state.xdiffpos[variable] > beginning) {
+                    beginning_warning = 1;
+                }
+            }
+        }
     }
 
     state.xposdiff[scan_state.sequence_length] = state.homology_length;
-    if (state.xposdiff[ending] + 1 <= state.homology_length) {
+    if (use_original_positions && original_ending + 1 <=
+            state.homology_length) {
+        ending += vb_clng(
+            ((state.xdiffpos[original_ending + 1] - ending) / 2.0) - 0.1);
+    } else if (use_original_positions) {
+        ending += vb_clng(
+            ((state.xdiffpos[1] +
+                 (scan_state.sequence_length - ending)) / 2.0) - 0.1);
+    } else if (state.xposdiff[ending] + 1 <= state.homology_length) {
         ending += vb_clng(
             ((state.xdiffpos[state.xposdiff[ending] + 1] - ending) / 2.0) -
             0.1);
@@ -200,9 +231,21 @@ void centre_mapped_breakpoints(
             if (!has_missing(ending)) break;
         }
     }
-    if (settings.circular == 0 &&
-        state.xposdiff[ending] > state.homology_length - xover_window) {
-        ending_warning = 1;
+    if (settings.circular == 0) {
+        if (!use_original_positions &&
+            state.xposdiff[ending] > state.homology_length - xover_window) {
+            ending_warning = 1;
+        } else if (use_original_positions) {
+            for (int variable = state.homology_length;
+                 variable >= state.homology_length - xover_window;
+                 --variable) {
+                if (variable >= 0 &&
+                    variable < static_cast<int>(state.xdiffpos.size()) &&
+                    state.xdiffpos[variable] < ending) {
+                    ending_warning = 1;
+                }
+            }
+        }
     }
 
 }
@@ -220,7 +263,8 @@ void map_and_centre_breakpoints(
     centre_mapped_breakpoints(
         state, scan_state, xover_window, settings, beginning, ending,
         beginning_warning, ending_warning, sequence_event_number,
-        missing_data);
+        missing_data, mapped.original_beginning, mapped.original_ending,
+        false);
 }
 
 int check_split(
@@ -339,7 +383,140 @@ int check_ends(
     const int xover_window, const RdpXoverSettings& settings,
     const int check_ending, const int original_beginning,
     const int original_ending,
-    const std::vector<unsigned char>& missing_data) {
+    const std::vector<unsigned char>& missing_data,
+    const int source_beginning = 0, const int source_ending = 0) {
+    // CheckEndsVB has a second branch for the plain XOver path: OBE/oEN are
+    // the variable-site coordinates saved before mapping to full sequence
+    // positions. Preserve that branch separately from the (0,0) compressed
+    // path used by the initial scan and split fragments.
+    if (source_beginning > 0 || source_ending > 0) {
+        int beginning = original_beginning;
+        int ending = original_ending;
+        const int saved_beginning = beginning;
+        const int saved_ending = ending;
+        const int stride = scan_state.sequence_length + 1;
+        const auto missing = [&](const int position) {
+            if (position < 0 || position > scan_state.sequence_length) {
+                return false;
+            }
+            for (const int sequence : state.sequences) {
+                const auto index = static_cast<std::size_t>(position) +
+                    static_cast<std::size_t>(sequence) * stride;
+                if (index < missing_data.size() && missing_data[index] == 1) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        int warning = 0;
+        if (check_ending == 0) {
+            int target = 1;
+            if (source_beginning - xover_window > 0) {
+                target = state.xdiffpos[source_beginning - xover_window];
+            } else if (settings.circular == 1 &&
+                       source_beginning - xover_window +
+                               state.homology_length >= 0) {
+                target = state.xdiffpos[source_beginning - xover_window +
+                                        state.homology_length];
+            }
+            if (source_beginning + xover_window <
+                    state.homology_length) {
+                beginning = state.xdiffpos[source_beginning + xover_window];
+            } else if (settings.circular == 1) {
+                beginning = state.xdiffpos[source_beginning + xover_window -
+                                           state.homology_length];
+            } else {
+                beginning = scan_state.sequence_length;
+            }
+            if (target < beginning) {
+                for (int position = target; position <= beginning; ++position) {
+                    if (missing(position)) { warning = 1; break; }
+                }
+            } else {
+                for (int position = target;
+                     position <= scan_state.sequence_length - 1; ++position) {
+                    if (missing(position)) { warning = 1; break; }
+                }
+                if (warning == 0 && settings.circular == 0 &&
+                    (missing(scan_state.sequence_length) || missing(1))) {
+                    warning = 1;
+                }
+                if (warning == 0) {
+                    for (int position = 2; position <= beginning; ++position) {
+                        if (missing(position)) { warning = 1; break; }
+                    }
+                }
+            }
+            if (settings.circular == 0 && source_beginning < xover_window) {
+                warning = 1;
+            }
+        } else {
+            int target = scan_state.sequence_length;
+            if (source_ending + xover_window < state.homology_length) {
+                target = state.xdiffpos[source_ending + xover_window];
+            } else if (settings.circular == 1) {
+                target = state.xdiffpos[source_ending + xover_window -
+                                        state.homology_length];
+            }
+            if (source_ending - xover_window > 0) {
+                ending = state.xdiffpos[source_ending - xover_window];
+            } else if (settings.circular == 1 &&
+                       source_ending - xover_window +
+                               state.homology_length >= 0) {
+                ending = state.xdiffpos[source_ending - xover_window +
+                                        state.homology_length];
+            } else {
+                ending = 1;
+            }
+            if (ending < 1) {
+                ending = settings.circular == 1
+                    ? ending + scan_state.sequence_length
+                    : scan_state.sequence_length;
+            }
+            if (target > ending) {
+                for (int position = ending; position <= target; ++position) {
+                    if (missing(position)) { warning = 1; break; }
+                }
+            } else {
+                for (int position = ending;
+                     position <= scan_state.sequence_length - 1; ++position) {
+                    if (missing(position)) { warning = 1; break; }
+                }
+                if (warning == 0 && settings.circular == 0 &&
+                    (missing(scan_state.sequence_length) || missing(1))) {
+                    warning = 1;
+                }
+                if (warning == 0) {
+                    for (int position = 2; position <= target; ++position) {
+                        if (missing(position)) { warning = 1; break; }
+                    }
+                }
+            }
+            if (settings.circular == 0 &&
+                source_ending + xover_window > state.homology_length) {
+                warning = 1;
+            }
+        }
+        if (std::getenv("RDP_TRACE_SBP") != nullptr &&
+            source_beginning <= 1 && source_ending > 0) {
+            std::cerr << "checkends-trace ch=" << check_ending
+                      << " src=" << source_beginning << ':' << source_ending
+                      << " win=" << xover_window
+                      << " circ=" << settings.circular
+                      << " tmp=" << beginning << ':' << ending
+                      << " warning=" << warning;
+            int first_missing = -1;
+            for (int position = 1;
+                 position <= scan_state.sequence_length && first_missing < 0;
+                 ++position) {
+                if (missing(position)) first_missing = position;
+            }
+            std::cerr << " firstmiss=" << first_missing << '\n';
+        }
+        (void)saved_beginning;
+        (void)saved_ending;
+        return warning;
+    }
     int beginning = original_beginning;
     int ending = original_ending;
     int cycle = 0;
@@ -480,6 +657,69 @@ int check_ends(
             warning = 1;
         }
     }
+    if (std::getenv("RDP_TRACE_SBP") != nullptr &&
+        (original_beginning == 1 || original_beginning == 7)) {
+        int first_missing = -1;
+        int first_missing_from_target = -1;
+        for (int position = 1;
+             position <= scan_state.sequence_length && first_missing < 0;
+             ++position) {
+            if (missing(position)) first_missing = position;
+        }
+        const int mapped_begin = (original_beginning >= 0 &&
+                                  original_beginning <
+                                      static_cast<int>(state.xposdiff.size()))
+            ? state.xposdiff[original_beginning] : -1;
+        const int mapped_end = (original_ending >= 0 &&
+                                original_ending <
+                                    static_cast<int>(state.xposdiff.size()))
+            ? state.xposdiff[original_ending] : -1;
+        const int normalized_begin = (beginning >= 0 &&
+                                     beginning < static_cast<int>(state.xposdiff.size()))
+            ? state.xposdiff[beginning] : -1;
+        const int normalized_end = (ending >= 0 &&
+                                   ending < static_cast<int>(state.xposdiff.size()))
+            ? state.xposdiff[ending] : -1;
+        const int xpd_value = check_ending == 0 ? normalized_begin : normalized_end;
+        int target_debug = -1;
+        if (check_ending == 0) {
+            if (xpd_value - xover_window > 0) {
+                target_debug = state.xdiffpos[xpd_value - xover_window];
+            } else if (settings.circular == 1 &&
+                       xpd_value - xover_window + state.homology_length >= 0) {
+                target_debug = state.xdiffpos[
+                    xpd_value - xover_window + state.homology_length];
+            } else {
+                target_debug = 1;
+            }
+        } else {
+            if (xpd_value + xover_window < state.homology_length) {
+                target_debug = state.xdiffpos[xpd_value + xover_window];
+            } else if (settings.circular == 1) {
+                target_debug = state.xdiffpos[
+                    xpd_value + xover_window - state.homology_length];
+            } else {
+                target_debug = scan_state.sequence_length;
+            }
+        }
+        for (int position = std::max(1, target_debug);
+             position <= scan_state.sequence_length &&
+             first_missing_from_target < 0; ++position) {
+            if (missing(position)) first_missing_from_target = position;
+        }
+        std::cerr << "checkends-zero ch=" << check_ending
+                  << " orig=" << original_beginning << ':'
+                  << original_ending << " win=" << xover_window
+                  << " circ=" << settings.circular << " tmp="
+                  << beginning << ':' << ending << " warning=" << warning
+                  << " firstmiss=" << first_missing << " xpd="
+                  << mapped_begin << ':' << mapped_end << " norm="
+                  << normalized_begin << ':' << normalized_end << " target="
+                  << target_debug << " from-target="
+                  << first_missing_from_target << " edge="
+                  << missing(scan_state.sequence_length) << ':' << missing(1)
+                  << " hom=" << state.homology_length << '\n';
+    }
     return warning;
 }
 
@@ -527,7 +767,8 @@ RdpFirstXoverState build_rdp_first_xover_state(
     const int fss_ub, std::vector<unsigned char>& fss_rdp,
     const int xover_window, const short xover_window_x,
     const Dna5XoverApi& api,
-    const std::array<int, 3>* explicit_sequences) {
+    const std::array<int, 3>* explicit_sequences,
+    const int sequence_event_number, const bool use_compress) {
     if (explicit_sequences == nullptr &&
         (triplet_index < 0 || triplet_index > scan_state.analysis_list_last)) {
         throw std::runtime_error("XOver received an invalid triplet index");
@@ -552,13 +793,72 @@ RdpFirstXoverState build_rdp_first_xover_state(
         scan_state.sequence_length + (xover_window_x / 2) * 2;
     state.xover_sequence.assign(
         static_cast<std::size_t>(state.xover_sequence_ub + 1) * 3, 0);
-    state.informative_length = api.find_subsequence(
-        state.agreement_counts.data(), fss_ub, xover_window,
-        scan_state.compressed_sequence_ub, scan_state.sequence_length,
-        scan_state.next_no, state.sequences[0], state.sequences[1],
-        state.sequences[2],
-        const_cast<unsigned char*>(scan_state.compressed_sequence.data()),
-        state.xover_sequence_ub, state.xover_sequence.data(), fss_rdp.data());
+    state.xdiffpos.assign(
+        static_cast<std::size_t>(scan_state.sequence_length + 201), 0);
+    state.xposdiff.assign(
+        static_cast<std::size_t>(scan_state.sequence_length + 201), 0);
+    if (sequence_event_number > 0 && !use_compress) {
+        // FinalTrim calls XOver with UseCompress=0.  That is the source's
+        // plain FindSubSeqP path, which consumes SeqNum directly and produces
+        // the uncompressed XOverSeqNumW/XDiffPos/XPosDiff buffers.
+        std::vector<short> xover_sequence_num(
+            static_cast<std::size_t>(scan_state.sequence_length + 1) * 3, 0);
+        std::vector<short> spacer_sequences(1, 0);
+        std::vector<short> valid_spacer(1, 0);
+        state.informative_length = api.find_subsequence_plain(
+            state.agreement_counts.data(), 0, 0, xover_window,
+            scan_state.sequence_length + 1, scan_state.next_no,
+            state.sequences[0], state.sequences[1], state.sequences[2], 0,
+            const_cast<short*>(scan_state.sequence_data.data()),
+            xover_sequence_num.data(), state.xover_sequence.data(),
+            spacer_sequences.data(), state.xdiffpos.data(),
+            state.xposdiff.data(), valid_spacer.data());
+        if (std::getenv("RDP_TRACE_XOVER_COMPARE") != nullptr &&
+            ((state.sequences[0] == 6 && state.sequences[1] == 12 &&
+              state.sequences[2] == 15) ||
+             (state.sequences[0] == 15 && state.sequences[1] == 6 &&
+              state.sequences[2] == 12))) {
+            std::array<int, 3> pb3_ah{};
+            std::vector<char> pb3_xover(state.xover_sequence.size(), 0);
+            const int pb3_result = api.find_subsequence(
+                pb3_ah.data(), fss_ub, xover_window,
+                scan_state.compressed_sequence_ub, scan_state.sequence_length,
+                scan_state.next_no, state.sequences[0], state.sequences[1],
+                state.sequences[2], const_cast<unsigned char*>(
+                    scan_state.compressed_sequence.data()),
+                state.xover_sequence_ub, pb3_xover.data(), fss_rdp.data());
+            std::cerr << "xover-compare " << state.sequences[0] << ':'
+                      << state.sequences[1] << ':' << state.sequences[2]
+                      << " plain="
+                      << state.informative_length << ':'
+                      << state.agreement_counts[0] << ','
+                      << state.agreement_counts[1] << ','
+                      << state.agreement_counts[2] << " pb3="
+                      << pb3_result << ':' << pb3_ah[0] << ','
+                      << pb3_ah[1] << ',' << pb3_ah[2] << '\n';
+        }
+    } else {
+        state.informative_length = api.find_subsequence(
+            state.agreement_counts.data(), fss_ub, xover_window,
+            scan_state.compressed_sequence_ub, scan_state.sequence_length,
+            scan_state.next_no, state.sequences[0], state.sequences[1],
+            state.sequences[2],
+            const_cast<unsigned char*>(scan_state.compressed_sequence.data()),
+            state.xover_sequence_ub, state.xover_sequence.data(),
+            fss_rdp.data());
+    }
+    if (std::getenv("RDP_TRACE_XOVER_PATH") != nullptr) {
+        std::cerr << "xover-path="
+                  << (sequence_event_number > 0 && !use_compress
+                          ? "plain" : "pb3")
+                  << " se=" << sequence_event_number << " triplet="
+                  << state.sequences[0] << ':' << state.sequences[1] << ':'
+                  << state.sequences[2] << " result="
+                  << state.informative_length << " ah="
+                  << state.agreement_counts[0] << ','
+                  << state.agreement_counts[1] << ','
+                  << state.agreement_counts[2] << '\n';
+    }
 
     if (state.informative_length < xover_window * 2 ||
         state.agreement_counts[0] < xover_window / 3 ||
@@ -1049,7 +1349,9 @@ RdpRawEventState scan_rdp_redo_triplets(
     const RdpRawEventState* initial_events,
     const std::array<int, 3>* explicit_sequences,
     const int sequence_event_number,
-    const std::vector<unsigned char>* missing_data) {
+    const std::vector<unsigned char>* missing_data,
+    const bool use_compress,
+    int* shared_xdiffpos0) {
     RdpRawEventState events = initial_events == nullptr
         ? RdpRawEventState{} : *initial_events;
     if (initial_events == nullptr) {
@@ -1058,10 +1360,6 @@ RdpRawEventState scan_rdp_redo_triplets(
     }
     events.triplets_with_events.assign(
         static_cast<std::size_t>(scan_state.analysis_list_last + 1), 0);
-    std::vector<int> persistent_xdiffpos(
-        static_cast<std::size_t>(scan_state.sequence_length + 201), 0);
-    std::vector<int> persistent_xposdiff(
-        static_cast<std::size_t>(scan_state.sequence_length + 201), 0);
     for (int triplet = 0; triplet <= scan_state.analysis_list_last;
          ++triplet) {
         if (static_cast<std::size_t>(triplet) >= redo.size() ||
@@ -1071,7 +1369,11 @@ RdpRawEventState scan_rdp_redo_triplets(
         ++events.scanned_triplets;
         auto state = build_rdp_first_xover_state(
             scan_state, distance_state, tree_state, triplet, fss_ub, fss_rdp,
-            xover_window, xover_window_x, api, explicit_sequences);
+            xover_window, xover_window_x, api, explicit_sequences,
+            sequence_event_number, use_compress);
+        if (shared_xdiffpos0 != nullptr) {
+            state.xdiffpos[0] = *shared_xdiffpos0;
+        }
         if (state.informative_length < xover_window * 2 ||
             state.agreement_counts[0] < xover_window / 3 ||
             state.agreement_counts[1] < xover_window / 3 ||
@@ -1126,21 +1428,19 @@ RdpRawEventState scan_rdp_redo_triplets(
                     if (apply_rdp_probability_cutoff(
                             state, probability_settings)) {
                         ++events.significant_candidates;
-                        if (!position_maps_built) {
-                            state.xdiffpos = persistent_xdiffpos;
-                            state.xposdiff = persistent_xposdiff;
+                        // The compressed initial XOver path obtains its
+                        // breakpoint maps lazily through FindSubSeqPB4.  A
+                        // FinalTrim XOver uses the plain FindSubSeqP path,
+                        // which has already filled the maps for this exact
+                        // triplet.  Replacing those per-triplet maps with a
+                        // map retained from an earlier triplet changes event
+                        // fragmentation and is not what the VB execution
+                        // does.
+                        if ((sequence_event_number == 0 || use_compress) &&
+                            !position_maps_built) {
                             build_rdp_first_position_maps(
                                 state, scan_state, fss_ub, xover_window,
                                 fss_rdp, api);
-                            // MCXoverDORDP normalizes the shared XDiffPos(0)
-                            // slot before the later-event rescan. FindSubSeqPB4
-                            // deliberately leaves that slot untouched.
-                            if (sequence_event_number > 0 &&
-                                state.xdiffpos[0] == 0) {
-                                state.xdiffpos[0] = state.xdiffpos[1];
-                            }
-                            persistent_xdiffpos = state.xdiffpos;
-                            persistent_xposdiff = state.xposdiff;
                             position_maps_built = true;
                         }
                         const auto store_event = [&] (
@@ -1400,7 +1700,7 @@ RdpRawEventState scan_rdp_redo_triplets(
                                         fragment_beginning_warning,
                                         fragment_ending_warning,
                                         sequence_event_number,
-                                        missing_data);
+                                        missing_data, 0, 0, use_compress);
                                     if (sequence_event_number > 0 &&
                                         missing_data != nullptr) {
                                         if (fragment_ending_warning == 0) {
@@ -1408,10 +1708,10 @@ RdpRawEventState scan_rdp_redo_triplets(
                                                 check_ends(
                                                     state, scan_state,
                                                     xover_window,
-                                                    xover_settings, 1,
-                                                    centred_beginning,
-                                                    centred_ending,
-                                                    *missing_data);
+                                        xover_settings, 1,
+                                        centred_beginning,
+                                        centred_ending,
+                                        *missing_data);
                                         }
                                         if (fragment_beginning_warning == 0) {
                                             fragment_beginning_warning =
@@ -1437,22 +1737,97 @@ RdpRawEventState scan_rdp_redo_triplets(
                             centre_mapped_breakpoints(
                                 state, scan_state, xover_window,
                                 xover_settings, beginning, ending,
-                                beginning_warning, ending_warning,
-                                sequence_event_number, missing_data);
+                                        beginning_warning, ending_warning,
+                                sequence_event_number, missing_data,
+                                mapped.original_beginning,
+                                mapped.original_ending, use_compress);
                             if (sequence_event_number > 0 &&
                                 missing_data != nullptr) {
                                 if (ending_warning == 0) {
                                     ending_warning = check_ends(
                                         state, scan_state, xover_window,
                                         xover_settings, 1, beginning, ending,
-                                        *missing_data);
+                                        *missing_data,
+                                        use_compress ? 0 :
+                                            mapped.original_beginning,
+                                        use_compress ? 0 :
+                                            mapped.original_ending);
                                 }
                                 if (beginning_warning == 0) {
                                     beginning_warning = check_ends(
                                         state, scan_state, xover_window,
                                         xover_settings, 0, beginning, ending,
-                                        *missing_data);
+                                        *missing_data,
+                                        use_compress ? 0 :
+                                            mapped.original_beginning,
+                                        use_compress ? 0 :
+                                            mapped.original_ending);
                                 }
+                            }
+                            if (std::getenv("RDP_TRACE_SBP") != nullptr &&
+                                sequence_event_number > 0 &&
+                                ((beginning == 1 && ending == 1231) ||
+                                 (beginning == 7 && ending == 436))) {
+                                std::cerr << "sbp-trace seq="
+                                          << state.sequences[0] << ':'
+                                          << state.sequences[1] << ':'
+                                          << state.sequences[2] << " bp="
+                                          << beginning << '-' << ending
+                                          << " mapped=" << mapped.beginning
+                                          << '-' << mapped.ending
+                                          << " orig="
+                                          << mapped.original_beginning << '-'
+                                          << mapped.original_ending
+                                          << " circ=" << xover_settings.circular
+                                          << " xdp=" << state.xdiffpos[1]
+                                          << ',' << state.xdiffpos[2]
+                                          << ',' << state.xdiffpos[3]
+                                          << ',' << state.xdiffpos[4]
+                                          << " miss=";
+                                if (missing_data != nullptr) {
+                                    const int stride =
+                                        scan_state.sequence_length + 1;
+                                    int missing_count = 0;
+                                    for (int pos = 1; pos <=
+                                             scan_state.sequence_length; ++pos) {
+                                        for (const int seq : state.sequences) {
+                                            const auto index =
+                                                static_cast<std::size_t>(pos) +
+                                                static_cast<std::size_t>(seq) *
+                                                    stride;
+                                            if (index < missing_data->size() &&
+                                                (*missing_data)[index] == 1) {
+                                                ++missing_count;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    std::cerr << missing_count;
+                                } else {
+                                    std::cerr << "null";
+                                }
+                                if (missing_data != nullptr) {
+                                    const int stride =
+                                        scan_state.sequence_length + 1;
+                                    const auto endpoint_missing =
+                                        [&](const int position) {
+                                            for (const int seq : state.sequences) {
+                                                const auto index =
+                                                    static_cast<std::size_t>(position) +
+                                                    static_cast<std::size_t>(seq) * stride;
+                                                if (index < missing_data->size() &&
+                                                    (*missing_data)[index] == 1) {
+                                                    return true;
+                                                }
+                                            }
+                                            return false;
+                                        };
+                                    std::cerr << " endmiss="
+                                              << endpoint_missing(beginning)
+                                              << ':' << endpoint_missing(ending);
+                                }
+                                std::cerr << " warn=" << beginning_warning
+                                          << ':' << ending_warning << '\n';
                             }
                             store_event(
                                 beginning, ending,

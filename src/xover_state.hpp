@@ -15,6 +15,9 @@
 #endif
 
 struct Dna5XoverApi {
+    int(RDP_XOVER_CALL* find_subsequence_plain)(
+        int*, short, short, int, int, int, int, int, int, short, short*,
+        short*, char*, short*, int*, int*, short*);
     int(RDP_XOVER_CALL* find_subsequence)(
         int*, int, int, int, int, int, int, int, int, unsigned char*, int,
         char*, unsigned char*);
@@ -136,7 +139,9 @@ RdpFirstXoverState build_rdp_first_xover_state(
     const RdpTreeState& tree_state, int triplet_index, int fss_ub,
     std::vector<unsigned char>& fss_rdp, int xover_window,
     short xover_window_x, const Dna5XoverApi& api,
-    const std::array<int, 3>* explicit_sequences = nullptr);
+    const std::array<int, 3>* explicit_sequences = nullptr,
+    int sequence_event_number = 0,
+    bool use_compress = false);
 
 void define_rdp_first_xover_event(
     RdpFirstXoverState& state, const RdpScanState& scan_state,
@@ -188,4 +193,6 @@ RdpRawEventState scan_rdp_redo_triplets(
     const RdpRawEventState* initial_events = nullptr,
     const std::array<int, 3>* explicit_sequences = nullptr,
     int sequence_event_number = 0,
-    const std::vector<unsigned char>* missing_data = nullptr);
+    const std::vector<unsigned char>* missing_data = nullptr,
+    bool use_compress = false,
+    int* shared_xdiffpos0 = nullptr);

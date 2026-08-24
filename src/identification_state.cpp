@@ -3,8 +3,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <fstream>
 #include <limits>
 #include <numeric>
+#include <iostream>
+#include <sstream>
 #include <stdexcept>
 
 namespace {
@@ -2431,7 +2436,7 @@ RdpPatternState check_rdp_sequence_patterns(
 }
 
 RdpFinalTrimState run_rdp_final_trim_candidate_maintenance(
-    const int next_no,
+    const int next_no, const int rwinpp,
     const std::array<int, 3>& sequences,
     const std::array<int, 6>& comparison_matrix,
     const std::array<unsigned char, 2>& minimum_pair,
@@ -2441,6 +2446,8 @@ RdpFinalTrimState run_rdp_final_trim_candidate_maintenance(
     const std::vector<float>& correlations,
     const std::vector<float>& inversions,
     const std::vector<float>& local_distance_panels,
+    const std::vector<float>& first_direct_small,
+    const std::vector<float>& region_direct_small,
     const std::vector<float>& first_ancestor_small,
     const std::vector<float>& region_ancestor_small,
     const std::vector<float>& first_collapsed_small,
@@ -2454,6 +2461,8 @@ RdpFinalTrimState run_rdp_final_trim_candidate_maintenance(
         correlations.size() != static_cast<std::size_t>(9 * count) ||
         inversions.size() != static_cast<std::size_t>(9 * count) ||
         local_distance_panels.size() != static_cast<std::size_t>(12 * count) ||
+        first_direct_small.size() != small_cells ||
+        region_direct_small.size() != small_cells ||
         first_ancestor_small.size() != small_cells ||
         region_ancestor_small.size() != small_cells ||
         first_collapsed_small.size() != small_cells ||
@@ -2772,6 +2781,177 @@ RdpFinalTrimState run_rdp_final_trim_candidate_maintenance(
                 already_in[sequence] = 1;
             }
         }
+
+        // Module2.FinalTrim 23873-24249. These six OKSeq panels are consumed
+        // by ConsensusOK; omitting them changes which co-recombinants survive
+        // even when all tree and correlation inputs are otherwise identical.
+        std::array<double, 2> evidence_weight{1.0, 1.0};
+        if (minimum_pair[0] == minimum_pair[1]) {
+            const int pair = minimum_pair[0];
+            const bool role_in_pair =
+                (pair == 0 && (role == 0 || role == 1)) ||
+                (pair == 1 && (role == 0 || role == 2)) ||
+                (pair == 2 && (role == 1 || role == 2));
+            if (!role_in_pair) evidence_weight = {0.5, 0.5};
+        }
+        const int other0 = comparison_matrix[role];
+        const int other1 = comparison_matrix[role + 3];
+        const int parent0 = sequences[other0];
+        const int parent1 = sequences[other1];
+        const auto add_relative_score = [](double& score, const float value,
+                                           const float bound0,
+                                           const float bound1,
+                                           const double weight,
+                                           const double tied_bonus) {
+            if (value < bound0 && value < bound1) {
+                score += 4.0 * weight;
+            } else if (value <= bound0 && value <= bound1) {
+                if (value < bound0 || value < bound1) {
+                    score += tied_bonus * weight;
+                }
+            } else if (value > bound0 && value > bound1) {
+                score -= 10.0 / weight;
+            } else if (value > bound0 || value > bound1) {
+                score -= 2.0 / weight;
+            }
+        };
+        if (have_collapsed) {
+            const float first_parent0 =
+                first_collapsed_small[row(role, parent0)];
+            const float first_parent1 =
+                first_collapsed_small[row(role, parent1)];
+            const float region_parent0 =
+                region_collapsed_small[row(role, parent0)];
+            const float region_parent1 =
+                region_collapsed_small[row(role, parent1)];
+            for (int sequence = 0; sequence <= next_no; ++sequence) {
+                auto& score = output.acceptable_sequences[
+                    ok(role, 7, sequence)];
+                const float first_value =
+                    first_collapsed_small[row(role, sequence)];
+                const float region_value =
+                    region_collapsed_small[row(role, sequence)];
+                add_relative_score(score, first_value, first_parent0,
+                                   first_parent1, evidence_weight[0], 2.0);
+                add_relative_score(score, region_value, region_parent0,
+                                   region_parent1, evidence_weight[1], 2.0);
+                add_relative_score(
+                    score, first_value,
+                    first_collapsed_small[row(other0, sequence)],
+                    first_collapsed_small[row(other1, sequence)],
+                    evidence_weight[0], 2.0);
+                add_relative_score(
+                    score, region_value,
+                    region_collapsed_small[row(other0, sequence)],
+                    region_collapsed_small[row(other1, sequence)],
+                    evidence_weight[1], 2.0);
+            }
+        }
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            auto& score = output.acceptable_sequences[ok(role, 8, sequence)];
+            const float first_value = first_ancestor_small[row(role, sequence)];
+            const float region_value = region_ancestor_small[row(role, sequence)];
+            add_relative_score(
+                score, first_value, first_ancestor_small[row(role, parent0)],
+                first_ancestor_small[row(role, parent1)], evidence_weight[0],
+                2.0);
+            // The source uses OKMod(0), not OKMod(1), for this parent-distance
+            // SAMat contribution.
+            add_relative_score(
+                score, region_value, region_ancestor_small[row(role, parent0)],
+                region_ancestor_small[row(role, parent1)], evidence_weight[0],
+                2.0);
+            add_relative_score(
+                score, first_value, first_ancestor_small[row(other0, sequence)],
+                first_ancestor_small[row(other1, sequence)], evidence_weight[0],
+                1.0);
+            add_relative_score(
+                score, region_value,
+                region_ancestor_small[row(other0, sequence)],
+                region_ancestor_small[row(other1, sequence)],
+                evidence_weight[1], 1.0);
+
+        }
+
+        const auto fill_direct_distance_evidence = [&](const int category,
+                                                       const auto& value_at) {
+            for (int sequence = 0; sequence <= next_no; ++sequence) {
+                auto& score = output.acceptable_sequences[
+                    ok(role, category, sequence)];
+                const float value0 = value_at(0, role, sequence);
+                const float value1 = value_at(1, role, sequence);
+                const int baseline_role = category == 9 ? other1 : other0;
+                const int baseline_sequence = category == 9 ? parent0 : parent1;
+                const float parent_value0 =
+                    value_at(0, baseline_role, baseline_sequence);
+                const float parent_value1 =
+                    value_at(1, baseline_role, baseline_sequence);
+                if (category != 9 && (value0 >= 3.0F || value1 >= 3.0F)) {
+                    continue;
+                }
+                if (value0 < value_at(0, role, parent1) &&
+                    value0 < value_at(0, role, parent0) &&
+                    value1 < value_at(1, role, parent1) &&
+                    value1 < value_at(1, role, parent0)) {
+                    if (value0 < parent_value0) {
+                        if (value1 < parent_value1) score = category == 9 ? 8.0 : 6.0;
+                        else if (role != inside_roles[0]) score = 2.0;
+                    } else if (value1 < parent_value1) {
+                        if (role != inside_roles[0]) score = 2.0;
+                    } else if (role != inside_roles[0]) {
+                        score = category == 9 ? 0.5 : 1.0;
+                    }
+                } else if (value0 > value_at(0, other1, sequence) &&
+                           value0 > value_at(0, other0, sequence) &&
+                           value1 > value_at(1, other1, sequence) &&
+                           value1 > value_at(1, other0, sequence)) {
+                    if (value0 > parent_value0) {
+                        score = value1 > parent_value1 ? -1.0 : -0.5;
+                    } else {
+                        score = value1 > parent_value1 ? -0.5 : -0.25;
+                    }
+                } else if (category != 9 &&
+                           value0 > value_at(0, role, parent1) &&
+                           value0 > value_at(0, role, parent0) &&
+                           value1 > value_at(1, role, parent1) &&
+                           value1 > value_at(1, role, parent0)) {
+                    if (value0 > parent_value0) {
+                        score = value1 > parent_value1 ? -1.0 : -0.5;
+                    } else {
+                        score = value1 > parent_value1 ? -0.5 : -0.25;
+                    }
+                }
+                if (minimum_pair[0] != minimum_pair[1]) {
+                    if ((role == inside_roles[2] || role == inside_roles[0]) &&
+                        score > 0.0) score /= 2.0;
+                } else if (score > 0.0) {
+                    score *= evidence_weight[0];
+                }
+            }
+        };
+        fill_direct_distance_evidence(9, [&](const int panel, const int matrix_role,
+                                             const int sequence) {
+            return panel == 0
+                ? first_direct_small[row(matrix_role, sequence)]
+                : region_direct_small[row(matrix_role, sequence)];
+        });
+        if (correlation_warnings[0] == 0) {
+            fill_direct_distance_evidence(12, [&](const int panel,
+                                                  const int matrix_role,
+                                                  const int sequence) {
+                return local_distance_panels[
+                    dm(panel, matrix_role, sequence)];
+            });
+        }
+        if (correlation_warnings[1] == 0) {
+            fill_direct_distance_evidence(13, [&](const int panel,
+                                                  const int matrix_role,
+                                                  const int sequence) {
+                return local_distance_panels[
+                    dm(panel + 2, matrix_role, sequence)];
+            });
+        }
+
         const float first_parent0 = first_ancestor_small[row(
             role, sequences[comparison_matrix[role]])];
         const float first_parent1 = first_ancestor_small[row(
@@ -2794,16 +2974,79 @@ RdpFinalTrimState run_rdp_final_trim_candidate_maintenance(
         }
     }
 
-    // RWinPP is 4 at this caller, so the MinPair/INList block guarded by
-    // RWinPP < 3 is intentionally skipped.
+    // Module2.FinalTrim 24321-24407.  The early RetrimFlag call uses
+    // RWinPP=4 and skips this block; the ordinary final RFF=0 call uses the
+    // already selected WinPP.  Preserve the source's missing `Y = 0` before
+    // the third loop: it starts at the value left by the INList(1) loop.
+    if (minimum_pair[0] != minimum_pair[1] && rwinpp < 3) {
+        const auto candidate_value = [&](const std::vector<float>& collapsed,
+                                         const std::vector<float>& ancestor,
+                                         const int role,
+                                         const int sequence) {
+            return (have_collapsed ? collapsed : ancestor)[
+                row(role, sequence)];
+        };
+        const auto correlations_below_ticket = [&](const int role,
+                                                    const int sequence) {
+            return correlations[rc(role, 0, sequence)] < 0.99F &&
+                correlations[rc(role, 1, sequence)] < 0.99F &&
+                correlations[rc(role, 2, sequence)] < 0.99F;
+        };
+        const auto prune_role = [&](const int role, const int first_parent,
+                                    const int second_parent,
+                                    const bool require_both,
+                                    int slot) {
+            while (slot <= output.candidate_last[role]) {
+                const int sequence = output.candidate_list[row(role, slot)];
+                const float first_value = candidate_value(
+                    first_collapsed_small, first_ancestor_small,
+                    role, sequence);
+                const float first_bound = candidate_value(
+                    first_collapsed_small, first_ancestor_small,
+                    role, sequences[first_parent]);
+                const float second_value = candidate_value(
+                    region_collapsed_small, region_ancestor_small,
+                    role, sequence);
+                // The collapsed-matrix source branch uses the other role as
+                // the S-matrix row for INList(0), unlike its ancestor branch.
+                const int second_row = have_collapsed && require_both
+                    ? first_parent : role;
+                const int second_selected_role =
+                    have_collapsed && require_both ? role : second_parent;
+                const float second_bound = candidate_value(
+                    region_collapsed_small, region_ancestor_small,
+                    second_row, sequences[second_selected_role]);
+                const bool keep = require_both
+                    ? first_value <= first_bound && second_value <= second_bound
+                    : first_value <= first_bound || second_value <= second_bound;
+                if (!keep && correlations_below_ticket(role, sequence)) {
+                    if (slot < output.candidate_last[role]) {
+                        output.candidate_list[row(role, slot)] =
+                            output.candidate_list[row(
+                                role, output.candidate_last[role])];
+                    }
+                    --output.candidate_last[role];
+                } else {
+                    ++slot;
+                }
+            }
+            return slot;
+        };
+
+        int slot = prune_role(inside_roles[0], inside_roles[1],
+                              inside_roles[0], true, 0);
+        slot = prune_role(inside_roles[1], inside_roles[0],
+                          inside_roles[2], false, 0);
+        (void)prune_role(inside_roles[2], inside_roles[1],
+                         inside_roles[1], false, slot);
+    }
+
     for (int role = 0; role < 3; ++role) {
         for (int slot = 0; slot <= output.candidate_last[role]; ++slot) {
             output.acceptable_sequences[ok(
                 role, 15, output.candidate_list[row(role, slot)])] = 1.0;
         }
     }
-    (void)minimum_pair;
-    (void)inside_roles;
     return output;
 }
 
@@ -2965,6 +3208,17 @@ std::vector<double> calculate_rdp_match_evidence(
         return output;
     }
 
+    static unsigned int trace_invocation = 0;
+    const unsigned int this_trace_invocation = ++trace_invocation;
+    const char* trace_directory = std::getenv("RDP_CALCMATCH_TRACE_DIR");
+    std::ofstream trace;
+    const auto trace_write = [&](const auto* data, const std::size_t count) {
+        if (trace.is_open()) {
+            trace.write(reinterpret_cast<const char*>(data),
+                        static_cast<std::streamsize>(count * sizeof(*data)));
+        }
+    };
+
     constexpr int map_upper_bound = 160;
     std::vector<int> variable_positions(sequence2_upper_bound + 1, 0);
     std::vector<int> variable_region_positions(sequence2_upper_bound + 2, 0);
@@ -2972,11 +3226,36 @@ std::vector<double> calculate_rdp_match_evidence(
         sequence2_upper_bound + 1;
     std::vector<short> variable_site_map(
         static_cast<std::size_t>(3) * (map_upper_bound + 1) * count, 0);
+    const int smoothing_window = std::max(target_window, 5);
+    if (trace_directory != nullptr && *trace_directory != '\0') {
+        std::ostringstream path;
+        path << trace_directory << "/calcmatch-call-"
+             << this_trace_invocation << ".bin";
+        trace.open(path.str(), std::ios::binary | std::ios::trunc);
+        const unsigned int header[] = {
+            0x594d4343U, this_trace_invocation,
+            static_cast<unsigned int>(sequence_length),
+            static_cast<unsigned int>(next_no),
+            static_cast<unsigned int>(beginning),
+            static_cast<unsigned int>(ending),
+            static_cast<unsigned int>(sequence2_upper_bound),
+            static_cast<unsigned int>(local_beginning),
+            static_cast<unsigned int>(local_ending),
+            static_cast<unsigned int>(smoothing_window)};
+        trace_write(header, 10);
+        trace_write(sequences.data(), sequences.size());
+        trace_write(comparison_matrix.data(), comparison_matrix.size());
+        trace_write(sequence2.data(), sequence2.size());
+    }
     variable_sites = make_var_map2(
         next_no, sequence2_upper_bound, map_upper_bound, sequence2.data(),
         variable_site_map.data(), variable_region_positions.data(),
         variable_positions.data(), sequences.data(), comparison_matrix.data());
-    int smoothing_window = std::max(target_window, 5);
+    trace_write(&variable_sites, 1);
+    trace_write(variable_site_map.data(), variable_site_map.size());
+    trace_write(variable_region_positions.data(),
+                variable_region_positions.size());
+    trace_write(variable_positions.data(), variable_positions.size());
     std::vector<float> variable_site_smooth(
         static_cast<std::size_t>(3) * (variable_sites + 1) * count, 0.0F);
     std::vector<double> count_hits(static_cast<std::size_t>(6) * count, 0.0);
@@ -2984,6 +3263,8 @@ std::vector<double> calculate_rdp_match_evidence(
                     variable_sites, sequence2_upper_bound, map_upper_bound,
                     count_hits, variable_site_map, variable_site_smooth,
                     variable_region_positions);
+    trace_write(count_hits.data(), count_hits.size());
+    trace_write(variable_site_smooth.data(), variable_site_smooth.size());
     for (int role = 0; role < 3; ++role) {
         for (int sequence = 0; sequence <= next_no; ++sequence) {
             output[ok(role, 17, sequence)] =
@@ -3216,6 +3497,30 @@ RdpFinalTrimState make_rdp_consensus_candidates(
     }
     const auto original_last = state.candidate_last;
     const auto original_list = state.candidate_list;
+    if (std::getenv("RDP_TRACE_CONSENSUS") != nullptr && next_no == 25) {
+        std::cerr << "consensus-input seq=" << sequences[0] << ','
+                  << sequences[1] << ',' << sequences[2] << " last=";
+        for (const int value : original_last) std::cerr << value << ',';
+        std::cerr << " role0=";
+        for (int slot = 0; slot <= original_last[0]; ++slot)
+            std::cerr << original_list[small(0, slot)] << ',';
+        std::cerr << "\n";
+        for (int role = 0; role < 3; ++role) {
+            for (int sequence : {4, 5}) {
+                std::cerr << "consensus-cell role=" << role << " seq="
+                          << sequence << " topo="
+                          << ok_sequences[ok(role, 18, sequence)]
+                          << " match=" << ok_sequences[ok(role, 17, sequence)]
+                          << " score=" << consensus_score[small(role, sequence)]
+                          << " corr=" << maximum_correlation[small(role, sequence)]
+                          << " direct=" << first_direct[full(sequences[role], sequence)]
+                          << ',' << region_direct[full(sequences[role], sequence)]
+                          << " collapsed=" << first_collapsed_small[small(role, sequence)]
+                          << ',' << region_collapsed_small[small(role, sequence)]
+                          << "\n";
+            }
+        }
+    }
     state.candidate_last.fill(-1);
 
     // ConsensusOK's role-topology veto can be expressed uniformly through
@@ -3300,7 +3605,11 @@ RdpFinalTrimState make_rdp_consensus_candidates(
                     }
                 }
             }
-            if (added || topology <= 0.0) continue;
+            // ConsensusOK does not stop at topology == 0 here.  Its fallback
+            // FCMat/SCMat checks can still admit a candidate with a zero
+            // breakpoint-topology score; only an explicitly vetoed -1 is
+            // excluded above.
+            if (added) continue;
             const bool collapsed_role_is_nearest =
                 ((first_collapsed_small[small(role, sequence)] <=
                       first_collapsed_small[small(other0, sequence)] &&
@@ -3431,6 +3740,17 @@ RdpFinalTrimState make_rdp_consensus_candidates(
         state.candidate_last = original_last;
         state.candidate_list = original_list;
         break;
+    }
+    if (std::getenv("RDP_TRACE_CONSENSUS") != nullptr) {
+        std::cerr << "consensus-output";
+        for (int role = 0; role < 3; ++role) {
+            std::cerr << " role" << role << '[';
+            for (int slot = 0; slot <= state.candidate_last[role]; ++slot) {
+                std::cerr << state.candidate_list[small(role, slot)] << ',';
+            }
+            std::cerr << ']';
+        }
+        std::cerr << '\n';
     }
     return state;
 }
@@ -4440,6 +4760,19 @@ RdpFinalTrimState apply_rdp_strict_group_constraints(
     const auto comp = [&](const int role, const int parent) {
         return comparison_matrix[role + parent * 3];
     };
+    state.strict_removed.assign(row_cells, 0);
+    state.strict_readded.assign(row_cells, 0);
+    if (std::getenv("RDP_TRACE_STRICT") != nullptr) {
+        std::cerr << "strict-input";
+        for (int role = 0; role < 3; ++role) {
+            std::cerr << " role" << role << '[';
+            for (int slot = 0; slot <= state.candidate_last[role]; ++slot) {
+                std::cerr << state.candidate_list[row(role, slot)] << ',';
+            }
+            std::cerr << ']';
+        }
+        std::cerr << '\n';
+    }
 
     // Module2.FinalTrim 24534-24944, reached by the second RFF=1 call when
     // ConservativeGroup=0. Keep the arithmetic in Single precision: these
@@ -4665,6 +4998,9 @@ RdpFinalTrimState apply_rdp_strict_group_constraints(
 
         // The VB loop removes in place by replacing a marked entry with the
         // current tail, then immediately retesting that slot.
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            state.strict_removed[row(role, sequence)] = remove[sequence];
+        }
         int slot = 0;
         while (slot <= state.candidate_last[role]) {
             const int sequence = state.candidate_list[row(role, slot)];
@@ -4704,6 +5040,7 @@ RdpFinalTrimState apply_rdp_strict_group_constraints(
                 ++state.candidate_last[role];
                 state.candidate_list[row(role,
                                           state.candidate_last[role])] = sequence;
+                state.strict_readded[row(role, sequence)] = 1;
             }
         };
         for (int sequence = 0; sequence <= next_no; ++sequence) {
@@ -4741,31 +5078,18 @@ RdpFinalTrimState apply_rdp_strict_group_constraints(
             }
         }
 
-        // The pinned executable normalizes the one-step cyclic displacement
-        // produced by the swap-with-tail removal loop. This operation is not
-        // present in the supplied VB snapshot, but is visible at the first
-        // native rescan boundary (before any rescan can mutate RList).
-        if (state.candidate_last[role] > 0) {
-            bool rotated_is_ascending = true;
-            for (int item = 1; item < state.candidate_last[role]; ++item) {
-                rotated_is_ascending = rotated_is_ascending &&
-                    state.candidate_list[row(role, item)] <
-                    state.candidate_list[row(role, item + 1)];
-            }
-            rotated_is_ascending = rotated_is_ascending &&
-                state.candidate_list[row(role, state.candidate_last[role])] <
-                state.candidate_list[row(role, 0)];
-            if (rotated_is_ascending) {
-                const int displaced = state.candidate_list[row(role, 0)];
-                for (int item = 0; item < state.candidate_last[role]; ++item) {
-                    state.candidate_list[row(role, item)] =
-                        state.candidate_list[row(role, item + 1)];
-                }
-                state.candidate_list[
-                    row(role, state.candidate_last[role])] = displaced;
-            }
-        }
         (void)ilp;
+    }
+    if (std::getenv("RDP_TRACE_STRICT") != nullptr) {
+        std::cerr << "strict-output";
+        for (int role = 0; role < 3; ++role) {
+            std::cerr << " role" << role << '[';
+            for (int slot = 0; slot <= state.candidate_last[role]; ++slot) {
+                std::cerr << state.candidate_list[row(role, slot)] << ',';
+            }
+            std::cerr << ']';
+        }
+        std::cerr << '\n';
     }
     return state;
 }
@@ -4817,7 +5141,10 @@ RdpRawEventState prepare_rdp_collection_event_list(
             continue;
         }
         RdpRawEvent copy = selected;
-        copy.probability = 1.0;
+        // MakeCollecteventsC receives the persistent PXOList record.  The
+        // candidate copy therefore retains its original probability; the
+        // source only assigns 1.0 later when it builds the temporary rescan
+        // list, not in the collection-event input itself.
         if (copy.daughter == sequences[winning_role]) {
             copy.daughter = static_cast<std::int16_t>(sequence);
         } else if (copy.major_parent == sequences[winning_role]) {
@@ -5059,6 +5386,40 @@ RdpPhylProScoreState make_rdp_phylpro_scores(
         if (omitted > 0) output.sub_scores[omitted - 1] /= 2.0;
     }
     output.result = 1.0;
+    if (std::getenv("RDP_TRACE_PHPR") != nullptr) {
+        std::uint64_t hash_f = 1469598103934665603ULL;
+        std::uint64_t hash_s = 1469598103934665603ULL;
+        const auto mix = [](std::uint64_t& hash, const void* data,
+                            const std::size_t bytes) {
+            const auto* p = static_cast<const unsigned char*>(data);
+            for (std::size_t i = 0; i < bytes; ++i) {
+                hash ^= p[i];
+                hash *= 1099511628211ULL;
+            }
+        };
+        mix(hash_f, background_matrix.data(),
+            background_matrix.size() * sizeof(float));
+        mix(hash_s, region_matrix.data(), region_matrix.size() * sizeof(float));
+        std::cerr << "phpr next=" << next_no << " seqs=" << sequences[0]
+                  << ':' << sequences[1] << ':' << sequences[2]
+                  << " done=";
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            if (done_this[sequence * 2] || done_this[sequence * 2 + 1]) {
+                std::cerr << sequence << ':' << done_this[sequence * 2] << ':'
+                          << done_this[sequence * 2 + 1] << ',';
+            }
+        }
+        std::cerr << " hash=" << hash_f << ':' << hash_s << " samples="
+                  << background_matrix[17 + 20 * (next_no + 1)] << ':'
+                  << background_matrix[17 + 3 * (next_no + 1)] << ':'
+                  << region_matrix[17 + 20 * (next_no + 1)] << ':'
+                  << region_matrix[17 + 3 * (next_no + 1)] << " scores="
+                  << output.scores[0]
+                  << ':' << output.scores[1] << ':' << output.scores[2]
+                  << " sub=" << output.sub_scores[0] << ':'
+                  << output.sub_scores[1] << ':' << output.sub_scores[2]
+                  << '\n';
+    }
     return output;
 }
 

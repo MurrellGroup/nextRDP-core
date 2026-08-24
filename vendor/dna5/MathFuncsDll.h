@@ -531,4 +531,11 @@ namespace MathFuncs
 		static MATHFUNCSDLL_API int _stdcall MakeOLSeqP2(int LS, int BPos, int EPos, int *RSize, int *OLSeq, unsigned char *MDSeq);
 
 	};
+
+	// Isolated literal Clearcut/NJ path used by MakeNJTreesP2.  This keeps
+	// the legacy tree routine's ABI-sensitive evaluation separate from the
+	// surrounding matrix and event code.
+	MATHFUNCSDLL_API float rdp_nj_clearcut_compat(int outlyer, int NextNo,
+		int treetype, int nlen, int nseed, int RJ, int UBD, float *dists,
+		char *outtree);
 }

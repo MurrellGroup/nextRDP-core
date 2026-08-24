@@ -239,10 +239,12 @@ struct RdpFinalTrimState {
     std::vector<int> nonrecombinant_list;
     std::vector<double> acceptable_sequences;
     std::vector<std::array<int, 2>> synthetic_event_roles;
+    std::vector<unsigned char> strict_removed;
+    std::vector<unsigned char> strict_readded;
 };
 
 RdpFinalTrimState run_rdp_final_trim_candidate_maintenance(
-    int next_no,
+    int next_no, int rwinpp,
     const std::array<int, 3>& sequences,
     const std::array<int, 6>& comparison_matrix,
     const std::array<unsigned char, 2>& minimum_pair,
@@ -252,6 +254,8 @@ RdpFinalTrimState run_rdp_final_trim_candidate_maintenance(
     const std::vector<float>& correlations,
     const std::vector<float>& inversions,
     const std::vector<float>& local_distance_panels,
+    const std::vector<float>& first_direct_small,
+    const std::vector<float>& region_direct_small,
     const std::vector<float>& first_ancestor_small,
     const std::vector<float>& region_ancestor_small,
     const std::vector<float>& first_collapsed_small,

@@ -155,7 +155,7 @@ namespace MathFuncs
 		ColTotalsF = (float*)calloc((NSeqs + 1), sizeof(float));
 
 		//LTreeF = NEIGHBOURP(1, 0, BSRndNumSeed, Outie + 1, NSeqs + 1, tFMat, FHolder, ColTotalsF);
-		LTreeF =  Clearcut(0, NSeqs, 1, 100, BSRndNumSeed, 1, NSeqs, tFMat, FHolder);
+		LTreeF =  rdp_nj_clearcut_compat(0, NSeqs, 1, 100, BSRndNumSeed, 1, NSeqs, tFMat, FHolder);
 		free(ColTotalsF);
 		free(tFMat);
 
@@ -210,7 +210,7 @@ namespace MathFuncs
 
 
 		//LTreeS = NEIGHBOURP(1, 0, BSRndNumSeed, Outie + 1, NSeqs + 1, tSMat, SHolder, ColTotalsS);
-		LTreeS = Clearcut(0, NSeqs, 1, 100, BSRndNumSeed, 1, NSeqs, tSMat, SHolder);
+		LTreeS = rdp_nj_clearcut_compat(0, NSeqs, 1, 100, BSRndNumSeed, 1, NSeqs, tSMat, SHolder);
 
 		free(ColTotalsS);
 		free(tSMat);
@@ -298,7 +298,7 @@ namespace MathFuncs
 					ColTotalsF = (float*)calloc((NSeqs + 1), sizeof(float));
 
 					//LTreeF = NEIGHBOURP(1, 0, BSRndNumSeed, Outie + 1, NSeqs + 1, tFMat, FHolder, ColTotalsF);
-					LTreeF = Clearcut(0, NSeqs, 1, 100, BSRndNumSeed, 1, NSeqs, tFMat, FHolder);
+					LTreeF = rdp_nj_clearcut_compat(0, NSeqs, 1, 100, BSRndNumSeed, 1, NSeqs, tFMat, FHolder);
 					free(ColTotalsF);
 
 					//tFAMat = (float*)calloc((NSeqs + 1)*(NSeqs + 1), sizeof(float));
@@ -350,7 +350,7 @@ namespace MathFuncs
 
 
 					//LTreeS = NEIGHBOURP(1, 0, BSRndNumSeed, Outie + 1, NSeqs + 1, tSMat, SHolder, ColTotalsS);
-					LTreeS = Clearcut(0, NSeqs, 1, 100, BSRndNumSeed, 1, NSeqs, tSMat, SHolder);
+					LTreeS = rdp_nj_clearcut_compat(0, NSeqs, 1, 100, BSRndNumSeed, 1, NSeqs, tSMat, SHolder);
 
 					free(ColTotalsS);
 
@@ -443,7 +443,7 @@ namespace MathFuncs
 					ColTotalsF = (float*)calloc((NSeqs + 1), sizeof(float));
 
 					//LTreeF = NEIGHBOURP(1, 0, BSRndNumSeed, Outie + 1, NSeqs + 1, tFMat, FHolder, ColTotalsF);
-					LTreeF = Clearcut(0, NSeqs, 1, 100, BSRndNumSeed, 1, NSeqs, tFMat, FHolder);
+					LTreeF = rdp_nj_clearcut_compat(0, NSeqs, 1, 100, BSRndNumSeed, 1, NSeqs, tFMat, FHolder);
 					free(ColTotalsF);
 
 					//tFAMat = (float*)calloc((NSeqs + 1)*(NSeqs + 1), sizeof(float));
@@ -495,7 +495,7 @@ namespace MathFuncs
 
 
 					//LTreeS = NEIGHBOURP(1, 0, BSRndNumSeed, Outie + 1, NSeqs + 1, tSMat, SHolder, ColTotalsS);
-					LTreeS = Clearcut(0, NSeqs, 1, 100, BSRndNumSeed, 1, NSeqs, tSMat, SHolder);
+					LTreeS = rdp_nj_clearcut_compat(0, NSeqs, 1, 100, BSRndNumSeed, 1, NSeqs, tSMat, SHolder);
 
 					free(ColTotalsS);
 					
@@ -6944,7 +6944,7 @@ int MyMathFuncs::FtoFA(int NSeqs, int LenStrainSeq0, int UBTS,int *TraceSeqs,int
 			DLen = (float*)calloc((NSeqs + 1), sizeof(float));
 			FHolder = (char*)calloc(NSeqs * 40 * 2 +1, sizeof(char));
 			Dummy = TransferDistP(NSeqs, Y, Reps, tFMat, DstMat);
-			LTree[LTI] = Clearcut(0, NSeqs, 1, 100, BSRndNumSeed, 1, NSeqs, tFMat, FHolder);
+			LTree[LTI] = rdp_nj_clearcut_compat(0, NSeqs, 1, 100, BSRndNumSeed, 1, NSeqs, tFMat, FHolder);
 			Dummy = TreeGroupsXP(NSeqs, FHolder, LTree[LTI], NameLen, tMatch, DLen);
 			for (Z = 0; Z <= NSeqs; Z++)
 				DL[Z] = DL[Z] + DLen[Z];
@@ -6976,7 +6976,7 @@ int MyMathFuncs::FtoFA(int NSeqs, int LenStrainSeq0, int UBTS,int *TraceSeqs,int
 				DLen = (float*)calloc((NSeqs + 1), sizeof(float));
 				FHolder = (char*)calloc(NSeqs * 40 * 2 + 1, sizeof(char));
 				Dummy = TransferDistP(NSeqs, Y, Reps, tFMat, DstMat);
-				LTree[LTI] = Clearcut(0, NSeqs, 1, 100, BSRndNumSeed, 1, NSeqs, tFMat, FHolder);
+				LTree[LTI] = rdp_nj_clearcut_compat(0, NSeqs, 1, 100, BSRndNumSeed, 1, NSeqs, tFMat, FHolder);
 				Dummy = TreeGroupsXP(NSeqs, FHolder, LTree[LTI], NameLen, tMatch, DLen);
 #pragma omp critical
 				{
