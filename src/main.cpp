@@ -2462,8 +2462,12 @@ int fasta_all_redo_events_fixture(
             dimensions_match) {
             const auto& integrated =
                 tree_compatibility_flow.calls[call_index];
+            const bool integrated_matrix_matches = call_index < 3
+                ? matrix == background_adjusted
+                : (call_index < 6 ? matrix == region_adjusted : true);
             integrated_matches =
                 integrated.role == metadata[1] &&
+                integrated_matrix_matches &&
                 as_vector(integrated.compatibility_before) ==
                     compatibility_before &&
                 as_vector(integrated.reverse_compatibility_before) ==
@@ -2658,13 +2662,21 @@ int fasta_all_redo_events_fixture(
             score_filters[call_index] = actual;
         }
         const bool call_matches = dimensions_match &&
+            (call_index != 0 ||
+             (raw_background == first_direct_small &&
+              ancestor_background == first_direct_small &&
+              ancestor_region == second_direct_small)) &&
             std::all_of(done_before.begin(), done_before.end(),
                         [](const int value) { return value == 0; }) &&
             expected_result[0] == 1 && actual == expected_done;
         if (!call_matches) {
             std::cerr << "MakeDoneThis3 call " << call_index
                       << " mismatch: dimensions=" << dimensions_match
-                      << " output=" << (actual == expected_done) << '\n';
+                      << " output=" << (actual == expected_done)
+                      << " matrices="
+                      << (raw_background == first_direct_small)
+                      << (ancestor_background == first_direct_small)
+                      << (ancestor_region == second_direct_small) << '\n';
         }
         score_support_matches = score_support_matches && call_matches;
     }
@@ -2716,6 +2728,7 @@ int fasta_all_redo_events_fixture(
             ? as_vector(triplet_groups[role].minimum_distances)
             : std::vector<double>{};
         const bool call_matches = dimensions_match &&
+            matrix == first_adjusted_small &&
             std::all_of(counts_before.begin(), counts_before.end(),
                         [](const int value) { return value == 0; }) &&
             std::all_of(done_before.begin(), done_before.end(),
@@ -2779,6 +2792,8 @@ int fasta_all_redo_events_fixture(
             triplet_scores[role] = scores[role];
         }
         const bool call_matches = dimensions_match &&
+            first_matrix == first_adjusted_small &&
+            second_matrix == second_adjusted_small &&
             expected_result[0] == 1 &&
             probability_vectors_match(scores, expected_scores);
         if (!call_matches) {
@@ -3393,6 +3408,443 @@ int fasta_all_redo_events_fixture(
     for (int role = 0; role < 3; ++role) {
         if (role != first_parent && role != second_parent) expected_winner = role;
     }
+    const auto expected_final_list =
+        rdp_fixture_section<int>(collect_fixture, 5);
+    const auto expected_final_last =
+        rdp_fixture_section<int>(collect_fixture, 6);
+    const auto expected_collect_region_rows =
+        rdp_fixture_section<float>(collect_fixture, 7);
+    if (expected_collect_region_rows != second_direct_small) {
+        std::size_t differences = 0;
+        for (std::size_t index = 0;
+             index < std::min(expected_collect_region_rows.size(),
+                              second_direct_small.size()); ++index) {
+            if (expected_collect_region_rows[index] !=
+                second_direct_small[index]) ++differences;
+        }
+        std::cerr << "Second FinalTrim SMatSmall input mismatch: "
+                  << differences << " cells\n";
+    }
+    const auto final_candidates = apply_rdp_strict_group_constraints(
+        scan_state.next_no, correlation_sequences, correlation_comparison,
+        generated_matrices.background, generated_matrices.event_region,
+        first_direct_small, second_direct_small,
+        first_adjusted_small, second_adjusted_small,
+        downstream_candidates);
+    bool second_final_trim_matches = expected_final_last.size() == 3;
+    for (int role = 0; role < 3 && second_final_trim_matches; ++role) {
+        second_final_trim_matches = expected_final_last[role] ==
+            final_candidates.candidate_last[role];
+        for (int slot = 0;
+             slot <= expected_final_last[role] && second_final_trim_matches;
+             ++slot) {
+            second_final_trim_matches = expected_final_list[role + slot * 3] ==
+                final_candidates.candidate_list[role + slot * 3];
+        }
+    }
+    if (!second_final_trim_matches) {
+        std::cerr << "Second FinalTrim lists mismatch:";
+        for (int role = 0; role < 3; ++role) {
+            std::cerr << " role" << role << '[';
+            for (int slot = 0;
+                 slot <= final_candidates.candidate_last[role]; ++slot) {
+                std::cerr << final_candidates.candidate_list[
+                    role + slot * 3] << ',';
+            }
+            std::cerr << "]/[";
+            for (int slot = 0; slot <= expected_final_last[role]; ++slot) {
+                std::cerr << expected_final_list[role + slot * 3] << ',';
+            }
+            std::cerr << ']';
+            for (int expected_slot = 0;
+                 expected_slot <= expected_final_last[role]; ++expected_slot) {
+                const int sequence =
+                    expected_final_list[role + expected_slot * 3];
+                bool present = false;
+                for (int actual_slot = 0;
+                     actual_slot <= final_candidates.candidate_last[role];
+                     ++actual_slot) {
+                    present = present || final_candidates.candidate_list[
+                        role + actual_slot * 3] == sequence;
+                }
+                if (!present) {
+                    const int p0 = correlation_comparison[role];
+                    const int p1 = correlation_comparison[role + 3];
+                    std::cerr << " missing" << sequence << " rows="
+                              << second_adjusted_small[role + sequence * 3]
+                              << '<' << second_adjusted_small[p0 + sequence * 3]
+                              << ',' << second_adjusted_small[p1 + sequence * 3]
+                              << ';' << second_direct_small[role + sequence * 3]
+                              << '<' << second_direct_small[p0 + sequence * 3]
+                              << ',' << second_direct_small[p1 + sequence * 3]
+                              << ';' << first_adjusted_small[role + sequence * 3]
+                              << '<' << first_adjusted_small[p0 + sequence * 3]
+                              << ',' << first_adjusted_small[p1 + sequence * 3]
+                              << ';' << first_direct_small[role + sequence * 3]
+                              << '<' << first_direct_small[p0 + sequence * 3]
+                              << ',' << first_direct_small[p1 + sequence * 3];
+                }
+            }
+        }
+        std::cerr << '\n';
+    }
+    const auto relevant_sequences = make_rdp_relevant_sequences(
+        scan_state.next_no, final_candidates.candidate_last,
+        final_candidates.candidate_list);
+    const std::array<int, 2> collection_trace{trace[0], trace[1]};
+    RdpRawEventState rescan_events;
+    rescan_events.current_xover.assign(scan_state.next_no + 1, 0);
+    rescan_events.xover_list.resize(scan_state.next_no + 1);
+    auto selected_collection_event =
+        events.xover_list[collection_trace[0]][collection_trace[1] - 1];
+    selected_collection_event.distance_holder =
+        (selected_collection_event.distance_holder + 0.00000001) * -1.0;
+    const auto add_synthetic_events = [&](const RdpFinalTrimState& pass) {
+      for (const auto& seed : pass.synthetic_event_roles) {
+        const int role = seed[0];
+        const int sequence = seed[1];
+        RdpRawEvent synthetic = selected_collection_event;
+        synthetic.daughter = static_cast<std::int16_t>(sequence);
+        synthetic.major_parent = static_cast<std::int16_t>(
+            correlation_sequences[correlation_comparison[role]]);
+        synthetic.minor_parent = static_cast<std::int16_t>(
+            correlation_sequences[correlation_comparison[role + 3]]);
+        synthetic.probability = 0.9;
+        synthetic.distance_holder = std::abs(synthetic.distance_holder);
+        rescan_events.xover_list[sequence].push_back(synthetic);
+        rescan_events.current_xover[sequence] = static_cast<std::int16_t>(
+            rescan_events.xover_list[sequence].size());
+      }
+    };
+    std::vector<unsigned char> single_redo(
+        static_cast<std::size_t>(scan_state.analysis_list_last + 1), 0);
+    single_redo[0] = 1;
+    auto rescan_probability_settings = probability_settings;
+    rescan_probability_settings.lowest_probability = std::max<double>({
+        probability_settings.lowest_probability,
+        static_cast<double>(
+            selected_collection_event.probability * 100000.0),
+        static_cast<double>(probability_settings.lowest_probability *
+            probability_settings.mc_correction)});
+    const auto run_rescan_pass = [&](const RdpFinalTrimState& pass) {
+      for (int role = 0; role < 3; ++role) {
+        for (int slot = 0; slot <= pass.candidate_last[role]; ++slot) {
+            const int sequence =
+                pass.candidate_list[role + slot * 3];
+            if (sequence == correlation_sequences[role]) continue;
+            const std::array<int, 3> rescan_triplet{
+                sequence,
+                correlation_sequences[correlation_comparison[role]],
+                correlation_sequences[correlation_comparison[role + 3]]};
+            rescan_events = scan_rdp_redo_triplets(
+                scan_state, distance_state, tree_state, single_redo, fss_rdp,
+                store_lpv, h.store_lpv_ub, h.fss_rdp_ub, h.xover_window,
+                h.xover_window_x, xover_settings, rescan_probability_settings,
+                probability_estimate, fact_three, fact, xover_api, 1,
+                &rescan_events, &rescan_triplet);
+        }
+      }
+    };
+    // FinalTrim temporarily relaxes LowestProb for the RDP rescan tail.
+    add_synthetic_events(final_candidates);
+    run_rescan_pass(final_candidates);
+    RdpRawEventState events_after_rescan = events;
+    events_after_rescan.xover_list[collection_trace[0]][
+        collection_trace[1] - 1] = selected_collection_event;
+    for (int row = 0; row <= scan_state.next_no; ++row) {
+        for (const auto& rescanned : rescan_events.xover_list[row]) {
+            events_after_rescan.xover_list[row].push_back(rescanned);
+        }
+        events_after_rescan.current_xover[row] = static_cast<std::int16_t>(
+            events_after_rescan.xover_list[row].size());
+    }
+    const auto collection_event_list = prepare_rdp_collection_event_list(
+        scan_state.next_no, expected_winner, correlation_sequences,
+        collection_trace, final_candidates.candidate_last,
+        final_candidates.candidate_list,
+        final_candidates.acceptable_sequences, events_after_rescan);
+    const auto probability_matches = [](const double actual,
+                                        const double expected) {
+        if (actual == expected) return true;
+        const double scale = std::max({std::abs(actual), std::abs(expected),
+                                       std::numeric_limits<double>::min()});
+        return std::abs(actual - expected) <= scale * 1.0e-12;
+    };
+    const auto event_matches = [&](const RdpRawEvent& actual,
+                                   const XOVERDEFINE& expected) {
+        return actual.outside_flag == expected.OutsideFlag &&
+            actual.misidentify_flag == expected.MissIdentifyFlag &&
+            actual.program_flag == expected.ProgramFlag &&
+            actual.sbp_flag == expected.SBPFlag &&
+            actual.accept == expected.Accept &&
+            actual.major_parent == expected.MajorP &&
+            actual.minor_parent == expected.MinorP &&
+            actual.daughter == expected.Daughter &&
+            actual.beginning == expected.Beginning &&
+            actual.ending == expected.Ending &&
+            actual.length_holder == expected.LHolder &&
+            actual.event_number == expected.Eventnumber &&
+            probability_matches(actual.permutation_pvalue,
+                                expected.PermPVal) &&
+            actual.begin_parent == expected.BeginP &&
+            actual.end_parent == expected.EndP &&
+            probability_matches(actual.probability, expected.Probability) &&
+            actual.distance_holder == expected.DHolder;
+    };
+    const auto differing_event_field = [&](const RdpRawEvent& actual,
+                                            const XOVERDEFINE& expected) {
+#define RDP_EVENT_FIELD(actual_field, expected_field) \
+        if (actual.actual_field != expected.expected_field) return #actual_field
+        RDP_EVENT_FIELD(outside_flag, OutsideFlag);
+        RDP_EVENT_FIELD(misidentify_flag, MissIdentifyFlag);
+        RDP_EVENT_FIELD(program_flag, ProgramFlag);
+        RDP_EVENT_FIELD(sbp_flag, SBPFlag);
+        RDP_EVENT_FIELD(accept, Accept);
+        RDP_EVENT_FIELD(major_parent, MajorP);
+        RDP_EVENT_FIELD(minor_parent, MinorP);
+        RDP_EVENT_FIELD(daughter, Daughter);
+        RDP_EVENT_FIELD(beginning, Beginning);
+        RDP_EVENT_FIELD(ending, Ending);
+        RDP_EVENT_FIELD(length_holder, LHolder);
+        RDP_EVENT_FIELD(event_number, Eventnumber);
+        if (!probability_matches(actual.permutation_pvalue,
+                                 expected.PermPVal)) {
+            return "permutation_pvalue";
+        }
+        RDP_EVENT_FIELD(begin_parent, BeginP);
+        RDP_EVENT_FIELD(end_parent, EndP);
+        if (!probability_matches(actual.probability, expected.Probability)) {
+            return "probability";
+        }
+        RDP_EVENT_FIELD(distance_holder, DHolder);
+#undef RDP_EVENT_FIELD
+        return "none";
+    };
+    bool make_relevant_matches =
+        relevant_sequences.size() ==
+            static_cast<std::size_t>(scan_state.next_no + 1);
+    for (int role = 0; role < 3; ++role) {
+        for (int slot = 0; slot <= final_candidates.candidate_last[role];
+             ++slot) {
+            make_relevant_matches = make_relevant_matches &&
+                relevant_sequences[final_candidates.candidate_list[
+                    role + slot * 3]] == 1;
+        }
+    }
+    const auto expected_rdp_locations =
+        rdp_fixture_section<int>(collect_fixture, 11);
+    const auto expected_rdp_events =
+        rdp_fixture_section<XOVERDEFINE>(collect_fixture, 12);
+    bool rdp_working_list_matches =
+        expected_rdp_locations.size() == expected_rdp_events.size() * 2;
+    bool reported_working_list_difference = false;
+    std::size_t working_event_index = 0;
+    for (int row = 0; row <= scan_state.next_no; ++row) {
+        int rdp_ordinal = 0;
+        for (std::size_t slot = 0;
+             slot < collection_event_list.xover_list[row].size(); ++slot) {
+            const auto& event = collection_event_list.xover_list[row][slot];
+            if (event.program_flag != 0) continue;
+            const bool event_ok =
+                working_event_index < expected_rdp_events.size() &&
+                expected_rdp_locations[working_event_index * 2] == row &&
+                event_matches(event, expected_rdp_events[working_event_index]);
+            if (!event_ok && !reported_working_list_difference) {
+                reported_working_list_difference = true;
+                rdp_working_list_matches = false;
+                if (working_event_index >= expected_rdp_events.size()) {
+                    std::cerr << "RDP PXOList has extra event at row " << row
+                              << " RDP ordinal " << rdp_ordinal << '\n';
+                } else {
+                const auto& expected = expected_rdp_events[working_event_index];
+                std::cerr << "RDP PXOList first mismatch at row " << row
+                          << " RDP ordinal " << rdp_ordinal
+                          << " (physical slot " << slot + 1
+                          << ") expected-location="
+                          << expected_rdp_locations[working_event_index * 2]
+                          << ',' << expected_rdp_locations[
+                              working_event_index * 2 + 1]
+                          << " field="
+                          << differing_event_field(event, expected)
+                          << " event=" << event.daughter << ','
+                          << event.major_parent << ',' << event.minor_parent
+                          << ',' << event.beginning << ',' << event.ending
+                          << ',' << std::setprecision(17)
+                          << event.probability << ','
+                          << event.distance_holder << " expected="
+                          << expected.Daughter << ',' << expected.MajorP << ','
+                          << expected.MinorP << ',' << expected.Beginning << ','
+                          << expected.Ending << ',' << std::setprecision(17)
+                          << expected.Probability
+                          << ',' << expected.DHolder << '\n';
+                }
+            }
+            ++working_event_index;
+            ++rdp_ordinal;
+        }
+        if (working_event_index < expected_rdp_events.size() &&
+            expected_rdp_locations[working_event_index * 2] == row) {
+            if (!reported_working_list_difference) {
+                reported_working_list_difference = true;
+                const auto& expected = expected_rdp_events[working_event_index];
+                std::cerr << "RDP PXOList missing event at row " << row
+                          << " RDP ordinal " << rdp_ordinal
+                          << " expected-location="
+                          << expected_rdp_locations[working_event_index * 2]
+                          << ',' << expected_rdp_locations[
+                              working_event_index * 2 + 1]
+                          << " expected=" << expected.Daughter << ','
+                          << expected.MajorP << ',' << expected.MinorP << ','
+                          << expected.Beginning << ',' << expected.Ending << ','
+                          << expected.Probability << ',' << expected.DHolder
+                          << '\n';
+            }
+            rdp_working_list_matches = false;
+            while (working_event_index < expected_rdp_events.size() &&
+                   expected_rdp_locations[working_event_index * 2] == row) {
+                ++working_event_index;
+            }
+        }
+    }
+    rdp_working_list_matches = rdp_working_list_matches &&
+        working_event_index == expected_rdp_events.size();
+    bool collect_events_matches =
+        make_relevant_matches && rdp_working_list_matches;
+    const auto check_collect_call = [&](const int call_index,
+                                        const auto& raw_header) {
+        const int base = call_index * 1000;
+        const int role = static_cast<int>(raw_header[4]);
+        const int add_num = static_cast<int>(raw_header[7]);
+        const auto expected_region_sizes =
+            rdp_fixture_section<int>(collect_fixture, base + 2);
+        const auto expected_overlap =
+            rdp_fixture_section<int>(collect_fixture, base + 3);
+        const auto expected_current =
+            rdp_fixture_section<short>(collect_fixture, base + 8);
+        const auto expected_rdp_current =
+            rdp_fixture_section<short>(collect_fixture, base + 9);
+        const auto expected_output =
+            rdp_fixture_section<XOVERDEFINE>(collect_fixture, base + 10);
+        const auto actual = make_rdp_parent_collect_events(
+            scan_state.sequence_length, scan_state.next_no, role,
+            actual_resolution.region_sizes,
+            actual_resolution.event_overlap_mask, correlation_comparison,
+            final_candidates.candidate_last,
+            final_candidates.candidate_list, add_num,
+            correlation_sequences, collection_trace, collection_event_list);
+        bool output_matches = actual.result ==
+                static_cast<int>(raw_header[11]) &&
+            expected_output.size() ==
+                static_cast<std::size_t>(scan_state.next_no + 1);
+        std::size_t first_output_difference = expected_output.size();
+        for (std::size_t slot = 0;
+             slot < expected_output.size() && output_matches; ++slot) {
+            output_matches = event_matches(actual.events[slot],
+                                           expected_output[slot]);
+            if (!output_matches) first_output_difference = slot;
+        }
+        bool active_lists_match = true;
+        const auto expected_lists =
+            rdp_fixture_section<int>(collect_fixture, base + 5);
+        const auto expected_last =
+            rdp_fixture_section<int>(collect_fixture, base + 6);
+        for (int candidate_role = 0;
+             candidate_role < 3 && active_lists_match; ++candidate_role) {
+            active_lists_match = expected_last[candidate_role] ==
+                final_candidates.candidate_last[candidate_role];
+            for (int slot = 0;
+                 slot <= expected_last[candidate_role] && active_lists_match;
+                 ++slot) {
+                active_lists_match = expected_lists[
+                    candidate_role + slot * 3] ==
+                    final_candidates.candidate_list[
+                        candidate_role + slot * 3];
+            }
+        }
+        std::vector<short> actual_rdp_current(scan_state.next_no + 1, 0);
+        for (int row = 0; row <= scan_state.next_no; ++row) {
+            for (const auto& event : collection_event_list.xover_list[row]) {
+                if (event.program_flag == 0) ++actual_rdp_current[row];
+            }
+        }
+        const bool call_matches =
+            raw_header[2] == static_cast<unsigned int>(scan_state.next_no) &&
+            raw_header[3] ==
+                static_cast<unsigned int>(scan_state.sequence_length) &&
+            raw_header[12] ==
+                static_cast<unsigned int>(correlation_sequences[0]) &&
+            raw_header[13] ==
+                static_cast<unsigned int>(correlation_sequences[1]) &&
+            raw_header[14] ==
+                static_cast<unsigned int>(correlation_sequences[2]) &&
+            raw_header[15] == static_cast<unsigned int>(collection_trace[0]) &&
+            raw_header[16] == static_cast<unsigned int>(collection_trace[1]) &&
+            expected_region_sizes[0] == actual_resolution.region_sizes[0] &&
+            expected_overlap == actual_resolution.event_overlap_mask &&
+            rdp_fixture_section<int>(collect_fixture, base + 4) ==
+                as_vector(correlation_comparison) &&
+            active_lists_match &&
+            expected_rdp_current == actual_rdp_current &&
+            output_matches;
+        if (!call_matches) {
+            std::cerr << "MakeCollecteventsC call " << call_index
+                      << " mismatch: role=" << role
+                      << " region="
+                      << (expected_region_sizes[0] ==
+                          actual_resolution.region_sizes[0])
+                      << " overlap="
+                      << (expected_overlap ==
+                          actual_resolution.event_overlap_mask)
+                      << " lists="
+                      << active_lists_match
+                      << " current="
+                      << (expected_rdp_current == actual_rdp_current)
+                      << " trace=" << collection_trace[0] << ','
+                      << collection_trace[1] << '/' << raw_header[15] << ','
+                      << raw_header[16] << " output=" << output_matches;
+            if (expected_rdp_current != actual_rdp_current) {
+                std::cerr << " current-diffs=";
+                for (int row = 0; row <= scan_state.next_no; ++row) {
+                    if (expected_rdp_current[row] != actual_rdp_current[row]) {
+                        std::cerr << row << ':'
+                                  << actual_rdp_current[row]
+                                  << '/' << expected_rdp_current[row] << ',';
+                    }
+                }
+            }
+            if (!output_matches &&
+                first_output_difference < expected_output.size()) {
+                const auto& observed = actual.events[first_output_difference];
+                const auto& expected = expected_output[first_output_difference];
+                std::cerr << " first-output=" << first_output_difference
+                          << " d=" << observed.daughter << '/'
+                          << expected.Daughter << " ma="
+                          << observed.major_parent << '/' << expected.MajorP
+                          << " mi=" << observed.minor_parent << '/'
+                          << expected.MinorP << " p="
+                          << observed.probability << '/'
+                          << expected.Probability << " pp="
+                          << observed.permutation_pvalue << '/'
+                          << expected.PermPVal << " dh="
+                          << observed.distance_holder << '/'
+                          << expected.DHolder << " flags="
+                          << static_cast<int>(observed.outside_flag) << ','
+                          << static_cast<int>(observed.misidentify_flag) << ','
+                          << static_cast<int>(observed.sbp_flag) << '/'
+                          << static_cast<int>(expected.OutsideFlag) << ','
+                          << static_cast<int>(expected.MissIdentifyFlag) << ','
+                          << static_cast<int>(expected.SBPFlag) << " bp="
+                          << observed.beginning << ',' << observed.ending << '/'
+                          << expected.Beginning << ',' << expected.Ending;
+            }
+            std::cerr << '\n';
+        }
+        return call_matches;
+    };
+    const bool collect_first_matches = check_collect_call(0, collect_first);
+    const bool collect_second_matches = check_collect_call(1, collect_second);
+    collect_events_matches = collect_events_matches &&
+        collect_first_matches && collect_second_matches;
     const bool consensus_matches = consensus_scores_match &&
         consensus_state.winning_role == expected_winner &&
         connected_metrics_match &&
@@ -3403,6 +3855,7 @@ int fasta_all_redo_events_fixture(
                   << consensus_state.winning_role << '/' << expected_winner
                   << " connected=" << connected_metrics_match << ':'
                   << connected_consensus_state.winning_role
+                  << " second-trim=" << second_final_trim_matches
                   << " raw=";
         for (int role = 0; role < 3; ++role) {
             std::cerr << consensus_state.consensus[role] << '/'
@@ -3456,6 +3909,10 @@ int fasta_all_redo_events_fixture(
               << ", CalcMaxD " << (cmaxd_matches ? "PASS" : "FAIL")
               << ", MakeConsensusC "
               << (consensus_matches ? "PASS" : "FAIL")
+              << ", second FinalTrim "
+              << (second_final_trim_matches ? "PASS" : "FAIL")
+              << ", MakeRelevant/MakeCollecteventsC "
+              << (collect_events_matches ? "PASS" : "FAIL")
               << "\n";
 
     return make_test_structure_matches && first_selection_matches &&
@@ -3465,7 +3922,8 @@ int fasta_all_redo_events_fixture(
          make_rlist_matches && find_actual_matches && strip_dup_matches &&
              rcompat_matches && rcompat_flow_matches && phpr_matches &&
              score_support_matches && check_pattern_matches &&
-             final_trim_prefix_matches && cmaxd_matches && consensus_matches
+             final_trim_prefix_matches && cmaxd_matches && consensus_matches &&
+             second_final_trim_matches && collect_events_matches
              ? 0 : 1) : 1;
 }
 

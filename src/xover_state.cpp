@@ -203,8 +203,10 @@ RdpFirstXoverState build_rdp_first_xover_state(
     const RdpTreeState& tree_state, const int triplet_index,
     const int fss_ub, std::vector<unsigned char>& fss_rdp,
     const int xover_window, const short xover_window_x,
-    const Dna5XoverApi& api) {
-    if (triplet_index < 0 || triplet_index > scan_state.analysis_list_last) {
+    const Dna5XoverApi& api,
+    const std::array<int, 3>* explicit_sequences) {
+    if (explicit_sequences == nullptr &&
+        (triplet_index < 0 || triplet_index > scan_state.analysis_list_last)) {
         throw std::runtime_error("XOver received an invalid triplet index");
     }
     const int sequence_count = scan_state.next_no + 1;
@@ -219,8 +221,9 @@ RdpFirstXoverState build_rdp_first_xover_state(
 
     RdpFirstXoverState state;
     for (int role = 0; role < 3; ++role) {
-        state.sequences[role] =
-            scan_state.analysis_list[role + triplet_index * 3];
+        state.sequences[role] = explicit_sequences == nullptr
+            ? scan_state.analysis_list[role + triplet_index * 3]
+            : (*explicit_sequences)[role];
     }
     state.xover_sequence_ub =
         scan_state.sequence_length + (xover_window_x / 2) * 2;
@@ -715,10 +718,15 @@ RdpRawEventState scan_rdp_redo_triplets(
     const RdpProbabilitySettings& probability_settings,
     std::vector<double>& probability_estimate,
     std::vector<double>& fact_three, std::vector<double>& fact,
-    const Dna5XoverApi& api) {
-    RdpRawEventState events;
-    events.current_xover.assign(scan_state.next_no + 1, 0);
-    events.xover_list.resize(scan_state.next_no + 1);
+    const Dna5XoverApi& api, const int do_all,
+    const RdpRawEventState* initial_events,
+    const std::array<int, 3>* explicit_sequences) {
+    RdpRawEventState events = initial_events == nullptr
+        ? RdpRawEventState{} : *initial_events;
+    if (initial_events == nullptr) {
+        events.current_xover.assign(scan_state.next_no + 1, 0);
+        events.xover_list.resize(scan_state.next_no + 1);
+    }
     for (int triplet = 0; triplet <= scan_state.analysis_list_last;
          ++triplet) {
         if (static_cast<std::size_t>(triplet) >= redo.size() ||
@@ -728,7 +736,7 @@ RdpRawEventState scan_rdp_redo_triplets(
         ++events.scanned_triplets;
         auto state = build_rdp_first_xover_state(
             scan_state, distance_state, tree_state, triplet, fss_ub, fss_rdp,
-            xover_window, xover_window_x, api);
+            xover_window, xover_window_x, api, explicit_sequences);
         if (state.informative_length < xover_window * 2 ||
             state.agreement_counts[0] < xover_window / 3 ||
             state.agreement_counts[1] < xover_window / 3 ||
@@ -834,7 +842,7 @@ RdpRawEventState scan_rdp_redo_triplets(
                     break;
                 }
             }
-            if (!advance_rdp_role_cycle(state, 0)) break;
+            if (!advance_rdp_role_cycle(state, do_all)) break;
         }
         api.clean_xover_sequence(
             state.homology_length + xover_window * 2, xover_window,

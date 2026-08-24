@@ -22,8 +22,8 @@ if [[ ! -f "$project_dir/sandbox/make-rlist-capture/Dataset9-find-actual-events-
   "$project_dir/tools/capture-find-actual-events.sh"
 fi
 
-printf '| Dataset | Redo triplets | Stored events | Row counts | Event identities | MakeTestPVs | First selection | UFDist | Region distance | CheckMatrix | First NJ tree | MakeSDMP2 | FillRmat | CalCR | MakeRList | FindActualEvents | StripDupInv | MakeRCompat | Compatibility flow | MakePhPrScore | Score support | CheckPatternX | FinalTrim prefix | CalcMaxD | MakeConsensusC |\n'
-printf '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n'
+printf '| Dataset | Redo triplets | Stored events | Row counts | Event identities | MakeTestPVs | First selection | UFDist | Region distance | CheckMatrix | First NJ tree | MakeSDMP2 | FillRmat | CalCR | MakeRList | FindActualEvents | StripDupInv | MakeRCompat | Compatibility flow | MakePhPrScore | Score support | CheckPatternX | FinalTrim prefix | CalcMaxD | MakeConsensusC | Second FinalTrim | MakeRelevant/Collect |\n'
+printf '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n'
 dataset_numbers=${DATASET_NUMBERS:-"0 1 2 3 4 5 6 7 8 9"}
 overall_status=0
 for number in $dataset_numbers; do
@@ -63,8 +63,8 @@ for number in $dataset_numbers; do
   command_status=$?
   set -e
   if [[ $command_status -ne 0 ]]; then overall_status=1; fi
-  if [[ $output =~ scan:\ ([0-9]+)\ triplets.*\ ([0-9]+)\ stored\ candidates.*\ ([0-9]+/[0-9]+)\ row\ counts\ equal,\ ([0-9]+/[0-9]+)\ event\ identities\ exact.*MakeTestPVs\ (PASS|FAIL),\ first\ selection\ (PASS|FAIL).*UFDist\ (PASS|FAIL),\ region\ distance\ (PASS|FAIL),\ CheckMatrix\ (PASS|FAIL),\ first\ NJ\ tree\ (PASS|FAIL),\ MakeSDMP2\ (PASS|FAIL),\ FillRmat\ (PASS|FAIL),\ CalCR\ (PASS|FAIL),\ MakeRList\ (PASS|FAIL),\ FindActualEvents\ (PASS|FAIL),\ StripDupInv\ (PASS|FAIL),\ MakeRCompat\ (PASS|FAIL),\ compatibility\ flow\ (PASS|FAIL),\ MakePhPrScore\ (PASS|FAIL),\ score\ support\ (PASS|FAIL),\ CheckPatternX\ (PASS|FAIL),\ FinalTrim\ prefix\ (PASS|FAIL),\ CalcMaxD\ (PASS|FAIL),\ MakeConsensusC\ (PASS|FAIL) ]]; then
-    printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' \
+  if [[ $output =~ scan:\ ([0-9]+)\ triplets.*\ ([0-9]+)\ stored\ candidates.*\ ([0-9]+/[0-9]+)\ row\ counts\ equal,\ ([0-9]+/[0-9]+)\ event\ identities\ exact.*MakeTestPVs\ (PASS|FAIL),\ first\ selection\ (PASS|FAIL).*UFDist\ (PASS|FAIL),\ region\ distance\ (PASS|FAIL),\ CheckMatrix\ (PASS|FAIL),\ first\ NJ\ tree\ (PASS|FAIL),\ MakeSDMP2\ (PASS|FAIL),\ FillRmat\ (PASS|FAIL),\ CalCR\ (PASS|FAIL),\ MakeRList\ (PASS|FAIL),\ FindActualEvents\ (PASS|FAIL),\ StripDupInv\ (PASS|FAIL),\ MakeRCompat\ (PASS|FAIL),\ compatibility\ flow\ (PASS|FAIL),\ MakePhPrScore\ (PASS|FAIL),\ score\ support\ (PASS|FAIL),\ CheckPatternX\ (PASS|FAIL),\ FinalTrim\ prefix\ (PASS|FAIL),\ CalcMaxD\ (PASS|FAIL),\ MakeConsensusC\ (PASS|FAIL),\ second\ FinalTrim\ (PASS|FAIL),\ MakeRelevant/MakeCollecteventsC\ (PASS|FAIL) ]]; then
+    printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' \
       "$dataset" "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" \
       "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}" \
       "${BASH_REMATCH[5]}" "${BASH_REMATCH[6]}" \
@@ -76,7 +76,8 @@ for number in $dataset_numbers; do
       "${BASH_REMATCH[17]}" "${BASH_REMATCH[18]}" \
       "${BASH_REMATCH[19]}" "${BASH_REMATCH[20]}" \
       "${BASH_REMATCH[21]}" "${BASH_REMATCH[22]}" \
-      "${BASH_REMATCH[23]}" "${BASH_REMATCH[24]}"
+      "${BASH_REMATCH[23]}" "${BASH_REMATCH[24]}" \
+      "${BASH_REMATCH[25]}" "${BASH_REMATCH[26]}"
   else
     printf '%s\n' "$output" >&2
     exit 1

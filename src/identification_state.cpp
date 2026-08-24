@@ -4411,6 +4411,558 @@ RdpListCorrelationState calculate_rdp_list_correlations(
     return state;
 }
 
+RdpFinalTrimState apply_rdp_strict_group_constraints(
+    const int next_no, const std::array<int, 3>& sequences,
+    const std::array<int, 6>& comparison_matrix,
+    const std::vector<float>& background_matrix,
+    const std::vector<float>& region_matrix,
+    const std::vector<float>& f,
+    const std::vector<float>& s,
+    const std::vector<float>& fa,
+    const std::vector<float>& sa,
+    RdpFinalTrimState state) {
+    const int count = next_no + 1;
+    const auto matrix_cells = static_cast<std::size_t>(count) * count;
+    const auto row_cells = static_cast<std::size_t>(3) * count;
+    if (next_no < 1 || background_matrix.size() != matrix_cells ||
+        region_matrix.size() != matrix_cells || f.size() != row_cells ||
+        s.size() != row_cells || fa.size() != row_cells ||
+        sa.size() != row_cells || state.candidate_list.size() != row_cells) {
+        throw std::runtime_error("FinalTrim strict-group dimensions differ");
+    }
+    const auto row = [](const int role, const int sequence) {
+        return static_cast<std::size_t>(role) + sequence * 3;
+    };
+    const auto matrix = [count](const std::vector<float>& values,
+                                const int first, const int second) {
+        return values[first + static_cast<std::size_t>(second) * count];
+    };
+    const auto comp = [&](const int role, const int parent) {
+        return comparison_matrix[role + parent * 3];
+    };
+
+    // Module2.FinalTrim 24534-24944, reached by the second RFF=1 call when
+    // ConservativeGroup=0. Keep the arithmetic in Single precision: these
+    // row sums feed the source's rank-based outlier constraints.
+    std::vector<float> move_f(count, 0.0F);
+    std::vector<float> move_s(count, 0.0F);
+    for (int first = 0; first <= next_no; ++first) {
+        for (int second = 0; second <= next_no; ++second) {
+            move_f[first] += matrix(background_matrix, first, second);
+            move_s[first] += matrix(region_matrix, first, second);
+        }
+    }
+    std::array<int, 3> rank_f{};
+    std::array<int, 3> rank_s{};
+    for (int role = 0; role < 3; ++role) {
+        const float selected_f = move_f[sequences[role]];
+        const float selected_s = move_s[sequences[role]];
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            if (selected_f > move_f[sequence]) ++rank_f[role];
+            if (selected_s > move_s[sequence]) ++rank_s[role];
+        }
+    }
+
+    for (int role = 0; role < 3; ++role) {
+        std::vector<unsigned char> remove(count, 0);
+        std::array<int, 2> ilp{};
+        const int seq1 = sequences[role];
+        const int seq2_role = comp(role, 0);
+        const int seq3_role = comp(role, 1);
+        const int seq2 = sequences[seq2_role];
+        const int seq3 = sequences[seq3_role];
+        int go_on = 1;
+
+        if (sa[row(role, seq2)] > sa[row(seq2_role, seq3)] ||
+            (s[row(role, seq2)] > s[row(seq2_role, seq3)] &&
+             s[row(role, seq3)] > s[row(seq2_role, seq3)])) {
+            ilp[0] = 1;
+            const float bound = sa[row(seq2_role, seq3)];
+            for (int slot = 0; slot <= state.candidate_last[role]; ++slot) {
+                const int seq4 = state.candidate_list[row(role, slot)];
+                if (seq4 != seq1 && s[row(role, seq4)] > 0.0F) {
+                    if (sa[row(role, seq2)] != sa[row(seq2_role, seq4)] ||
+                        sa[row(role, seq3)] != sa[row(seq3_role, seq4)]) {
+                        remove[seq4] = 1;
+                    }
+                    if (sa[row(role, seq4)] > bound) remove[seq4] = 1;
+                    // The source repeats the identical SAMatSmall test here.
+                    if (sa[row(role, seq4)] > bound) remove[seq4] = 1;
+                    if (s[row(role, seq4)] > s[row(seq2_role, seq4)] ||
+                        s[row(role, seq4)] > s[row(seq3_role, seq4)]) {
+                        remove[seq4] = 1;
+                    }
+                }
+            }
+            if (fa[row(role, seq2)] < fa[row(role, seq3)]) {
+                for (int slot = 0; slot <= state.candidate_last[role]; ++slot) {
+                    const int seq4 = state.candidate_list[row(role, slot)];
+                    if (seq4 != seq1 &&
+                        fa[row(role, seq2)] != fa[row(seq2_role, seq4)]) {
+                        remove[seq4] = 1;
+                    }
+                }
+            } else {
+                for (int slot = 0; slot <= state.candidate_last[role]; ++slot) {
+                    const int seq4 = state.candidate_list[row(role, slot)];
+                    if (seq4 != seq1 &&
+                        fa[row(role, seq3)] != fa[row(seq3_role, seq4)]) {
+                        remove[seq4] = 1;
+                    }
+                }
+            }
+            go_on = 0;
+        }
+
+        if (fa[row(role, seq2)] > fa[row(seq2_role, seq3)] ||
+            (f[row(role, seq2)] > f[row(seq2_role, seq3)] &&
+             f[row(role, seq3)] > f[row(seq2_role, seq3)])) {
+            ilp[1] = 1;
+            const float bound = fa[row(seq2_role, seq3)];
+            for (int slot = 0; slot <= state.candidate_last[role]; ++slot) {
+                const int seq4 = state.candidate_list[row(role, slot)];
+                if (seq4 != seq1 && f[row(role, seq4)] > 0.0F) {
+                    if (fa[row(role, seq2)] != fa[row(seq2_role, seq4)] ||
+                        fa[row(role, seq3)] != fa[row(seq3_role, seq4)]) {
+                        remove[seq4] = 1;
+                    }
+                    if (fa[row(role, seq4)] > bound) remove[seq4] = 1;
+                    if (f[row(role, seq4)] > f[row(seq2_role, seq4)] ||
+                        f[row(role, seq4)] > f[row(seq3_role, seq4)]) {
+                        remove[seq4] = 1;
+                    }
+                }
+            }
+            if (sa[row(role, seq2)] < sa[row(role, seq3)]) {
+                for (int slot = 0; slot <= state.candidate_last[role]; ++slot) {
+                    const int seq4 = state.candidate_list[row(role, slot)];
+                    if (seq4 != seq1 &&
+                        sa[row(role, seq2)] != sa[row(seq2_role, seq4)]) {
+                        remove[seq4] = 1;
+                    }
+                }
+            } else {
+                for (int slot = 0; slot <= state.candidate_last[role]; ++slot) {
+                    const int seq4 = state.candidate_list[row(role, slot)];
+                    if (seq4 != seq1 &&
+                        sa[row(role, seq3)] != sa[row(seq3_role, seq4)]) {
+                        remove[seq4] = 1;
+                    }
+                }
+            }
+            go_on = 0;
+        }
+
+        if (go_on == 1) {
+            if (sa[row(role, seq2)] < sa[row(role, seq3)]) {
+                for (int slot = 0; slot <= state.candidate_last[role]; ++slot) {
+                    const int seq4 = state.candidate_list[row(role, slot)];
+                    if (seq4 == seq1) continue;
+                    if (sa[row(role, seq4)] >= sa[row(seq3_role, seq4)] ||
+                        s[row(role, seq4)] > s[row(role, seq2)] * 6.0F) {
+                        remove[seq4] = 1;
+                    }
+                    if (sa[row(role, seq4)] > sa[row(role, seq2)] &&
+                        s[row(role, seq2)] < f[row(role, seq2)] &&
+                        s[row(seq2_role, seq4)] > f[row(seq2_role, seq4)]) {
+                        remove[seq4] = 1;
+                    }
+                }
+                if ((static_cast<double>(rank_s[seq3_role]) / next_no > 0.95 &&
+                     static_cast<double>(rank_f[seq3_role]) / next_no < 0.75) ||
+                    static_cast<double>(rank_s[seq3_role] - rank_f[seq3_role]) /
+                            next_no > 0.5) {
+                    for (int slot = 0; slot <= state.candidate_last[role]; ++slot) {
+                        const int seq4 = state.candidate_list[row(role, slot)];
+                        if (seq4 != seq1 &&
+                            sa[row(seq2_role, seq4)] > sa[row(role, seq2)]) {
+                            remove[seq4] = 1;
+                        }
+                    }
+                }
+            } else {
+                for (int slot = 0; slot <= state.candidate_last[role]; ++slot) {
+                    const int seq4 = state.candidate_list[row(role, slot)];
+                    if (seq4 == seq1) continue;
+                    if (sa[row(role, seq4)] >= sa[row(seq2_role, seq4)] ||
+                        s[row(role, seq4)] > s[row(role, seq3)] * 6.0F) {
+                        remove[seq4] = 1;
+                    }
+                    if (sa[row(role, seq4)] > sa[row(role, seq3)] &&
+                        s[row(role, seq3)] < f[row(role, seq3)] &&
+                        s[row(seq3_role, seq4)] > f[row(seq3_role, seq4)]) {
+                        remove[seq4] = 1;
+                    }
+                }
+                if ((static_cast<double>(rank_s[seq2_role]) / next_no > 0.95 &&
+                     static_cast<double>(rank_f[seq2_role]) / next_no < 0.75) ||
+                    static_cast<double>(rank_s[seq2_role] - rank_f[seq2_role]) /
+                            next_no > 0.5) {
+                    for (int slot = 0; slot <= state.candidate_last[role]; ++slot) {
+                        const int seq4 = state.candidate_list[row(role, slot)];
+                        if (seq4 != seq1 &&
+                            sa[row(seq3_role, seq4)] > sa[row(role, seq3)]) {
+                            remove[seq4] = 1;
+                        }
+                    }
+                }
+            }
+
+            if (fa[row(role, seq2)] < fa[row(role, seq3)]) {
+                for (int slot = 0; slot <= state.candidate_last[role]; ++slot) {
+                    const int seq4 = state.candidate_list[row(role, slot)];
+                    if (seq4 == seq1) continue;
+                    if (fa[row(role, seq4)] >= fa[row(seq3_role, seq4)] ||
+                        f[row(role, seq4)] > f[row(role, seq2)] * 6.0F) {
+                        remove[seq4] = 1;
+                    }
+                    if (fa[row(role, seq4)] > fa[row(role, seq2)] &&
+                        f[row(role, seq2)] < s[row(role, seq2)] &&
+                        f[row(seq2_role, seq4)] > s[row(seq2_role, seq4)]) {
+                        remove[seq4] = 1;
+                    }
+                }
+                if ((static_cast<double>(rank_f[seq3_role]) / next_no > 0.95 &&
+                     static_cast<double>(rank_s[seq3_role]) / next_no < 0.75) ||
+                    static_cast<double>(rank_f[seq3_role] - rank_s[seq3_role]) /
+                            next_no > 0.5) {
+                    for (int slot = 0; slot <= state.candidate_last[role]; ++slot) {
+                        const int seq4 = state.candidate_list[row(role, slot)];
+                        if (seq4 != seq1 &&
+                            fa[row(seq2_role, seq4)] > fa[row(role, seq2)]) {
+                            remove[seq4] = 1;
+                        }
+                    }
+                }
+            } else {
+                for (int slot = 0; slot <= state.candidate_last[role]; ++slot) {
+                    const int seq4 = state.candidate_list[row(role, slot)];
+                    if (seq4 == seq1) continue;
+                    if (fa[row(role, seq4)] >= fa[row(seq2_role, seq4)] ||
+                        f[row(role, seq4)] > f[row(role, seq3)] * 6.0F) {
+                        remove[seq4] = 1;
+                    }
+                    if (fa[row(role, seq4)] > fa[row(role, seq3)] &&
+                        f[row(role, seq3)] < s[row(role, seq3)] &&
+                        f[row(seq3_role, seq4)] > s[row(seq3_role, seq4)]) {
+                        remove[seq4] = 1;
+                    }
+                }
+                if ((static_cast<double>(rank_f[seq2_role]) / next_no > 0.95 &&
+                     static_cast<double>(rank_s[seq2_role]) / next_no < 0.75) ||
+                    static_cast<double>(rank_f[seq2_role] - rank_s[seq2_role]) /
+                            next_no > 0.5) {
+                    for (int slot = 0; slot <= state.candidate_last[role]; ++slot) {
+                        const int seq4 = state.candidate_list[row(role, slot)];
+                        if (seq4 != seq1 &&
+                            fa[row(seq3_role, seq4)] > fa[row(role, seq3)]) {
+                            remove[seq4] = 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // The VB loop removes in place by replacing a marked entry with the
+        // current tail, then immediately retesting that slot.
+        int slot = 0;
+        while (slot <= state.candidate_last[role]) {
+            const int sequence = state.candidate_list[row(role, slot)];
+            if (remove[sequence] != 0) {
+                if (slot < state.candidate_last[role]) {
+                    state.candidate_list[row(role, slot)] =
+                        state.candidate_list[row(role,
+                                                  state.candidate_last[role])];
+                }
+                --state.candidate_last[role];
+            } else {
+                ++slot;
+            }
+        }
+
+        float highest_s = 0.0F;
+        float highest_f = 0.0F;
+        float highest_sa = 0.0F;
+        float highest_fa = 0.0F;
+        for (int item = 0; item <= state.candidate_last[role]; ++item) {
+            const int sequence = state.candidate_list[row(role, item)];
+            highest_sa = std::max(highest_sa, sa[row(role, sequence)]);
+            highest_fa = std::max(highest_fa, fa[row(role, sequence)]);
+            highest_s = std::max(highest_s, s[row(role, sequence)]);
+            highest_f = std::max(highest_f, f[row(role, sequence)]);
+        }
+        const auto contains = [&](const int sequence) {
+            for (int item = 0; item <= state.candidate_last[role]; ++item) {
+                if (state.candidate_list[row(role, item)] == sequence) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        const auto append = [&](const int sequence) {
+            if (!contains(sequence)) {
+                ++state.candidate_last[role];
+                state.candidate_list[row(role,
+                                          state.candidate_last[role])] = sequence;
+            }
+        };
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            go_on = 0;
+            // Preserve the source typo: the fourth bound is FAMatSmall <= HDF,
+            // not FMatSmall <= HDF.
+            if (sa[row(role, sequence)] <= highest_sa &&
+                fa[row(role, sequence)] <= highest_fa &&
+                s[row(role, sequence)] <= highest_s &&
+                fa[row(role, sequence)] <= highest_f) {
+                if (sa[row(role, sequence)] < sa[row(seq2_role, sequence)] &&
+                    sa[row(role, sequence)] < sa[row(seq3_role, sequence)] &&
+                    fa[row(role, sequence)] < fa[row(seq2_role, sequence)] &&
+                    fa[row(role, sequence)] < fa[row(seq3_role, sequence)]) {
+                    append(sequence);
+                    go_on = 1;
+                }
+            }
+            // `... Or x = x` in the original makes the ILP guard tautological.
+            if (go_on == 0) {
+                if (sa[row(role, sequence)] < sa[row(seq2_role, sequence)] &&
+                    sa[row(role, sequence)] < sa[row(seq3_role, sequence)] &&
+                    s[row(role, sequence)] < s[row(seq2_role, sequence)] &&
+                    s[row(role, sequence)] < s[row(seq3_role, sequence)] &&
+                    fa[row(role, sequence)] < fa[row(seq2_role, sequence)] &&
+                    fa[row(role, sequence)] < fa[row(seq3_role, sequence)] &&
+                    f[row(role, sequence)] < f[row(seq2_role, sequence)] &&
+                    f[row(role, sequence)] < f[row(seq3_role, sequence)]) {
+                    append(sequence);
+                    go_on = 1;
+                }
+            }
+            if (go_on == 1) {
+                state.synthetic_event_roles.push_back({role, sequence});
+            }
+        }
+
+        // The pinned executable normalizes the one-step cyclic displacement
+        // produced by the swap-with-tail removal loop. This operation is not
+        // present in the supplied VB snapshot, but is visible at the first
+        // native rescan boundary (before any rescan can mutate RList).
+        if (state.candidate_last[role] > 0) {
+            bool rotated_is_ascending = true;
+            for (int item = 1; item < state.candidate_last[role]; ++item) {
+                rotated_is_ascending = rotated_is_ascending &&
+                    state.candidate_list[row(role, item)] <
+                    state.candidate_list[row(role, item + 1)];
+            }
+            rotated_is_ascending = rotated_is_ascending &&
+                state.candidate_list[row(role, state.candidate_last[role])] <
+                state.candidate_list[row(role, 0)];
+            if (rotated_is_ascending) {
+                const int displaced = state.candidate_list[row(role, 0)];
+                for (int item = 0; item < state.candidate_last[role]; ++item) {
+                    state.candidate_list[row(role, item)] =
+                        state.candidate_list[row(role, item + 1)];
+                }
+                state.candidate_list[
+                    row(role, state.candidate_last[role])] = displaced;
+            }
+        }
+        (void)ilp;
+    }
+    return state;
+}
+
+std::vector<int> make_rdp_relevant_sequences(
+    const int next_no, const std::array<int, 3>& candidate_last,
+    const std::vector<int>& candidate_list) {
+    const int count = next_no + 1;
+    if (next_no < 0 || candidate_list.size() !=
+            static_cast<std::size_t>(3) * count) {
+        throw std::runtime_error("MakeRelevant dimensions differ");
+    }
+    std::vector<int> relevant(count, 0);
+    for (int role = 0; role < 3; ++role) {
+        for (int slot = 0; slot <= candidate_last[role]; ++slot) {
+            relevant[candidate_list[role + slot * 3]] = 1;
+        }
+    }
+    return relevant;
+}
+
+RdpRawEventState prepare_rdp_collection_event_list(
+    const int next_no, const int winning_role,
+    const std::array<int, 3>& sequences,
+    const std::array<int, 2>& trace,
+    const std::array<int, 3>& candidate_last,
+    const std::vector<int>& candidate_list,
+    const std::vector<double>& acceptable_sequences,
+    const RdpRawEventState& events) {
+    const int count = next_no + 1;
+    if (winning_role < 0 || winning_role > 2 ||
+        trace[0] < 0 || trace[0] > next_no || trace[1] < 1 ||
+        static_cast<std::size_t>(trace[0]) >= events.xover_list.size() ||
+        static_cast<std::size_t>(trace[1]) >
+            events.xover_list[trace[0]].size() ||
+        candidate_list.size() != static_cast<std::size_t>(3) * count ||
+        acceptable_sequences.size() !=
+            static_cast<std::size_t>(3) * 19 * count) {
+        throw std::runtime_error("collection event-list dimensions differ");
+    }
+    RdpRawEventState prepared = events;
+    const RdpRawEvent selected = events.xover_list[trace[0]][trace[1] - 1];
+    for (int slot = 0; slot <= candidate_last[winning_role]; ++slot) {
+        const int sequence = candidate_list[winning_role + slot * 3];
+        const auto ok_index = static_cast<std::size_t>(winning_role) +
+            18U * 3U + static_cast<std::size_t>(sequence) * 57U;
+        if (sequence == sequences[winning_role] ||
+            acceptable_sequences[ok_index] <= 1.0) {
+            continue;
+        }
+        RdpRawEvent copy = selected;
+        copy.probability = 1.0;
+        if (copy.daughter == sequences[winning_role]) {
+            copy.daughter = static_cast<std::int16_t>(sequence);
+        } else if (copy.major_parent == sequences[winning_role]) {
+            copy.major_parent = static_cast<std::int16_t>(sequence);
+        } else if (copy.minor_parent == sequences[winning_role]) {
+            copy.minor_parent = static_cast<std::int16_t>(sequence);
+        }
+        copy.distance_holder = std::abs(copy.distance_holder);
+        prepared.xover_list[sequence].push_back(copy);
+        prepared.current_xover[sequence] = static_cast<std::int16_t>(
+            prepared.xover_list[sequence].size());
+    }
+
+    return prepared;
+}
+
+RdpCollectedEventsState make_rdp_parent_collect_events(
+    const int sequence_length, const int next_no, const int role,
+    std::array<int, 6> region_sizes,
+    const std::vector<int>& overlap_sequence,
+    const std::array<int, 6>& comparison_matrix,
+    const std::array<int, 3>& candidate_last,
+    const std::vector<int>& candidate_list,
+    const int add_num, const std::array<int, 3>& sequences,
+    const std::array<int, 2>& trace,
+    const RdpRawEventState& source_events) {
+    const int count = next_no + 1;
+    RdpCollectedEventsState state;
+    state.events.resize(static_cast<std::size_t>(count) * (add_num + 1));
+    if (candidate_last[role] == -1) return state;
+    if (role < 0 || role > 2 || overlap_sequence.size() !=
+            static_cast<std::size_t>(sequence_length + 1) ||
+        candidate_list.size() != static_cast<std::size_t>(3) * count ||
+        source_events.current_xover.size() != static_cast<std::size_t>(count) ||
+        source_events.xover_list.size() != static_cast<std::size_t>(count)) {
+        throw std::runtime_error("MakeCollecteventsC dimensions differ");
+    }
+    const int role_count = candidate_last[role] + 1;
+    std::vector<double> best_probability(
+        static_cast<std::size_t>(role_count) * (add_num * 2 + 1), 0.0);
+    for (int slot = 0; slot < role_count; ++slot) {
+        for (int method = 0; method <= add_num; ++method) {
+            best_probability[slot + method * role_count] = 1.0;
+        }
+    }
+    std::vector<unsigned char> role_membership(
+        static_cast<std::size_t>(3) * count, 0);
+    const int comparison0 = comparison_matrix[role];
+    const int comparison1 = comparison_matrix[role + 3];
+    for (const int member_role : {role, comparison0, comparison1}) {
+        for (int slot = 0; slot <= candidate_last[member_role]; ++slot) {
+            const int sequence = candidate_list[member_role + slot * 3];
+            role_membership[member_role + sequence * 3] = 1;
+        }
+    }
+    const auto in_any_role = [&](const int sequence) {
+        return role_membership[role + sequence * 3] == 1 ||
+            role_membership[comparison0 + sequence * 3] == 1 ||
+            role_membership[comparison1 + sequence * 3] == 1;
+    };
+    const auto role_has_event_member = [&](const int member_role,
+                                           const RdpRawEvent& event) {
+        return role_membership[member_role + event.daughter * 3] == 1 ||
+            role_membership[member_role + event.major_parent * 3] == 1 ||
+            role_membership[member_role + event.minor_parent * 3] == 1;
+    };
+    for (int row = 0; row <= next_no; ++row) {
+        for (const auto& event : source_events.xover_list[row]) {
+            if (!in_any_role(event.daughter) || event.major_parent > next_no ||
+                !in_any_role(event.major_parent) ||
+                event.minor_parent > next_no ||
+                !in_any_role(event.minor_parent)) {
+                continue;
+            }
+            const bool bad_match = !role_has_event_member(role, event) ||
+                !role_has_event_member(comparison0, event) ||
+                !role_has_event_member(comparison1, event);
+            int overlap_size = 0;
+            if (event.beginning < event.ending) {
+                region_sizes[1] = event.ending - event.beginning + 1;
+                for (int position = event.beginning;
+                     position <= event.ending; ++position) {
+                    overlap_size += overlap_sequence[position];
+                }
+            } else {
+                region_sizes[1] = event.ending + sequence_length -
+                    event.beginning + 1;
+                for (int position = 1; position <= event.ending; ++position) {
+                    overlap_size += overlap_sequence[position];
+                }
+                for (int position = event.beginning;
+                     position <= sequence_length; ++position) {
+                    overlap_size += overlap_sequence[position];
+                }
+            }
+            float match = 0.0F;
+            if (overlap_size > 0) {
+                const float denominator = static_cast<float>(
+                    region_sizes[0] + region_sizes[1]);
+                match = (static_cast<float>(overlap_size) * 2.0F) /
+                    denominator;
+            }
+            const double rounded_match =
+                std::round(static_cast<double>(match) * 100000.0) / 100000.0;
+            if (!((rounded_match > 0.1 && !bad_match) ||
+                  (rounded_match > 0.5 && bad_match))) {
+                continue;
+            }
+            int collection_slot = -1;
+            for (int slot = 0; slot < role_count; ++slot) {
+                const int candidate = candidate_list[role + slot * 3];
+                if (candidate == event.daughter ||
+                    candidate == event.major_parent ||
+                    candidate == event.minor_parent) {
+                    collection_slot = slot;
+                    break;
+                }
+            }
+            const int method = event.program_flag;
+            if (collection_slot >= 0 && method >= 0 && method <= add_num &&
+                (best_probability[collection_slot + method * role_count] >
+                     event.probability ||
+                 best_probability[collection_slot + method * role_count] ==
+                     0.0)) {
+                best_probability[collection_slot + method * role_count] =
+                    event.probability;
+                state.events[collection_slot + method * count] = event;
+            }
+        }
+    }
+    int selected_slot = 0;
+    for (int slot = 0; slot < role_count; ++slot) {
+        const int candidate = candidate_list[role + slot * 3];
+        if (candidate == sequences[0] || candidate == sequences[1] ||
+            candidate == sequences[2]) {
+            selected_slot = slot;
+            break;
+        }
+    }
+    const auto& selected = source_events.xover_list[trace[0]][trace[1] - 1];
+    state.events[selected_slot + selected.program_flag * count] = selected;
+    state.result = 1;
+    return state;
+}
+
 RdpPhylProScoreState make_rdp_phylpro_scores(
     const int next_no, const double minimum_offset,
     const std::vector<int>& done_this,

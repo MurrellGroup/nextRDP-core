@@ -48,6 +48,8 @@ outputs use the user's accepted platform-math tolerance when Windows and WASM
 | 39 | `FinalTrim` candidate maintenance | first retrim path from fresh local-RDP runs on all ten datasets | exact active candidate bounds and membership on every dataset that retrims |
 | 40 | `MakeVarMap2` / `MakeCntHit2` / `CalcMatchY` | native DLL trace plus connected first-event path | byte-identical hit products and breakpoint smoothing state; both native grouping-threshold branches ported |
 | 41 | `ConsensusOK` | post-retrim candidate state from fresh local-RDP runs on all ten datasets | exact active candidate bounds, membership, and list order |
+| 42 | second `FinalTrim` strict-group block | first-event path from fresh local-RDP runs on all ten datasets | exact active candidate bounds, list order, synthetic RDP group records, and RDP rescan tail |
+| 43 | `MakeRelevant` / `MakeCollecteventsC` | both parent calls for the first event from fresh local-RDP runs on all ten datasets | exact relevant membership, nonblank RDP working records, per-row counts, and collected parent-event outputs; accepted platform-math tolerance for p-values |
 
 The live `AlistRDP4` fixture covers 2,300 triplets and changes 709 redo states.
 Because the exact C++ implementation calls `FastRecCheckPB` internally, that
@@ -172,3 +174,12 @@ The connected first-event path now also ports `MakeSSDistB`, `SimpleDist`,
 raw consensus scores and selected recombinant role agree on all ten. The CSV
 oracle is used only as a boundary assertion; no value from it drives the
 connected consensus calculation.
+
+The first-event path now continues through the second, strict-group
+`FinalTrim`, its synthetic group-member records and relaxed primary-RDP
+rescans, `MakeRelevant`, and both parent-role `MakeCollecteventsC` calls.
+Every discrete RDP record and collected event agrees across all ten datasets.
+Native zero-filled slots created by disabled-method bookkeeping are excluded
+from the RDP-event fixture because they contain no event and cannot overlap a
+real interval. The enclosing post-event sequence-mutation and cyclic rescan
+loop remains the next parity boundary.

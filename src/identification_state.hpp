@@ -238,6 +238,7 @@ struct RdpFinalTrimState {
     std::array<int, 3> nonrecombinant_last{};
     std::vector<int> nonrecombinant_list;
     std::vector<double> acceptable_sequences;
+    std::vector<std::array<int, 2>> synthetic_event_roles;
 };
 
 RdpFinalTrimState run_rdp_final_trim_candidate_maintenance(
@@ -412,6 +413,46 @@ RdpListCorrelationState calculate_rdp_list_correlations(
     const std::vector<float>& tested_correlations,
     const std::vector<float>& background_ancestor_rows,
     const std::vector<float>& region_ancestor_rows);
+
+RdpFinalTrimState apply_rdp_strict_group_constraints(
+    int next_no, const std::array<int, 3>& sequences,
+    const std::array<int, 6>& comparison_matrix,
+    const std::vector<float>& background_matrix,
+    const std::vector<float>& region_matrix,
+    const std::vector<float>& background_rows,
+    const std::vector<float>& region_rows,
+    const std::vector<float>& background_ancestor_rows,
+    const std::vector<float>& region_ancestor_rows,
+    RdpFinalTrimState state);
+
+std::vector<int> make_rdp_relevant_sequences(
+    int next_no, const std::array<int, 3>& candidate_last,
+    const std::vector<int>& candidate_list);
+
+RdpRawEventState prepare_rdp_collection_event_list(
+    int next_no, int winning_role,
+    const std::array<int, 3>& sequences,
+    const std::array<int, 2>& trace,
+    const std::array<int, 3>& candidate_last,
+    const std::vector<int>& candidate_list,
+    const std::vector<double>& acceptable_sequences,
+    const RdpRawEventState& events);
+
+struct RdpCollectedEventsState {
+    int result{};
+    std::vector<RdpRawEvent> events;
+};
+
+RdpCollectedEventsState make_rdp_parent_collect_events(
+    int sequence_length, int next_no, int role,
+    std::array<int, 6> region_sizes,
+    const std::vector<int>& overlap_sequence,
+    const std::array<int, 6>& comparison_matrix,
+    const std::array<int, 3>& candidate_last,
+    const std::vector<int>& candidate_list,
+    int add_num, const std::array<int, 3>& sequences,
+    const std::array<int, 2>& trace,
+    const RdpRawEventState& source_events);
 
 RdpTreeCompatibilityCallState make_rdp_tree_compatibility_call(
     int next_no, const std::array<int, 3>& sequences,

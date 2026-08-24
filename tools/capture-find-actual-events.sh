@@ -9,6 +9,7 @@ trace_path="$workspace_dir/sandbox/native-trace/find-actual-events-trace.bin"
 strip_trace_path="$workspace_dir/sandbox/native-trace/strip-dup-inv-trace.bin"
 rcompat_trace_path="$workspace_dir/sandbox/native-trace/rcompat-trace-current-d0.bin"
 collect_trace_path="$workspace_dir/sandbox/native-trace/collectevents-boundary.bin"
+collect_input_trace_path="$workspace_dir/sandbox/native-trace/collectevents-input-records.bin"
 phpr_trace_path="$workspace_dir/sandbox/native-trace/make-phpr-trace.bin"
 done_trace_path="$workspace_dir/sandbox/native-trace/make-done-this3-trace.bin"
 trp_group_trace_path="$workspace_dir/sandbox/native-trace/make-trp-groups2-trace.bin"
@@ -33,6 +34,7 @@ touch "$trace_path"
 touch "$strip_trace_path"
 touch "$rcompat_trace_path"
 touch "$collect_trace_path"
+touch "$collect_input_trace_path"
 touch "$phpr_trace_path"
 touch "$done_trace_path" "$trp_group_trace_path" "$trp_score_trace_path"
 touch "$check_pattern_trace_path"
@@ -45,6 +47,7 @@ for number in $dataset_numbers; do
   strip_before=$(stat -c %s "$strip_trace_path")
   rcompat_before=$(stat -c %s "$rcompat_trace_path")
   collect_before=$(stat -c %s "$collect_trace_path")
+  collect_input_before=$(stat -c %s "$collect_input_trace_path")
   phpr_before=$(stat -c %s "$phpr_trace_path")
   done_before=$(stat -c %s "$done_trace_path")
   trp_group_before=$(stat -c %s "$trp_group_trace_path")
@@ -61,6 +64,7 @@ for number in $dataset_numbers; do
   strip_after=$(stat -c %s "$strip_trace_path")
   rcompat_after=$(stat -c %s "$rcompat_trace_path")
   collect_after=$(stat -c %s "$collect_trace_path")
+  collect_input_after=$(stat -c %s "$collect_input_trace_path")
   phpr_after=$(stat -c %s "$phpr_trace_path")
   done_after=$(stat -c %s "$done_trace_path")
   trp_group_after=$(stat -c %s "$trp_group_trace_path")
@@ -81,6 +85,10 @@ for number in $dataset_numbers; do
   fi
   if [[ $collect_after -le $collect_before ]]; then
     printf 'no MakeCollecteventsC boundary captured for %s\n' "$dataset" >&2
+    exit 1
+  fi
+  if [[ $collect_input_after -le $collect_input_before ]]; then
+    printf 'no MakeCollecteventsC input records captured for %s\n' "$dataset" >&2
     exit 1
   fi
   if [[ $phpr_after -le $phpr_before ]]; then
@@ -124,9 +132,14 @@ for number in $dataset_numbers; do
     of="$capture_dir/$dataset-collectevents-boundary.bin" \
     bs=1 skip="$collect_before" count="$((collect_after-collect_before))" \
     status=none
+  dd if="$collect_input_trace_path" \
+    of="$capture_dir/$dataset-collectevents-input-records.bin" \
+    bs=1 skip="$collect_input_before" \
+    count="$((collect_input_after-collect_input_before))" status=none
   "$node_bin" "$project_dir/tools/convert-collectevents-boundary.mjs" \
     "$capture_dir/$dataset-collectevents-boundary.bin" \
-    "$capture_dir/$dataset-collectevents-v1.bin"
+    "$capture_dir/$dataset-collectevents-v1.bin" \
+    "$capture_dir/$dataset-collectevents-input-records.bin"
   dd if="$phpr_trace_path" \
     of="$capture_dir/$dataset-phpr-trace.bin" \
     bs=1 skip="$phpr_before" count="$((phpr_after-phpr_before))" \

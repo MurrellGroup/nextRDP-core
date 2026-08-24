@@ -134,7 +134,8 @@ RdpFirstXoverState build_rdp_first_xover_state(
     const RdpScanState& scan_state, const RdpDistanceState& distance_state,
     const RdpTreeState& tree_state, int triplet_index, int fss_ub,
     std::vector<unsigned char>& fss_rdp, int xover_window,
-    short xover_window_x, const Dna5XoverApi& api);
+    short xover_window_x, const Dna5XoverApi& api,
+    const std::array<int, 3>* explicit_sequences = nullptr);
 
 void define_rdp_first_xover_event(
     RdpFirstXoverState& state, const RdpScanState& scan_state,
@@ -182,4 +183,6 @@ RdpRawEventState scan_rdp_redo_triplets(
     const RdpProbabilitySettings& probability_settings,
     std::vector<double>& probability_estimate,
     std::vector<double>& fact_three, std::vector<double>& fact,
-    const Dna5XoverApi& api);
+    const Dna5XoverApi& api, int do_all = 0,
+    const RdpRawEventState* initial_events = nullptr,
+    const std::array<int, 3>* explicit_sequences = nullptr);
