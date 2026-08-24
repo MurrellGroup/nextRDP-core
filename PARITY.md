@@ -222,3 +222,13 @@ informative-site map according to `MCMaxY` and `LoHiFlag`, conditionally
 polishes both endpoints, and recentres them. Dataset0's complete initial
 RDP+GENECONV+MAXCHI stream is now exact in total, row counts, structural
 identity, and probability.
+
+Fresh mixed-method fixtures now cover all ten demos and can be checked with
+`tools/check-all-rdp-geneconv-maxchi-parity.sh`. Dataset0, Dataset2, and
+Dataset7 are completely exact. Current signal totals are: Dataset0
+2,034/2,034; Dataset1 1,061/1,062; Dataset2 1,457/1,457; Dataset3
+1,741/1,744; Dataset4 1,103/1,104; Dataset5 4,310/4,313; Dataset6
+8,045/8,045; Dataset7 4,672/4,672; Dataset8 5,318/5,326; and Dataset9
+5,763/5,764. Dataset6 has equal totals but 8,010 of 8,044 comparable
+structural identities; the other non-passing datasets still have one to eight
+missing signals plus later coordinate differences.
