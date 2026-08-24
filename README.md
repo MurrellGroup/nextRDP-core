@@ -1,6 +1,6 @@
-# nextRDP core parity port
+# nextRDP core
 
-This directory deliberately contains no UI. It has three layers:
+This repository contains the source-faithful, WASM-compatible nextRDP computational core. It deliberately contains no UI and has three layers:
 
 1. `vendor/dna5`: the exact supplied C++ computational source.
 2. `src`: a WASM-compatible command-line orchestration port of the VB execution path.
