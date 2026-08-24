@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(next_rdp_core_parity LANGUAGES CXX)
+project(next_rdp_core LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -19,11 +19,10 @@ target_compile_options(rdp_dna5_exact PRIVATE
     -Wno-deprecated-volatile
 )
 
-add_executable(rdp-core
+add_library(next_rdp_core STATIC
     src/distance_state.cpp
     src/identification_state.cpp
     src/legacy_method_state.cpp
-    src/main.cpp
     src/mutation_state.cpp
     src/rescan_schedule.cpp
     src/round_state.cpp
@@ -32,8 +31,15 @@ add_executable(rdp-core
     src/three_seq_state.cpp
     src/xover_state.cpp
 )
+target_include_directories(next_rdp_core
+    PUBLIC src
+    PRIVATE include vendor/dna5
+)
+target_link_libraries(next_rdp_core PUBLIC rdp_dna5_exact)
+
+add_executable(rdp-core src/main.cpp)
 target_include_directories(rdp-core PRIVATE include vendor/dna5 tests)
-target_link_libraries(rdp-core PRIVATE rdp_dna5_exact)
+target_link_libraries(rdp-core PRIVATE next_rdp_core)
 
 if(EMSCRIPTEN)
     # The pinned 32-bit build evaluates source float expressions through the
@@ -45,6 +51,9 @@ if(EMSCRIPTEN)
     # VB6 and the legacy DNA.dll source use the same 32-bit x87 evaluation
     # model in the pinned oracle. The orchestration port contains scalar
     # bodies from both, so it must use that ABI as well.
+    target_compile_options(next_rdp_core PRIVATE
+        "-ffp-eval-method=extended"
+    )
     target_compile_options(rdp-core PRIVATE
         "-ffp-eval-method=extended"
     )

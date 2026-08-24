@@ -10,7 +10,7 @@ export LD_LIBRARY_PATH="$workspace_dir/software/cmake/usr/lib/x86_64-linux-gnu:$
 export EMSDK_QUIET=1
 source "$workspace_dir/software/emsdk/emsdk_env.sh" >/dev/null
 
-cmake -S "$project_dir" -B "$project_dir/build/wasm" >/dev/null
+emcmake cmake -S "$project_dir" -B "$project_dir/build/wasm" >/dev/null
 cmake --build "$project_dir/build/wasm" --parallel 1 >/dev/null
 
 failures=0
