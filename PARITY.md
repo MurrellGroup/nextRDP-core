@@ -192,6 +192,10 @@ The first-event path now continues through the second, strict-group
 `FinalTrim`, its synthetic group-member records and relaxed primary-RDP
 rescans, `MakeRelevant`, and both parent-role `MakeCollecteventsC` calls.
 Every discrete RDP record and collected event agrees across all ten datasets.
+The exact `AddjustCXO` redistribution boundary is now also a reusable library
+routine rather than fixture-runner-only code; its retained event matrix,
+done-state matrix, and pair-rescan schedule remain covered by the same ten
+dataset gate.
 Native zero-filled slots created by disabled-method bookkeeping are excluded
 from the RDP-event fixture because they contain no event and cannot overlap a
 real interval. The enclosing post-event sequence-mutation and cyclic rescan

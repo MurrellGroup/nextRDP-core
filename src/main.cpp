@@ -4832,7 +4832,7 @@ int fasta_all_redo_events_fixture(
         scan_state.next_no, expected_winner, h.lowest_probability,
         final_candidates.candidate_last, final_candidates.candidate_list,
         trace_sub, collection_event_list);
-    const auto redistributed = run_exact_addjust_cxo(
+    const auto redistributed = adjust_rdp_events_exact(
         scan_state.next_no, expected_winner, h.lowest_probability,
         final_candidates.candidate_last, final_candidates.candidate_list,
         trace_sub, collection_event_list, generated_done,
@@ -5280,7 +5280,8 @@ int fasta_all_redo_events_fixture(
             second_done[
                 row + slot * (native_second_make_test.done_row_ub + 1)] =
                 redistributed.done_sequence[
-                    row + slot * (redistributed.done_row_ub + 1)];
+                    row + slot *
+                        (redistributed.done_row_upper_bound + 1)];
         }
     }
     auto second_current_xover = post_rescan_events.current_xover;

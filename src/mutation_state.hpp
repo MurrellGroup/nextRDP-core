@@ -57,6 +57,24 @@ struct RdpRedistributedEvents {
     std::array<int, 101> event_counts{};
 };
 
+struct RdpAdjustedEvents {
+    RdpRawEventState events;
+    std::vector<unsigned char> done_sequence;
+    int done_row_upper_bound = 0;
+    int done_slot_upper_bound = 0;
+    std::vector<unsigned char> pairs_to_rescan;
+};
+
+RdpAdjustedEvents adjust_rdp_events_exact(
+    int next_no, int winning_role, double lowest_probability,
+    const std::array<int, 3>& candidate_last,
+    const std::vector<int>& candidate_list,
+    const std::vector<int>& trace_sub,
+    const RdpRawEventState& source_events,
+    const std::vector<unsigned char>& source_done,
+    int source_done_row_upper_bound,
+    int source_done_slot_upper_bound);
+
 struct RdpDroppedFragmentEvents {
     int next_no = -1;
     RdpRawEventState events;

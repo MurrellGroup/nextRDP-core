@@ -1,9 +1,55 @@
 #include "mutation_state.hpp"
 
+#include "MathFuncsDll.h"
+
 #include <algorithm>
 #include <stdexcept>
 
 namespace {
+
+XOVERDEFINE to_dna_event(const RdpRawEvent& source) {
+    XOVERDEFINE event{};
+    event.OutsideFlag = source.outside_flag;
+    event.MissIdentifyFlag = source.misidentify_flag;
+    event.ProgramFlag = source.program_flag;
+    event.SBPFlag = source.sbp_flag;
+    event.Accept = source.accept;
+    event.MajorP = source.major_parent;
+    event.MinorP = source.minor_parent;
+    event.Daughter = source.daughter;
+    event.Beginning = source.beginning;
+    event.Ending = source.ending;
+    event.LHolder = source.length_holder;
+    event.Eventnumber = source.event_number;
+    event.PermPVal = source.permutation_pvalue;
+    event.BeginP = source.begin_parent;
+    event.EndP = source.end_parent;
+    event.Probability = source.probability;
+    event.DHolder = source.distance_holder;
+    return event;
+}
+
+RdpRawEvent from_dna_event(const XOVERDEFINE& source) {
+    RdpRawEvent event;
+    event.outside_flag = source.OutsideFlag;
+    event.misidentify_flag = source.MissIdentifyFlag;
+    event.program_flag = source.ProgramFlag;
+    event.sbp_flag = source.SBPFlag;
+    event.accept = source.Accept;
+    event.major_parent = source.MajorP;
+    event.minor_parent = source.MinorP;
+    event.daughter = source.Daughter;
+    event.beginning = source.Beginning;
+    event.ending = source.Ending;
+    event.length_holder = source.LHolder;
+    event.event_number = source.Eventnumber;
+    event.permutation_pvalue = source.PermPVal;
+    event.begin_parent = source.BeginP;
+    event.end_parent = source.EndP;
+    event.probability = source.Probability;
+    event.distance_holder = source.DHolder;
+    return event;
+}
 
 std::size_t sequence_cell(const int sequence_length, const int position,
                           const int sequence) {
@@ -27,6 +73,87 @@ void validate_candidate_state(const int next_no, const int winning_role,
 }
 
 }  // namespace
+
+RdpAdjustedEvents adjust_rdp_events_exact(
+    const int next_no, const int winning_role,
+    const double lowest_probability,
+    const std::array<int, 3>& candidate_last,
+    const std::vector<int>& candidate_list,
+    const std::vector<int>& trace_sub,
+    const RdpRawEventState& source_events,
+    const std::vector<unsigned char>& source_done,
+    const int source_done_row_upper_bound,
+    const int source_done_slot_upper_bound) {
+    const int row_count = next_no + 1;
+    int source_slot_upper_bound = 1;
+    for (const auto& row : source_events.xover_list) {
+        source_slot_upper_bound = std::max<int>(
+            source_slot_upper_bound, row.size());
+    }
+    const int output_slot_upper_bound = source_slot_upper_bound + 4;
+    std::vector<XOVERDEFINE> source_matrix(
+        static_cast<std::size_t>(row_count) *
+        (source_slot_upper_bound + 1));
+    auto source_current = source_events.current_xover;
+    source_current.resize(row_count, 0);
+    for (int row = 0; row <= next_no; ++row) {
+        if (row >= static_cast<int>(source_events.xover_list.size())) continue;
+        for (std::size_t slot = 0;
+             slot < source_events.xover_list[row].size(); ++slot) {
+            source_matrix[row + (slot + 1) * row_count] =
+                to_dna_event(source_events.xover_list[row][slot]);
+        }
+    }
+    std::vector<unsigned char> aligned_done(
+        static_cast<std::size_t>(row_count) *
+        (source_slot_upper_bound + 1), 0);
+    const int copy_slots = std::min(
+        source_slot_upper_bound, source_done_slot_upper_bound);
+    const int copy_rows = std::min(
+        next_no, source_done_row_upper_bound);
+    for (int slot = 0; slot <= copy_slots; ++slot) {
+        for (int row = 0; row <= copy_rows; ++row) {
+            aligned_done[row + slot * row_count] = source_done[
+                row + slot * (source_done_row_upper_bound + 1)];
+        }
+    }
+
+    RdpAdjustedEvents output;
+    output.done_row_upper_bound = next_no;
+    output.done_slot_upper_bound = output_slot_upper_bound;
+    output.done_sequence.assign(
+        static_cast<std::size_t>(row_count) *
+        (output_slot_upper_bound + 1), 0);
+    output.pairs_to_rescan.assign(
+        static_cast<std::size_t>(row_count) * row_count, 0);
+    std::vector<std::int16_t> output_current(row_count, 0);
+    std::vector<XOVERDEFINE> output_matrix(
+        static_cast<std::size_t>(row_count) *
+        (output_slot_upper_bound + 1));
+    std::array<int, 101> event_counts{};
+    auto mutable_candidate_last = candidate_last;
+    auto mutable_candidate_list = candidate_list;
+    auto mutable_trace_sub = trace_sub;
+    MathFuncs::MyMathFuncs::AddjustCXO(
+        next_no, winning_role, lowest_probability,
+        next_no, source_slot_upper_bound, aligned_done.data(),
+        next_no, output_slot_upper_bound, output.done_sequence.data(),
+        event_counts.data(), mutable_candidate_last.data(),
+        mutable_candidate_list.data(), output.pairs_to_rescan.data(),
+        static_cast<int>(mutable_trace_sub.size()) - 1,
+        mutable_trace_sub.data(), output_current.data(), next_no,
+        output_slot_upper_bound, output_matrix.data(), source_current.data(),
+        next_no, source_slot_upper_bound, source_matrix.data());
+    output.events.current_xover = output_current;
+    output.events.xover_list.resize(row_count);
+    for (int row = 0; row <= next_no; ++row) {
+        for (int slot = 1; slot <= output_current[row]; ++slot) {
+            output.events.xover_list[row].push_back(from_dna_event(
+                output_matrix[row + slot * row_count]));
+        }
+    }
+    return output;
+}
 
 RdpErasedTracts erase_rdp_recombinant_tracts(
     const int sequence_length, const int winning_role,
