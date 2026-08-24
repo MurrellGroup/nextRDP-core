@@ -105,7 +105,10 @@ the exact native daughter, parents, centered breakpoints, program/SBP flags,
 and zero-initialized metadata at the first `MakeTestPVs` boundary. Every
 per-sequence `CurrentXOver` count also matches. The generated arrays then pass
 through the exact `MakeTestPVs` and `FindBestRecSignalP2` routines and select
-the same first event on all ten datasets. Run
+the same first event on all ten datasets. That selection is now exposed as a
+fixture-independent library routine, including the source's fallback from
+topology-changing (`DoneTarget=0`) to non-changing (`DoneTarget=1`) signals.
+Run
 `tools/check-all-event-state-parity.sh` for the current table. Probability
 cells retain the accepted Windows/WASM final-rounding differences and are not
 part of the structural identity gate.

@@ -28,6 +28,7 @@ add_library(next_rdp_core STATIC
     src/rescan_schedule.cpp
     src/round_state.cpp
     src/scan_state.cpp
+    src/selection_state.cpp
     src/tree_state.cpp
     src/three_seq_state.cpp
     src/xover_state.cpp

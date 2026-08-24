@@ -14,6 +14,7 @@
 #include "rescan_schedule.hpp"
 #include "round_state.hpp"
 #include "scan_state.hpp"
+#include "selection_state.hpp"
 #include "tree_state.hpp"
 #include "xover_state.hpp"
 
@@ -1734,10 +1735,14 @@ int fasta_all_redo_events_fixture(
         rdp_fixture_section<int>(find_best_fixture, 103);
     const auto native_find_best_result =
         rdp_fixture_section<int>(find_best_fixture, 106);
+    const auto reusable_selection = select_rdp_best_event(
+        events, scan_state.next_no, h.lowest_probability);
     const bool first_selection_matches =
         native_find_best_result.size() == 1 &&
         find_best_result == native_find_best_result[0] &&
-        trace == native_trace;
+        trace == native_trace && reusable_selection.trace[0] == trace[0] &&
+        reusable_selection.trace[1] == trace[1] &&
+        reusable_selection.probability == low_probability[0];
     const char ufdist_magic[8] = {
         'U', 'F', 'D', 'I', 'S', 'T', '\0', '\0'};
     const auto ufdist_fixture =
