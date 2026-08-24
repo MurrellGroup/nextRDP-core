@@ -376,6 +376,24 @@ int circular_position(int position, const int length) {
     return position;
 }
 
+// The 32-bit DNA.dll evaluates this integer-count chi expression in the x87
+// register stack before truncating chi*10000 to an int.  Keeping the rational
+// arithmetic exact reproduces that observable extended-precision boundary;
+// evaluating through a WebAssembly double can round an exact N/10 value just
+// below the integer and suppress a strict improvement.
+int legacy_chi_score_10000(const int a, const int c, const int window) {
+    const int b = window - a;
+    const int d = window - c;
+    if (a + c <= 0 || b + d <= 0) return 0;
+    const std::int64_t cross =
+        static_cast<std::int64_t>(a) * d -
+        static_cast<std::int64_t>(b) * c;
+    const std::int64_t numerator = cross * cross * 20000;
+    const std::int64_t denominator =
+        static_cast<std::int64_t>(a + c) * (b + d) * window;
+    return static_cast<int>(numerator / denominator);
+}
+
 // Module3.CentreBP with OBE=OEN=0 and SEventNumber=0, the initial-scan
 // branch. It centres each raw informative-site boundary in the flanking
 // invariant interval before MCXoverF stores the event.
@@ -428,7 +446,7 @@ void legacy_polish_maxchi_breakpoints(
     const std::vector<int>& difference_position,
     const std::vector<unsigned char>& missing_map,
     const std::vector<short>& sequence_data,
-    int& beginning, int& ending) {
+    int& beginning, int& ending, MaxchiPeakTrace* polish_trace) {
     int high_first = 0;
     int high_second = 0;
     if (comparison == 0) {
@@ -455,6 +473,7 @@ void legacy_polish_maxchi_breakpoints(
     int polished_ending = ending;
     int x = position_difference[region_start];
     if (x == 0) x = 1;
+    if (polish_trace) polish_trace->polish_begin_index = x;
     for (int guard = 0; guard <= informative * 2 + 2; ++guard) {
         if (low_high ? !equal_at(x) : equal_at(x)) break;
         --x;
@@ -467,11 +486,16 @@ void legacy_polish_maxchi_breakpoints(
         }
         if (x == position_difference[region_end]) { ++x; break; }
     }
+    if (polish_trace) polish_trace->polish_left_stop_index = x;
     region_start = difference_position[x];
     x = position_difference[region_start];
     for (int guard = 0; guard <= informative * 2 + 2; ++guard) {
         if (low_high ? equal_at(x) : !equal_at(x)) {
             polished_beginning = difference_position[x];
+            if (polish_trace) {
+                polish_trace->polish_begin_candidate_index = x;
+                polish_trace->polish_begin_candidate = polished_beginning;
+            }
             break;
         }
         ++x;
@@ -530,8 +554,10 @@ void legacy_polish_maxchi_breakpoints(
             std::abs(candidate_position - sequence_length) -
                     original_position < 5;
     };
-    if (near_original(polished_beginning, original_beginning))
+    if (near_original(polished_beginning, original_beginning)) {
         beginning = polished_beginning;
+        if (polish_trace) polish_trace->polish_begin_accepted = true;
+    }
     if (near_original(polished_ending, original_ending))
         ending = polished_ending;
 }
@@ -593,7 +619,8 @@ int legacy_opt_left(const int left, const double high_left, const int top_left,
                     const int maximum, const int comparison, const int window,
                     const int informative, const int sequence_length,
                     const std::vector<unsigned char>& scores,
-                    const std::vector<unsigned char>& missing_map) {
+                    const std::vector<unsigned char>& missing_map,
+                    MaxchiPeakTrace* trace) {
     const int offset = comparison * (sequence_length + 1);
     int outside = 0;
     for (int x = left - window; x <= left - 1; ++x)
@@ -604,6 +631,7 @@ int legacy_opt_left(const int left, const double high_left, const int top_left,
     double a = outside;
     double c = top_left;
     int best = static_cast<int>(high_left * 10000.0);
+    if (trace) trace->opt_initial_score = best;
     int best_position = m;
     int failures = 0;
     while (true) {
@@ -622,11 +650,15 @@ int legacy_opt_left(const int left, const double high_left, const int top_left,
         const double b = window - a;
         const double d = window - c;
         if (a + c > 0 && b + d > 0) {
-            const double cross = a * d - b * c;
-            const double value = cross * cross * 2.0 /
-                ((a + c) * (b + d) * window);
-            if (static_cast<int>(value * 10000.0) > best) {
-                best = static_cast<int>(value * 10000.0);
+            const int candidate = legacy_chi_score_10000(
+                static_cast<int>(a), static_cast<int>(c), window);
+            if (trace && trace->opt_first_position == 0) {
+                trace->opt_first_position = m;
+                trace->opt_first_score = candidate;
+                trace->opt_first_improved = trace->opt_first_score > best;
+            }
+            if (candidate > best) {
+                best = candidate;
                 best_position = m;
                 failures = 0;
             } else if (++failures > window / 10) break;
@@ -666,11 +698,10 @@ int legacy_opt_right(const int right, const double high_right,
         const double b = window - a;
         const double d = window - c;
         if (a + c > 0 && b + d > 0) {
-            const double cross = a * d - b * c;
-            const double value = cross * cross * 2.0 /
-                ((a + c) * (b + d) * window);
-            if (static_cast<int>(value * 10000.0) > best) {
-                best = static_cast<int>(value * 10000.0);
+            const int candidate = legacy_chi_score_10000(
+                static_cast<int>(a), static_cast<int>(c), window);
+            if (candidate > best) {
+                best = candidate;
                 best_position = m;
                 failures = 0;
             } else if (++failures > window / 10) break;
@@ -1288,7 +1319,8 @@ void run_rdp_maxchi_recheck(
                 low_high = top_right <= top_left;
                 left = legacy_opt_left(
                     left, high_left, top_left, maximum_position, comparison,
-                    best_window, informative, length, scores, missing_map);
+                    best_window, informative, length, scores, missing_map,
+                    trace ? &trace->back() : nullptr);
                 if (left > informative) left = 1;
                 if (left < 1) left += informative;
                 if (maximum_position < 1)
@@ -1345,11 +1377,20 @@ void run_rdp_maxchi_recheck(
                     beginning, ending, position_difference,
                     difference_position, length, informative,
                     settings.circular != 0);
+                if (trace) {
+                    trace->back().first_centered_beginning = beginning;
+                    trace->back().first_centered_ending = ending;
+                }
                 legacy_polish_maxchi_breakpoints(
                     comparison, low_high, sequences, length, informative,
                     settings.circular != 0, position_difference,
                     difference_position, missing_map,
-                    scan_state.sequence_data, beginning, ending);
+                    scan_state.sequence_data, beginning, ending,
+                    trace ? &trace->back() : nullptr);
+                if (trace) {
+                    trace->back().polished_beginning = beginning;
+                    trace->back().polished_ending = ending;
+                }
                 centre_initial_breakpoints(
                     beginning, ending, position_difference,
                     difference_position, length, informative,
@@ -1519,7 +1560,7 @@ void run_rdp_chimaera_recheck(
             if (high_left >= high_right) {
                 left = legacy_opt_left(left, high_left, top_left,
                     maximum_position, 0, best_window, informative,
-                    length, scores, missing_map);
+                    length, scores, missing_map, nullptr);
                 left = circular_position(left, informative);
                 right = circular_position(maximum_position - 1, informative);
                 ++right;

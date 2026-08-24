@@ -6138,8 +6138,21 @@ int fasta_geneconv_events_fixture(
                               << peak.chi_table_hash << ','
                               << peak.chi_map_hash << std::dec << " bp="
                               << peak.raw_beginning << ',' << peak.raw_ending
-                              << "->" << peak.centered_beginning << ','
-                              << peak.centered_ending << " delete="
+                              << "->" << peak.first_centered_beginning << ','
+                              << peak.first_centered_ending << "->"
+                              << peak.polished_beginning << ','
+                              << peak.polished_ending << "->"
+                              << peak.centered_beginning << ','
+                              << peak.centered_ending << " polish="
+                              << peak.polish_begin_index << ','
+                              << peak.polish_left_stop_index << ','
+                              << peak.polish_begin_candidate_index << ','
+                              << peak.polish_begin_candidate << ','
+                              << peak.polish_begin_accepted << " opt="
+                              << peak.opt_initial_score << ','
+                              << peak.opt_first_position << ','
+                              << peak.opt_first_score << ','
+                              << peak.opt_first_improved << " delete="
                               << peak.destroy_left << ','
                               << peak.destroy_right << '\n';
             }
