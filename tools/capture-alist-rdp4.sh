@@ -56,6 +56,10 @@ awk '
       print "    MakeTWinP=MakeTWinPCapture@16 " ordinal
     else if (name == "GrowMChiWinP2")
       print "    GrowMChiWinP2=GrowMChiWinP2Capture@84 " ordinal
+    else if (name == "GoRightP")
+      print "    GoRightP=GoRightPCapture@32 " ordinal
+    else if (name == "GoLeftP")
+      print "    GoLeftP=GoLeftPCapture@32 " ordinal
     else if (name == "MakeTestPVs")
       print "    MakeTestPVs=MakeTestPVsCapture@32 " ordinal
     else if (name == "FindBestRecSignalP2")

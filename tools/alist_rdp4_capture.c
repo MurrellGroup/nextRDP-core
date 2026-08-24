@@ -23,6 +23,7 @@ typedef int BOOL;
 #define FILE_SHARE_WRITE 0x00000002UL
 #define CREATE_ALWAYS 2UL
 #define OPEN_EXISTING 3UL
+#define OPEN_ALWAYS 4UL
 #define FILE_ATTRIBUTE_NORMAL 0x00000080UL
 #define FILE_END 2UL
 #define INVALID_HANDLE_VALUE ((HANDLE)(long)-1)
@@ -69,6 +70,8 @@ typedef int(STDCALL *MakeTWinPFn)(unsigned char, int, int *, int);
 typedef int(STDCALL *GrowMChiWinP2Fn)(
     int, int, int, int, int, int, int, int, int, int, int, double *, int *,
     double *, int *, int *, int *, int *, unsigned char *, float *, int *);
+typedef int(STDCALL *GoMissingFn)(
+    int, int, int, int, int, int, int, unsigned char *);
 
 typedef struct XOVERDEFINE {
   unsigned char OutsideFlag;
@@ -2457,4 +2460,62 @@ int STDCALL GrowMChiWinP2Capture(
     }
   }
   return result;
+}
+
+static int capture_go_missing(
+    int function, const char *name, GoMissingFn *original, int seq1, int seq2,
+    int seq3, int circular, int position, int sequence_length,
+    int missing_ub, unsigned char *missing_data) {
+  int record[12];
+  int result;
+  HANDLE file;
+  if (!*original) {
+    HMODULE module = LoadLibraryA("DNA5_original.dll");
+    if (module) *original = (GoMissingFn)GetProcAddress(module, name);
+  }
+  if (!*original) return 0;
+  result = (*original)(
+      seq1, seq2, seq3, circular, position, sequence_length, missing_ub,
+      missing_data);
+  record[0] = function;
+  record[1] = maxchi_invocation;
+  record[2] = seq1;
+  record[3] = seq2;
+  record[4] = seq3;
+  record[5] = circular;
+  record[6] = position;
+  record[7] = result;
+  record[8] = sequence_length;
+  record[9] = missing_ub;
+  record[10] = missing_data[position + seq1 * (missing_ub + 1)];
+  record[11] = missing_data[position + seq2 * (missing_ub + 1)] |
+      (missing_data[position + seq3 * (missing_ub + 1)] << 8);
+  file = CreateFileA(
+      "maxchi-centre-missing.bin", GENERIC_WRITE,
+      FILE_SHARE_READ | FILE_SHARE_WRITE, (void *)0,
+      OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
+  if (file != INVALID_HANDLE_VALUE) {
+    SetFilePointer(file, 0, (long *)0, FILE_END);
+    write_bytes(file, record, (DWORD)sizeof(record));
+    CloseHandle(file);
+  }
+  return result;
+}
+
+int STDCALL GoRightPCapture(
+    int seq1, int seq2, int seq3, int circular, int position,
+    int sequence_length, int missing_ub, unsigned char *missing_data) {
+  static GoMissingFn original;
+  return capture_go_missing(
+      1, "GoRightP", &original, seq1, seq2, seq3, circular, position,
+      sequence_length, missing_ub, missing_data);
+}
+
+int STDCALL GoLeftPCapture(
+    int seq1, int seq2, int seq3, int circular, int position,
+    int sequence_length, int missing_ub, unsigned char *missing_data) {
+  static GoMissingFn original;
+  return capture_go_missing(
+      2, "GoLeftP", &original, seq1, seq2, seq3, circular, position,
+      sequence_length, missing_ub, missing_data);
 }

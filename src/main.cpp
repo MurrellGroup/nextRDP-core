@@ -6090,8 +6090,12 @@ int fasta_geneconv_events_fixture(
                         expected_group.push_back(expected_identity(candidate));
                 }
             }
-            if (actual_group.size() == expected_group.size()) continue;
-            std::cerr << "Earliest MaxChi triplet event count differs: call="
+            auto actual_sorted = actual_group;
+            auto expected_sorted = expected_group;
+            std::sort(actual_sorted.begin(), actual_sorted.end());
+            std::sort(expected_sorted.begin(), expected_sorted.end());
+            if (actual_sorted == expected_sorted) continue;
+            std::cerr << "Earliest MaxChi triplet group differs: call="
                       << trace.invocation << " input=" << trace.input[0] << ','
                       << trace.input[1] << ',' << trace.input[2] << " actual="
                       << actual_group.size() << " expected="

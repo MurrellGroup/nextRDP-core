@@ -215,4 +215,10 @@ generic circular-position helper. That changed the `DestroyPeaks` interval
 from `(1203,1)` to `(1,1492)` and erased an adjacent peak. Reinstating the
 literal source branch restores Dataset0 to 2,034/2,034 records, 25/25 row
 counts, and 2,034/2,034 probabilities. Breakpoint/window structural identity
-is currently 1,755/2,034 and is the next MaxChi boundary.
+then reaches 2,034/2,034 only after the active program-3 branch of
+`FindDaughter` and MCXoverF's second `CentreBP` call are preserved. Despite
+its name, this branch does not change the selected roles: it walks the
+informative-site map according to `MCMaxY` and `LoHiFlag`, conditionally
+polishes both endpoints, and recentres them. Dataset0's complete initial
+RDP+GENECONV+MAXCHI stream is now exact in total, row counts, structural
+identity, and probability.

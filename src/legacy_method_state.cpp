@@ -417,6 +417,125 @@ void centre_initial_breakpoints(
         ending = circular ? ending - sequence_length : sequence_length;
 }
 
+// Module2.FindDaughter, active PrgF=3/4 endpoint-polishing branch.  Despite
+// its name, this branch does not alter the three roles; it only walks the
+// informative-site map and conditionally tightens the stored breakpoints.
+void legacy_polish_maxchi_breakpoints(
+    const int comparison, const bool low_high,
+    const std::array<int, 3>& sequences, const int sequence_length,
+    const int informative, const bool circular,
+    const std::vector<int>& position_difference,
+    const std::vector<int>& difference_position,
+    const std::vector<unsigned char>& missing_map,
+    const std::vector<short>& sequence_data,
+    int& beginning, int& ending) {
+    int high_first = 0;
+    int high_second = 0;
+    if (comparison == 0) {
+        high_first = sequences[0];
+        high_second = sequences[1];
+    } else if (comparison == 1) {
+        high_first = sequences[0];
+        high_second = sequences[2];
+    } else {
+        high_first = sequences[2];
+        high_second = sequences[1];
+    }
+    const int stride = sequence_length + 1;
+    const auto equal_at = [&](const int informative_position) {
+        const int site = difference_position[informative_position];
+        return sequence_data[site + high_first * stride] ==
+            sequence_data[site + high_second * stride];
+    };
+    const int original_beginning = beginning;
+    const int original_ending = ending;
+    int region_start = beginning;
+    int region_end = ending;
+    int polished_beginning = beginning;
+    int polished_ending = ending;
+    int x = position_difference[region_start];
+    if (x == 0) x = 1;
+    for (int guard = 0; guard <= informative * 2 + 2; ++guard) {
+        if (low_high ? !equal_at(x) : equal_at(x)) break;
+        --x;
+        if (x >= 0 && x < static_cast<int>(missing_map.size()) &&
+            missing_map[x] == 1) break;
+        if (x < 1) {
+            if (!circular) break;
+            if (x == position_difference[region_end]) { ++x; break; }
+            x = informative;
+        }
+        if (x == position_difference[region_end]) { ++x; break; }
+    }
+    region_start = difference_position[x];
+    x = position_difference[region_start];
+    for (int guard = 0; guard <= informative * 2 + 2; ++guard) {
+        if (low_high ? equal_at(x) : !equal_at(x)) {
+            polished_beginning = difference_position[x];
+            break;
+        }
+        ++x;
+        if (x >= 0 && x < static_cast<int>(missing_map.size()) &&
+            missing_map[x] == 1) break;
+        if (x > informative) {
+            if (!circular) break;
+            x = 1;
+        }
+        if (x == position_difference[region_end]) { --x; break; }
+    }
+
+    x = position_difference[region_end];
+    if (x >= static_cast<int>(missing_map.size()))
+        x = static_cast<int>(missing_map.size()) - 1;
+    if (missing_map[x] == 0) {
+        for (int guard = 0; guard <= informative * 2 + 2; ++guard) {
+            if (low_high ? !equal_at(x) : equal_at(x)) break;
+            ++x;
+            if (x >= 0 && x < static_cast<int>(missing_map.size()) &&
+                missing_map[x] == 1) break;
+            if (x > informative) {
+                if (!circular) break;
+                x = 1;
+                if (missing_map[x] == 1) break;
+            }
+            if (x == position_difference[region_start]) { --x; break; }
+        }
+    }
+    region_end = difference_position[x];
+    x = position_difference[region_end];
+    if (x == 0) x = 1;
+    for (int guard = 0; guard <= informative * 2 + 2; ++guard) {
+        if (low_high ? equal_at(x) : !equal_at(x)) {
+            polished_ending = difference_position[x];
+            break;
+        }
+        if (x > 0 && x < static_cast<int>(missing_map.size()) &&
+            missing_map[x] == 1) break;
+        --x;
+        if (x >= 0 && x < static_cast<int>(missing_map.size()) &&
+            missing_map[x] == 1) break;
+        if (x < 1) {
+            if (!circular) break;
+            x = informative;
+        }
+        if (x == position_difference[region_start]) { ++x; break; }
+    }
+
+    const auto near_original = [&](const int candidate, const int original) {
+        const int candidate_position = position_difference[candidate];
+        const int original_position = position_difference[original];
+        return std::abs(candidate_position - original_position) < 5 ||
+            std::abs(candidate_position -
+                     (original_position - sequence_length)) < 5 ||
+            std::abs(candidate_position - sequence_length) -
+                    original_position < 5;
+    };
+    if (near_original(polished_beginning, original_beginning))
+        beginning = polished_beginning;
+    if (near_original(polished_ending, original_ending))
+        ending = polished_ending;
+}
+
 int event_half_window(const int event_beginning, const int event_ending,
                       const int informative, const int critical,
                       const int prior_half_window,
@@ -1164,7 +1283,9 @@ void run_rdp_maxchi_recheck(
                              high_left, high_right);
             int beginning = 0;
             int ending = 0;
+            bool low_high = false;
             if (high_left >= high_right) {
+                low_high = top_right <= top_left;
                 left = legacy_opt_left(
                     left, high_left, top_left, maximum_position, comparison,
                     best_window, informative, length, scores, missing_map);
@@ -1191,6 +1312,7 @@ void run_rdp_maxchi_recheck(
                     left + 1 > informative ? left : left + 1];
                 ending = difference_position[right];
             } else {
+                low_high = top_right > top_left;
                 right = legacy_opt_right(
                     right, high_right, top_right, maximum_position, comparison,
                     best_window, informative, length, scores, missing_map);
@@ -1219,6 +1341,15 @@ void run_rdp_maxchi_recheck(
                     trace->back().raw_beginning = beginning;
                     trace->back().raw_ending = ending;
                 }
+                centre_initial_breakpoints(
+                    beginning, ending, position_difference,
+                    difference_position, length, informative,
+                    settings.circular != 0);
+                legacy_polish_maxchi_breakpoints(
+                    comparison, low_high, sequences, length, informative,
+                    settings.circular != 0, position_difference,
+                    difference_position, missing_map,
+                    scan_state.sequence_data, beginning, ending);
                 centre_initial_breakpoints(
                     beginning, ending, position_difference,
                     difference_position, length, informative,
