@@ -90,6 +90,50 @@ RdpRawEvent to_raw_event(const NativeXoverDefine& source) {
     return event;
 }
 
+XOVERDEFINE to_xover_event(const RdpRawEvent& source) {
+    XOVERDEFINE event{};
+    event.OutsideFlag = source.outside_flag;
+    event.MissIdentifyFlag = source.misidentify_flag;
+    event.ProgramFlag = source.program_flag;
+    event.SBPFlag = source.sbp_flag;
+    event.Accept = source.accept;
+    event.MajorP = source.major_parent;
+    event.MinorP = source.minor_parent;
+    event.Daughter = source.daughter;
+    event.Beginning = source.beginning;
+    event.Ending = source.ending;
+    event.LHolder = source.length_holder;
+    event.Eventnumber = source.event_number;
+    event.PermPVal = source.permutation_pvalue;
+    event.BeginP = source.begin_parent;
+    event.EndP = source.end_parent;
+    event.Probability = source.probability;
+    event.DHolder = source.distance_holder;
+    return event;
+}
+
+RdpRawEvent to_raw_event(const XOVERDEFINE& source) {
+    NativeXoverDefine native{};
+    native.outside_flag = source.OutsideFlag;
+    native.misidentify_flag = source.MissIdentifyFlag;
+    native.program_flag = source.ProgramFlag;
+    native.sbp_flag = source.SBPFlag;
+    native.accept = source.Accept;
+    native.major_parent = source.MajorP;
+    native.minor_parent = source.MinorP;
+    native.daughter = source.Daughter;
+    native.beginning = source.Beginning;
+    native.ending = source.Ending;
+    native.length_holder = source.LHolder;
+    native.event_number = source.Eventnumber;
+    native.permutation_pvalue = source.PermPVal;
+    native.begin_parent = source.BeginP;
+    native.end_parent = source.EndP;
+    native.probability = source.Probability;
+    native.distance_holder = source.DHolder;
+    return to_raw_event(native);
+}
+
 bool raw_event_equivalent(const RdpRawEvent& first,
                           const RdpRawEvent& second) {
     const auto close = [](const double actual, const double expected) {
@@ -234,7 +278,60 @@ RdpRawEventState load_first_addjust_events(const std::string& pairs_path) {
     return state;
 }
 
-RdpRawEventState load_findbetter_events(
+RdpRawEventState load_first_addjust_input_events(
+    const std::string& pairs_path) {
+    std::string path = pairs_path;
+    const std::string suffix = "addjust-dopairs.bin";
+    const auto suffix_position = path.rfind(suffix);
+    if (suffix_position == std::string::npos) {
+        throw std::runtime_error("cannot derive AddjustCXO input trace path");
+    }
+    path.replace(
+        suffix_position, suffix.size(), "addjust-input-records.bin");
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("cannot open AddjustCXO input trace");
+    }
+    std::array<unsigned int, 8> header{};
+    input.read(reinterpret_cast<char*>(header.data()), sizeof(header));
+    if (!input || header[0] != 0x41434952U || header[1] != 1U ||
+        header[7] != sizeof(NativeXoverDefine)) {
+        throw std::runtime_error("AddjustCXO input trace header differs");
+    }
+    const int next_no = static_cast<int>(header[2]);
+    RdpRawEventState state;
+    state.current_xover.assign(next_no + 1, 0);
+    state.xover_list.resize(next_no + 1);
+    for (unsigned int record = 0; record < header[6]; ++record) {
+        std::array<int, 2> location{};
+        NativeXoverDefine event{};
+        input.read(reinterpret_cast<char*>(location.data()), sizeof(location));
+        input.read(reinterpret_cast<char*>(&event), sizeof(event));
+        if (!input || location[0] < 0 || location[0] > next_no ||
+            location[1] < 1) {
+            throw std::runtime_error("truncated AddjustCXO input trace");
+        }
+        auto& row = state.xover_list[location[0]];
+        row.resize(std::max<std::size_t>(row.size(), location[1]));
+        row[location[1] - 1] = to_raw_event(event);
+        state.current_xover[location[0]] = static_cast<std::int16_t>(
+            std::max<int>(state.current_xover[location[0]], location[1]));
+    }
+    return state;
+}
+
+struct NativeMakeTestCall {
+    int done_row_ub = 0;
+    int next_no = 0;
+    int xover_row_ub = 0;
+    int xover_slot_ub = 0;
+    int result = 0;
+    RdpRawEventState events;
+    std::vector<unsigned char> done_sequence;
+    std::vector<double> test_probabilities;
+};
+
+NativeMakeTestCall load_findbetter_make_test(
     const std::string& pairs_path, const int wanted_invocation) {
     std::string path = pairs_path;
     const std::string suffix = "addjust-dopairs.bin";
@@ -258,38 +355,92 @@ RdpRawEventState load_findbetter_events(
         const int next_no = header[3];
         const int xover_row_ub = header[4];
         const int xover_slot_ub = header[5];
-        std::vector<std::int16_t> current(next_no + 1);
-        input.read(reinterpret_cast<char*>(current.data()),
+        NativeMakeTestCall call;
+        call.done_row_ub = done_row_ub;
+        call.next_no = next_no;
+        call.xover_row_ub = xover_row_ub;
+        call.xover_slot_ub = xover_slot_ub;
+        call.result = header[6];
+        call.events.current_xover.resize(next_no + 1);
+        input.read(reinterpret_cast<char*>(call.events.current_xover.data()),
                    static_cast<std::streamsize>(
-                       current.size() * sizeof(std::int16_t)));
-        input.seekg(
-            static_cast<std::streamoff>(done_row_ub + 1) *
-                (xover_slot_ub + 1),
-            std::ios::cur);
+                       call.events.current_xover.size() *
+                       sizeof(std::int16_t)));
+        call.done_sequence.resize(
+            static_cast<std::size_t>(done_row_ub + 1) *
+            (xover_slot_ub + 1));
+        input.read(reinterpret_cast<char*>(call.done_sequence.data()),
+                   static_cast<std::streamsize>(call.done_sequence.size()));
         std::vector<NativeXoverDefine> matrix(
             static_cast<std::size_t>(xover_row_ub + 1) *
             (xover_slot_ub + 1));
         input.read(reinterpret_cast<char*>(matrix.data()),
                    static_cast<std::streamsize>(
                        matrix.size() * sizeof(NativeXoverDefine)));
-        input.seekg(
-            static_cast<std::streamoff>(next_no + 1) *
-                (xover_slot_ub + 1) * sizeof(double),
-            std::ios::cur);
+        call.test_probabilities.resize(
+            static_cast<std::size_t>(next_no + 1) *
+            (xover_slot_ub + 1));
+        input.read(
+            reinterpret_cast<char*>(call.test_probabilities.data()),
+            static_cast<std::streamsize>(call.test_probabilities.size() *
+                                         sizeof(double)));
         if (!input) throw std::runtime_error("truncated MakeTestPVs trace");
         if (invocation != wanted_invocation) continue;
-        RdpRawEventState state;
-        state.current_xover = current;
-        state.xover_list.resize(next_no + 1);
+        call.events.xover_list.resize(next_no + 1);
         for (int row = 0; row <= next_no; ++row) {
-            for (int slot = 1; slot <= current[row]; ++slot) {
-                state.xover_list[row].push_back(to_raw_event(
+            for (int slot = 1;
+                 slot <= call.events.current_xover[row]; ++slot) {
+                call.events.xover_list[row].push_back(to_raw_event(
                     matrix[row + slot * (xover_row_ub + 1)]));
             }
         }
-        return state;
+        return call;
     }
     throw std::runtime_error("requested MakeTestPVs invocation is absent");
+}
+
+RdpRawEventState load_findbetter_events(
+    const std::string& pairs_path, const int wanted_invocation) {
+    return load_findbetter_make_test(
+        pairs_path, wanted_invocation).events;
+}
+
+struct NativeFindBestCall {
+    int done_target = 0;
+    int next_no = 0;
+    int test_row_ub = 0;
+    int test_slot_ub = 0;
+    int trace_row = 0;
+    int trace_slot = 0;
+    int result = 0;
+    double low_probability_before = 1.0;
+    double low_probability_after = 1.0;
+};
+
+NativeFindBestCall load_findbest_call(
+    const std::string& path, const int wanted_invocation) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) throw std::runtime_error("cannot open FindBest trace");
+    while (input) {
+        std::array<int, 14> header{};
+        input.read(reinterpret_cast<char*>(header.data()), sizeof(header));
+        if (!input) break;
+        if (header[0] != 0x46425232 ||
+            header[10] != static_cast<int>(sizeof(NativeXoverDefine))) {
+            throw std::runtime_error("FindBest trace header differs");
+        }
+        std::array<double, 3> probabilities{};
+        input.read(reinterpret_cast<char*>(probabilities.data()),
+                   sizeof(probabilities));
+        NativeXoverDefine selected{};
+        input.read(reinterpret_cast<char*>(&selected), sizeof(selected));
+        if (!input) throw std::runtime_error("truncated FindBest trace");
+        if (header[1] != wanted_invocation) continue;
+        return NativeFindBestCall{
+            header[2], header[3], header[4], header[5], header[6],
+            header[7], header[8], probabilities[0], probabilities[1]};
+    }
+    throw std::runtime_error("requested FindBest invocation is absent");
 }
 
 void append_rdp_events(RdpRawEventState& destination,
@@ -332,6 +483,86 @@ std::pair<bool, std::size_t> compare_rdp_event_states(
         }
     }
     return {matches, mismatches};
+}
+
+struct ExactAddjustResult {
+    RdpRawEventState events;
+    std::vector<unsigned char> done_sequence;
+    int done_row_ub = 0;
+    int done_slot_ub = 0;
+    std::vector<unsigned char> pairs_to_rescan;
+};
+
+ExactAddjustResult run_exact_addjust_cxo(
+    const int next_no, const int winning_role,
+    const double lowest_probability,
+    const std::array<int, 3>& candidate_last,
+    const std::vector<int>& candidate_list,
+    const std::vector<int>& trace_sub,
+    const RdpRawEventState& source_events,
+    const std::vector<unsigned char>& source_done,
+    const int source_done_row_ub,
+    const int source_done_slot_ub) {
+    const int row_count = next_no + 1;
+    int source_slot_ub = 1;
+    for (const auto& row : source_events.xover_list) {
+        source_slot_ub = std::max<int>(source_slot_ub, row.size());
+    }
+    const int output_slot_ub = source_slot_ub + 4;
+    std::vector<XOVERDEFINE> source_matrix(
+        static_cast<std::size_t>(row_count) * (source_slot_ub + 1));
+    auto source_current = source_events.current_xover;
+    source_current.resize(row_count, 0);
+    for (int row = 0; row <= next_no; ++row) {
+        for (std::size_t slot = 0;
+             slot < source_events.xover_list[row].size(); ++slot) {
+            source_matrix[row + (slot + 1) * row_count] =
+                to_xover_event(source_events.xover_list[row][slot]);
+        }
+    }
+    std::vector<unsigned char> aligned_done(
+        static_cast<std::size_t>(row_count) * (source_slot_ub + 1), 0);
+    const int copy_slots = std::min(source_slot_ub, source_done_slot_ub);
+    const int copy_rows = std::min(next_no, source_done_row_ub);
+    for (int slot = 0; slot <= copy_slots; ++slot) {
+        for (int row = 0; row <= copy_rows; ++row) {
+            aligned_done[row + slot * row_count] = source_done[
+                row + slot * (source_done_row_ub + 1)];
+        }
+    }
+    ExactAddjustResult output;
+    output.done_row_ub = next_no;
+    output.done_slot_ub = output_slot_ub;
+    output.done_sequence.assign(
+        static_cast<std::size_t>(row_count) * (output_slot_ub + 1), 0);
+    output.pairs_to_rescan.assign(
+        static_cast<std::size_t>(row_count) * row_count, 0);
+    std::vector<std::int16_t> output_current(row_count, 0);
+    std::vector<XOVERDEFINE> output_matrix(
+        static_cast<std::size_t>(row_count) * (output_slot_ub + 1));
+    std::array<int, 101> event_counts{};
+    auto rnum = candidate_last;
+    auto rlist = candidate_list;
+    auto mutable_trace_sub = trace_sub;
+    MathFuncs::MyMathFuncs::AddjustCXO(
+        next_no, winning_role, lowest_probability,
+        next_no, source_slot_ub, aligned_done.data(),
+        next_no, output_slot_ub, output.done_sequence.data(),
+        event_counts.data(), rnum.data(), rlist.data(),
+        output.pairs_to_rescan.data(),
+        static_cast<int>(mutable_trace_sub.size()) - 1,
+        mutable_trace_sub.data(), output_current.data(), next_no,
+        output_slot_ub, output_matrix.data(), source_current.data(), next_no,
+        source_slot_ub, source_matrix.data());
+    output.events.current_xover = output_current;
+    output.events.xover_list.resize(row_count);
+    for (int row = 0; row <= next_no; ++row) {
+        for (int slot = 1; slot <= output_current[row]; ++slot) {
+            output.events.xover_list[row].push_back(to_raw_event(
+                output_matrix[row + slot * row_count]));
+        }
+    }
+    return output;
 }
 
 std::vector<short> flatten_rdp_triplets(
@@ -1239,7 +1470,8 @@ int fasta_all_redo_events_fixture(
     const std::string& modseqnumy_fixture_path,
     const std::string& mutation_tail_fixture_path,
     const std::string& alist_rdp3_trace_path,
-    const std::string& addjust_pairs_trace_path) {
+    const std::string& addjust_pairs_trace_path,
+    const std::string& findbest_series_trace_path) {
     const Dna5ScanPreprocessApi preprocess_api{
         &MathFuncs::MyMathFuncs::MakeAListP2,
         &MathFuncs::MyMathFuncs::CountNucs,
@@ -1414,10 +1646,12 @@ int fasta_all_redo_events_fixture(
             destination.DHolder = source.distance_holder;
         }
     }
-    auto generated_done =
-        rdp_fixture_section<unsigned char>(make_test_fixture, 1);
-    auto generated_test_pvs =
-        rdp_fixture_section<double>(make_test_fixture, 4);
+    std::vector<unsigned char> generated_done(
+        static_cast<std::size_t>(
+            make_test_fixture.header.done_sequence_ub + 1) * slot_count,
+        0);
+    std::vector<double> generated_test_pvs(
+        static_cast<std::size_t>(scan_state.next_no + 1) * slot_count, 0.0);
     const int make_test_result = MathFuncs::MyMathFuncs::MakeTestPVs(
         make_test_fixture.header.done_sequence_ub, generated_done.data(),
         scan_state.next_no, make_test_fixture.header.xover_rows_ub,
@@ -4479,10 +4713,26 @@ int fasta_all_redo_events_fixture(
             }
         }
     }
-    const auto redistributed = redistribute_rdp_events(
+    const auto redistributed_reference = redistribute_rdp_events(
         scan_state.next_no, expected_winner, h.lowest_probability,
         final_candidates.candidate_last, final_candidates.candidate_list,
         trace_sub, collection_event_list);
+    const auto redistributed = run_exact_addjust_cxo(
+        scan_state.next_no, expected_winner, h.lowest_probability,
+        final_candidates.candidate_last, final_candidates.candidate_list,
+        trace_sub, collection_event_list, generated_done,
+        make_test_fixture.header.done_sequence_ub,
+        make_test_fixture.header.xover_slots_ub);
+    const auto [addjust_port_matches, addjust_port_mismatches] =
+        compare_rdp_event_states(
+            redistributed.events, redistributed_reference.events);
+    if (!addjust_port_matches || redistributed.pairs_to_rescan !=
+            redistributed_reference.pairs_to_rescan) {
+        std::cerr << "Direct AddjustCXO/reference mismatch: "
+                  << addjust_port_mismatches << " records pairs="
+                  << (redistributed.pairs_to_rescan ==
+                      redistributed_reference.pairs_to_rescan) << '\n';
+    }
     const auto native_addjust_pairs = load_first_addjust_pairs(
         addjust_pairs_trace_path, scan_state.next_no);
     const auto native_redistributed =
@@ -4846,6 +5096,111 @@ int fasta_all_redo_events_fixture(
                              : alist_rdp3_calls[1].redo)
                   << '\n';
     }
+    const auto native_second_make_test =
+        load_findbetter_make_test(addjust_pairs_trace_path, 2);
+    const int second_row_count =
+        native_second_make_test.xover_row_ub + 1;
+    const int second_slot_count =
+        native_second_make_test.xover_slot_ub + 1;
+    std::vector<XOVERDEFINE> second_xovers(
+        static_cast<std::size_t>(second_row_count) * second_slot_count);
+    for (std::size_t row = 0; row < post_rescan_events.xover_list.size();
+         ++row) {
+        for (std::size_t slot = 0;
+             slot < post_rescan_events.xover_list[row].size(); ++slot) {
+            const auto& source = post_rescan_events.xover_list[row][slot];
+            auto& destination = second_xovers[
+                row + (slot + 1) * static_cast<std::size_t>(second_row_count)];
+            destination.OutsideFlag = source.outside_flag;
+            destination.MissIdentifyFlag = source.misidentify_flag;
+            destination.ProgramFlag = source.program_flag;
+            destination.SBPFlag = source.sbp_flag;
+            destination.Accept = source.accept;
+            destination.MajorP = source.major_parent;
+            destination.MinorP = source.minor_parent;
+            destination.Daughter = source.daughter;
+            destination.Beginning = source.beginning;
+            destination.Ending = source.ending;
+            destination.LHolder = source.length_holder;
+            destination.Eventnumber = source.event_number;
+            destination.PermPVal = source.permutation_pvalue;
+            destination.BeginP = source.begin_parent;
+            destination.EndP = source.end_parent;
+            destination.Probability = source.probability;
+            destination.DHolder = source.distance_holder;
+        }
+    }
+    std::vector<unsigned char> second_done(
+        native_second_make_test.done_sequence.size(), 0);
+    for (int row = 0; row <= scan_state.next_no; ++row) {
+        for (int slot = 1;
+             slot <= redistributed.events.current_xover[row]; ++slot) {
+            second_done[
+                row + slot * (native_second_make_test.done_row_ub + 1)] =
+                redistributed.done_sequence[
+                    row + slot * (redistributed.done_row_ub + 1)];
+        }
+    }
+    auto second_current_xover = post_rescan_events.current_xover;
+    std::vector<double> second_test_probabilities(
+        native_second_make_test.test_probabilities.size(), 0.0);
+    const int second_make_test_result = MathFuncs::MyMathFuncs::MakeTestPVs(
+        native_second_make_test.done_row_ub, second_done.data(),
+        dropped_rescan_state.next_no, native_second_make_test.xover_row_ub,
+        native_second_make_test.xover_slot_ub,
+        second_current_xover.data(), second_xovers.data(),
+        second_test_probabilities.data());
+    bool second_test_values_match = true;
+    for (std::size_t row = 0; row < post_rescan_events.xover_list.size();
+         ++row) {
+        for (std::size_t slot = 1;
+             slot <= post_rescan_events.xover_list[row].size(); ++slot) {
+            const auto index = slot + row *
+                static_cast<std::size_t>(second_slot_count);
+            second_test_values_match = second_test_values_match &&
+                probability_matches(
+                    second_test_probabilities[index],
+                    native_second_make_test.test_probabilities[index]);
+        }
+    }
+    const bool second_make_test_matches =
+        native_second_make_test.next_no == dropped_rescan_state.next_no &&
+        second_make_test_result == native_second_make_test.result &&
+        second_done == native_second_make_test.done_sequence &&
+        second_test_values_match;
+    const auto native_second_selection =
+        load_findbest_call(findbest_series_trace_path, 2);
+    double second_low_probability =
+        native_second_selection.low_probability_before;
+    std::array<int, 2> second_trace{0, 0};
+    const int second_selection_result =
+        MathFuncs::MyMathFuncs::FindBestRecSignalP2(
+            static_cast<char>(native_second_selection.done_target),
+            dropped_rescan_state.next_no,
+            native_second_selection.test_row_ub,
+            native_second_selection.test_slot_ub,
+            &second_low_probability,
+            reinterpret_cast<char*>(second_done.data()),
+            second_trace.data(), second_current_xover.data(),
+            second_test_probabilities.data());
+    const bool second_selection_matches =
+        second_selection_result == native_second_selection.result &&
+        second_trace[0] == native_second_selection.trace_row &&
+        second_trace[1] == native_second_selection.trace_slot &&
+        probability_matches(second_low_probability,
+                            native_second_selection.low_probability_after);
+    if (!second_make_test_matches || !second_selection_matches) {
+        std::cerr << "Second selection mismatch: MakeTest="
+                  << second_make_test_matches << " values="
+                  << second_test_values_match << " selection="
+                  << second_trace[0] << ',' << second_trace[1] << '/'
+                  << native_second_selection.trace_row << ','
+                  << native_second_selection.trace_slot << " totals="
+                  << second_selection_result << '/'
+                  << native_second_selection.result << " p="
+                  << second_low_probability << '/'
+                  << native_second_selection.low_probability_after << '\n';
+    }
     const bool consensus_matches = consensus_scores_match &&
         consensus_state.winning_role == expected_winner &&
         connected_metrics_match &&
@@ -4926,6 +5281,10 @@ int fasta_all_redo_events_fixture(
               << (rescan_screen_matches ? "PASS" : "FAIL")
               << ", post-rescan events "
               << (post_rescan_events_match ? "PASS" : "FAIL")
+              << ", second MakeTestPVs "
+              << (second_make_test_matches ? "PASS" : "FAIL")
+              << ", second selection "
+              << (second_selection_matches ? "PASS" : "FAIL")
               << "\n";
 
     return make_test_structure_matches && first_selection_matches &&
@@ -4943,6 +5302,8 @@ int fasta_all_redo_events_fixture(
              && rescan_schedule_matches
              && rescan_screen_matches
              && post_rescan_events_match
+             && second_make_test_matches
+             && second_selection_matches
              ? 0 : 1) : 1;
 }
 
@@ -5128,14 +5489,14 @@ int main(int argc, char** argv) {
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
             argv[9], argv[10], argv[11]);
     }
-    if (argc == 30 &&
+    if (argc == 31 &&
         std::string_view(argv[1]) == "fasta-all-redo-events-fixture") {
         return fasta_all_redo_events_fixture(
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
             argv[9], argv[10], argv[11], {argv[12], argv[13], argv[14]},
             argv[15], argv[16], argv[17], argv[18], argv[19], argv[20],
             argv[21], argv[22], argv[23], argv[24], argv[25], argv[26],
-            argv[27], argv[28], argv[29]);
+            argv[27], argv[28], argv[29], argv[30]);
     }
     if (argc == 3 && std::string_view(argv[1]) == "alist-rdp4-fixture") {
         return alist_rdp4_fixture(argv[2]);
