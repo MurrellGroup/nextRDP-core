@@ -6126,7 +6126,14 @@ int fasta_geneconv_events_fixture(
                               << peak.initial_maximum << "->"
                               << peak.grown_maximum << " p="
                               << peak.probability << " accepted="
-                              << peak.accepted << '\n';
+                              << peak.accepted << " score-hash=" << std::hex
+                              << peak.score_hash << " position-hash="
+                              << peak.difference_position_hash << " planes="
+                              << peak.score_plane_hash[0] << ','
+                              << peak.score_plane_hash[1] << ','
+                              << peak.score_plane_hash[2] << " chi="
+                              << peak.chi_table_hash << ','
+                              << peak.chi_map_hash << std::dec << '\n';
                 }
                 break;
             }

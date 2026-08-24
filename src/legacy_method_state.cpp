@@ -14,6 +14,15 @@
 
 namespace {
 
+std::uint64_t fnv1a64(const unsigned char* data, const std::size_t bytes) {
+    std::uint64_t hash = 1469598103934665603ULL;
+    for (std::size_t index = 0; index < bytes; ++index) {
+        hash ^= data[index];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
 double store_probability(const std::vector<double>& values,
                          const int upper_bound, const int program,
                          const int sequence) {
@@ -986,6 +995,9 @@ void run_rdp_maxchi_recheck(
     std::vector<int> position_difference(length + 201, 0);
     const int informative = find_subseq_maxchi_compressed(
         scan_state, sequences, difference_position, position_difference);
+    const std::uint64_t difference_position_hash = fnv1a64(
+        reinterpret_cast<const unsigned char*>(difference_position.data()),
+        static_cast<std::size_t>(informative + 1) * sizeof(int));
     if (informative < critical * 2 || informative < 7) return;
     if (initial_scan) {
         // MakeWindowSize takes the configured fixed width when BEP=ENP=0,
@@ -1020,7 +1032,19 @@ void run_rdp_maxchi_recheck(
         difference_position.data(),
         const_cast<short*>(scan_state.sequence_data.data()),
         window_scores.data());
+    const std::uint64_t score_hash = fnv1a64(scores.data(), scores.size());
+    std::array<std::uint64_t, 3> score_plane_hash{};
+    for (int plane = 0; plane < 3; ++plane) {
+        score_plane_hash[plane] = fnv1a64(
+            scores.data() + plane * sequence_stride, informative + 1);
+    }
     const auto& table = chi_lookup_table();
+    const std::uint64_t chi_table_hash = fnv1a64(
+        reinterpret_cast<const unsigned char*>(table.values.data()),
+        table.values.size() * sizeof(float));
+    const std::uint64_t chi_map_hash = fnv1a64(
+        reinterpret_cast<const unsigned char*>(table.map.data()),
+        table.map.size() * sizeof(int));
     double maximum = MathFuncs::MyMathFuncs::CalcChiVals4P3(
         win_upper, critical, half_window, informative, length,
         window_scores.data(), chi_values.data(), banned_windows.data(),
@@ -1104,6 +1128,8 @@ void run_rdp_maxchi_recheck(
                 left_count, right_count, best_window, top_left, top_right,
                 top_left_position,
                 top_right_position, initial_maximum, maximum, probability,
+                difference_position_hash, score_hash, score_plane_hash,
+                chi_table_hash, chi_map_hash,
                 probability < settings.lowest_probability});
         }
 

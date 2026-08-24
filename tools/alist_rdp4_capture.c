@@ -13,6 +13,7 @@ typedef void *HMODULE;
 typedef void *FARPROC;
 typedef unsigned long DWORD;
 typedef unsigned int u32;
+typedef unsigned long long u64;
 typedef int BOOL;
 
 #define STDCALL __attribute__((stdcall))
@@ -608,10 +609,24 @@ static void write_section(HANDLE file, u32 id, const void *data, u32 bytes) {
   if (bytes != 0) write_bytes(file, data, bytes);
 }
 
+static u64 fnv1a64(const void *data, u32 bytes) {
+  const unsigned char *cursor = (const unsigned char *)data;
+  u64 hash = 1469598103934665603ULL;
+  u32 index;
+  for (index = 0; index < bytes; ++index) {
+    hash ^= cursor[index];
+    hash *= 1099511628211ULL;
+  }
+  return hash;
+}
+
 static int geneconv_invocation;
 static int maxchi_invocation;
 static int maxchi_make_twin_invocation;
 static int maxchi_grow_invocation;
+static int maxchi_chi_hash_ready;
+static u64 maxchi_chi_table_hash;
+static u64 maxchi_chi_map_hash;
 
 int STDCALL XOHomologyPCapture(
     short inlyer, int sequence_length, int xover_length, short xover_window,
@@ -2289,6 +2304,31 @@ int STDCALL FindSubSeqMCPBCapture(
     write_bytes(file, record, (DWORD)sizeof(record));
     CloseHandle(file);
   }
+  {
+    int hash_record[6];
+    const u64 difference_hash = fnv1a64(
+        difference_position, (u32)((result + 1) * sizeof(int)));
+    const int expanded_ub = compressed_ub * 3;
+    const u64 position_hash = fnv1a64(
+        position_difference, (u32)((expanded_ub + 1) * sizeof(int)));
+    hash_record[0] = maxchi_invocation;
+    hash_record[1] = result;
+    hash_record[2] = (int)(difference_hash & 0xffffffffULL);
+    hash_record[3] = (int)(difference_hash >> 32);
+    hash_record[4] = (int)(position_hash & 0xffffffffULL);
+    hash_record[5] = (int)(position_hash >> 32);
+    file = CreateFileA(
+        "maxchi-subseq-hash.bin", GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, (void *)0,
+        maxchi_invocation == 1 ? CREATE_ALWAYS : OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
+    if (file != INVALID_HANDLE_VALUE) {
+      if (maxchi_invocation != 1)
+        SetFilePointer(file, 0, (long *)0, FILE_END);
+      write_bytes(file, hash_record, (DWORD)sizeof(hash_record));
+      CloseHandle(file);
+    }
+  }
   return result;
 }
 
@@ -2337,7 +2377,7 @@ int STDCALL GrowMChiWinP2Capture(
     int *top_right_position, unsigned char *scores, float *chi_table,
     int *chi_map) {
   static GrowMChiWinP2Fn original;
-  int record[16];
+  int record[32];
   int result;
   HANDLE file;
   if (!original) {
@@ -2368,6 +2408,40 @@ int STDCALL GrowMChiWinP2Capture(
   record[13] = *top_left_position;
   record[14] = *top_right_position;
   record[15] = (int)(*maximum * 1000000.0);
+  record[16] = max_ab_window;
+  record[17] = left;
+  record[18] = right;
+  record[19] = sequence_length;
+  {
+    const u64 score_hash = fnv1a64(
+        scores, (u32)((sequence_length + 1) * 3));
+    record[20] = (int)(score_hash & 0xffffffffULL);
+    record[21] = (int)(score_hash >> 32);
+  }
+  {
+    int plane;
+    for (plane = 0; plane < 3; ++plane) {
+      const u64 plane_hash = fnv1a64(
+          scores + plane * (sequence_length + 1),
+          (u32)(informative + 1));
+      record[22 + plane * 2] = (int)(plane_hash & 0xffffffffULL);
+      record[23 + plane * 2] = (int)(plane_hash >> 32);
+    }
+  }
+  if (!maxchi_chi_hash_ready) {
+    const int table_count =
+        chi_map[max_ab_window] +
+        (max_ab_window + 1) * (max_ab_window + 1);
+    maxchi_chi_table_hash = fnv1a64(
+        chi_table, (u32)(table_count * sizeof(float)));
+    maxchi_chi_map_hash = fnv1a64(
+        chi_map, (u32)((max_ab_window + 1) * sizeof(int)));
+    maxchi_chi_hash_ready = 1;
+  }
+  record[28] = (int)(maxchi_chi_table_hash & 0xffffffffULL);
+  record[29] = (int)(maxchi_chi_table_hash >> 32);
+  record[30] = (int)(maxchi_chi_map_hash & 0xffffffffULL);
+  record[31] = (int)(maxchi_chi_map_hash >> 32);
   if (maxchi_invocation > 0) {
     ++maxchi_grow_invocation;
     file = CreateFileA(

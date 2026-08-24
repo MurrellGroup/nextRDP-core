@@ -4,6 +4,7 @@
 #include "xover_state.hpp"
 
 #include <array>
+#include <cstdint>
 #include <vector>
 
 struct GeneconvEmissionTrace {
@@ -29,6 +30,11 @@ struct MaxchiPeakTrace {
     double initial_maximum = 0.0;
     double grown_maximum = 0.0;
     double probability = 1.0;
+    std::uint64_t difference_position_hash = 0;
+    std::uint64_t score_hash = 0;
+    std::array<std::uint64_t, 3> score_plane_hash{};
+    std::uint64_t chi_table_hash = 0;
+    std::uint64_t chi_map_hash = 0;
     bool accepted = false;
 };
 
