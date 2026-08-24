@@ -2982,52 +2982,14 @@ int fasta_all_redo_events_fixture(
     const auto tied_compatibility = [](const std::array<int, 3>& values) {
         return values[0] == values[1] && values[0] == values[2];
     };
-    std::vector<std::vector<float>> collapsed_matrices;
-    bool repeated_background_primary = false;
-    bool repeated_region_primary = false;
-    for (unsigned int call_index = 6;
-         call_index < rcompat_fixture.header.calls; call_index += 3) {
-        const int base = static_cast<int>(call_index) * 1000;
-        const auto call_last =
-            rdp_fixture_section<int>(rcompat_fixture, base + 7);
-        const auto call_list =
-            rdp_fixture_section<int>(rcompat_fixture, base + 11);
-        const auto matrix =
-            rdp_fixture_section<float>(rcompat_fixture, base + 13);
-        if (call_last != as_vector(actual_resolution.candidates.last) ||
-            call_list != actual_resolution.candidates.list) {
-            continue;
-        }
-        if (matrix == background_adjusted) {
-            repeated_background_primary = true;
-            continue;
-        }
-        if (matrix == region_adjusted) {
-            repeated_region_primary = true;
-            continue;
-        }
-        if (std::find(collapsed_matrices.begin(), collapsed_matrices.end(),
-                      matrix) == collapsed_matrices.end()) {
-            collapsed_matrices.push_back(matrix);
-        }
-    }
     std::vector<float> collapsed_background;
     std::vector<float> collapsed_region;
-    auto collapsed = collapsed_matrices.begin();
     if (tied_compatibility(
             initial_tree_compatibility.background_compatibility)) {
-        if (repeated_background_primary) {
-            collapsed_background = background_adjusted;
-        } else if (collapsed != collapsed_matrices.end()) {
-            collapsed_background = *collapsed++;
-        }
+        collapsed_background = reusable_round_prefix.background_collapsed;
     }
     if (tied_compatibility(initial_tree_compatibility.region_compatibility)) {
-        if (repeated_region_primary) {
-            collapsed_region = region_adjusted;
-        } else if (collapsed != collapsed_matrices.end()) {
-            collapsed_region = *collapsed++;
-        }
+        collapsed_region = reusable_round_prefix.region_collapsed;
     }
     const auto tree_compatibility_flow = run_rdp_tree_compatibility_flow(
         scan_state.sequence_length, scan_state.next_no, selected.beginning,

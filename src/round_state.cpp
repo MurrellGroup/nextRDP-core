@@ -6,6 +6,88 @@
 #include <cmath>
 #include <string>
 
+namespace {
+
+std::vector<float> make_zero_rep_collapsed_matrix(
+    const int next_no,
+    const int local_last,
+    const int legacy_pass,
+    const std::vector<int>& trace,
+    const std::vector<int>& redo,
+    const std::vector<float>& direct,
+    std::vector<float>& adjusted,
+    const std::vector<float>& temporary) {
+    const int stride = next_no + 1;
+    const int local_stride = local_last + 1;
+    std::vector<float> collapsed(
+        static_cast<std::size_t>(stride) * stride, 0.0F);
+
+    // TestMoveInTreeAlt's Reps=0/BootFlag=1 branch maps tSAMat on pass
+    // zero and tFAMat on pass one. Preserve its Y = x + 1 loop bound,
+    // including the pass-one omission of the first local pair.
+    for (int local_first = 0; local_first <= local_last; ++local_first) {
+        const int first = trace[1 + local_first * 2];
+        for (int local_second = legacy_pass + 1;
+             local_second <= local_last; ++local_second) {
+            const int second = trace[1 + local_second * 2];
+            const float value = temporary[
+                local_first + local_second * local_stride];
+            collapsed[first + second * stride] = value;
+            collapsed[second + first * stride] = value;
+        }
+    }
+
+    MathFuncs::MyMathFuncs::CleanFCMat2P(
+        next_no, next_no, next_no, collapsed.data(),
+        const_cast<int*>(redo.data()));
+
+    std::vector<int> best_sequence(stride, 0);
+    for (int sequence = 0; sequence <= next_no; ++sequence) {
+        best_sequence[sequence] = sequence;
+        if (redo[sequence] == 0) {
+            continue;
+        }
+        float minimum_distance = 10.0F;
+        for (int candidate = 0; candidate <= next_no; ++candidate) {
+            if (candidate != sequence && redo[candidate] == 0 &&
+                direct[sequence + candidate * stride] < minimum_distance) {
+                minimum_distance = direct[sequence + candidate * stride];
+                best_sequence[sequence] = candidate;
+            }
+        }
+    }
+
+    // ReAddDistsB mutates both the adjusted and collapsed matrices in place.
+    for (int sequence = 0; sequence <= next_no; ++sequence) {
+        if (redo[sequence] == 0) {
+            continue;
+        }
+        const int closest = best_sequence[sequence];
+        for (int other = 0; other <= next_no; ++other) {
+            const auto forward = static_cast<std::size_t>(
+                sequence + other * stride);
+            const auto reverse = static_cast<std::size_t>(
+                other + sequence * stride);
+            if (other == sequence) {
+                collapsed[forward] = 0.0F;
+                adjusted[forward] = 0.0F;
+                continue;
+            }
+            const auto replacement = static_cast<std::size_t>(
+                closest + best_sequence[other] * stride);
+            if (adjusted[forward] > adjusted[replacement]) {
+                collapsed[forward] = collapsed[replacement];
+                collapsed[reverse] = collapsed[forward];
+                adjusted[forward] = adjusted[replacement];
+                adjusted[reverse] = adjusted[forward];
+            }
+        }
+    }
+    return collapsed;
+}
+
+}  // namespace
+
 RdpRoundPrefixState identify_rdp_round_prefix(
     const RdpScanState& scan_state,
     const RdpDistanceState& full_distance,
@@ -150,6 +232,14 @@ RdpRoundPrefixState identify_rdp_round_prefix(
         state.region_adjusted.data(), redo.data(), background_holder.data(),
         region_holder.data(), temporary_background.data(),
         temporary_region.data());
+    state.region_collapsed = make_zero_rep_collapsed_matrix(
+        next_no, local_last, 0, trace, redo,
+        state.matrices.event_region, state.region_adjusted,
+        temporary_region);
+    state.background_collapsed = make_zero_rep_collapsed_matrix(
+        next_no, local_last, 1, trace, redo,
+        state.matrices.background, state.background_adjusted,
+        temporary_background);
     state.minimum_pair = {minimum_pair[0], minimum_pair[1]};
     state.sequence_pair = {
         sequence_pair[0], sequence_pair[1], sequence_pair[2]};
@@ -256,8 +346,8 @@ RdpRoundPrefixState identify_rdp_round_prefix(
         }
     }
     state.role_lists = make_rdp_role_lists(final_pair);
-    state.first_collapsed_small = state.first_adjusted_small;
-    state.region_collapsed_small = state.region_adjusted_small;
+    state.first_collapsed_small = make_small(state.background_collapsed);
+    state.region_collapsed_small = make_small(state.region_collapsed);
     state.acceptable_correlations = make_rdp_acceptable_correlations(
         next_no, state.sequences, state.role_lists.inside,
         state.first_direct_small, state.region_direct_small,

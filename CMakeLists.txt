@@ -28,6 +28,7 @@ add_executable(rdp-core
     src/round_state.cpp
     src/scan_state.cpp
     src/tree_state.cpp
+    src/three_seq_state.cpp
     src/xover_state.cpp
 )
 target_include_directories(rdp-core PRIVATE include vendor/dna5 tests)

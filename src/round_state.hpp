@@ -16,6 +16,8 @@ struct RdpRoundPrefixState {
     std::array<unsigned char, 3> sequence_pair{};
     std::vector<float> background_adjusted;
     std::vector<float> region_adjusted;
+    std::vector<float> background_collapsed;
+    std::vector<float> region_collapsed;
     RdpBreakpointFlanks breakpoint_flanks;
     std::array<int, 6> starts{};
     std::array<int, 6> ends{};
