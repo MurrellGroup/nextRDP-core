@@ -1,8 +1,12 @@
 import { readFile, writeFile } from "node:fs/promises";
 
-const [inputPath, outputPath] = process.argv.slice(2);
+const [inputPath, outputPath, groupText = "1"] = process.argv.slice(2);
 if (!inputPath || !outputPath) {
   throw new Error("usage: convert-find-actual-events-trace input.bin output.bin");
+}
+const group = Number(groupText);
+if (!Number.isInteger(group) || group < 1) {
+  throw new Error(`invalid event group: ${groupText}`);
 }
 
 const source = await readFile(inputPath);
@@ -83,12 +87,15 @@ while (offset < source.length) {
   });
 }
 
-if (records.length !== 3 || records.some((record, index) =>
-    record.invocation !== index + 1 || record.winPp !== index)) {
-  throw new Error("expected the first three role calls in the trace");
+const groupStart = (group - 1) * 3 + 1;
+const selectedRecords = records.filter((record) =>
+  record.invocation >= groupStart && record.invocation < groupStart + 3);
+if (selectedRecords.length !== 3 || selectedRecords.some((record, index) =>
+    record.invocation !== groupStart + index || record.winPp !== index)) {
+  throw new Error(`expected role calls ${groupStart}-${groupStart + 2}`);
 }
-const first = records[0];
-if (records.some((record) =>
+const first = selectedRecords[0];
+if (selectedRecords.some((record) =>
     record.sequenceLength !== first.sequenceLength ||
     record.nextNo !== first.nextNo || record.ub !== first.ub)) {
   throw new Error("FindActualEvents trace calls have inconsistent dimensions");
@@ -107,7 +114,7 @@ const putSection = (id, value) => {
   section.writeUInt32LE(value.length, 4);
   sections.push(section, value);
 };
-for (const [call, record] of records.entries()) {
+for (const [call, record] of selectedRecords.entries()) {
   const base = call * 1000;
   record.inputs.forEach((value, index) => putSection(base + index + 1, value));
   const eventHeader = Buffer.alloc(4);
@@ -123,7 +130,7 @@ await writeFile(outputPath, Buffer.concat([header, ...sections]));
 
 const readInts = (value) => Array.from(
   { length: value.length / 4 }, (_, index) => value.readInt32LE(index * 4));
-for (const record of records) {
+for (const record of selectedRecords) {
   const found = readInts(record.outputs[5]);
   console.log(JSON.stringify({
     invocation: record.invocation,

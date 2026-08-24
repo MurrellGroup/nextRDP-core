@@ -1,40 +1,47 @@
 import { readFile, writeFile } from "node:fs/promises";
 
-const [inputPath, outputPath] = process.argv.slice(2);
+const [inputPath, outputPath, invocationText = "1"] = process.argv.slice(2);
 if (!inputPath || !outputPath) {
   throw new Error("usage: convert-make-rlist-trace input.bin output.bin");
 }
+const wantedInvocation = Number(invocationText);
 
 const source = await readFile(inputPath);
 if (source.length < 16 || source.readUInt32LE(0) !== 0x4d524c53) {
   throw new Error("input does not begin with an RDP MakeRList trace record");
 }
-const nextNo = source.readInt32LE(12);
-const count = nextNo + 1;
-let offset = 16;
-const take = (bytes) => {
-  const value = source.subarray(offset, offset + bytes);
-  if (value.length !== bytes) throw new Error("truncated MakeRList trace");
-  offset += bytes;
-  return value;
-};
-
-const inputs = [
-  take(3 * 4),
-  take(2 * count * 4),
-  take(9 * count * 4),
-  take(9 * count * 4),
-  take(3 * count),
-  take(3 * count),
-  take(3),
-];
-const outputs = [
-  take(3 * 4),
-  take(3 * count * 4),
-  take(3 * count * 4),
-  take(6 * count * 8),
-  take(3 * count * 8),
-];
+let offset = 0;
+let selected;
+while (offset < source.length) {
+  const recordStart = offset;
+  if (source.readUInt32LE(offset) !== 0x4d524c53) {
+    throw new Error(`bad MakeRList trace magic at ${offset}`);
+  }
+  const invocation = source.readUInt32LE(offset + 4);
+  const nextNo = source.readInt32LE(offset + 12);
+  const count = nextNo + 1;
+  offset += 16;
+  const take = (bytes) => {
+    const value = source.subarray(offset, offset + bytes);
+    if (value.length !== bytes) throw new Error("truncated MakeRList trace");
+    offset += bytes;
+    return value;
+  };
+  const inputs = [
+    take(3 * 4), take(2 * count * 4), take(9 * count * 4),
+    take(9 * count * 4), take(3 * count), take(3 * count), take(3),
+  ];
+  const outputs = [
+    take(3 * 4), take(3 * count * 4), take(3 * count * 4),
+    take(6 * count * 8), take(3 * count * 8),
+  ];
+  if (invocation === wantedInvocation) {
+    selected = { nextNo, inputs, outputs };
+  }
+  if (offset <= recordStart) throw new Error("invalid MakeRList record");
+}
+if (!selected) throw new Error(`MakeRList invocation ${wantedInvocation} absent`);
+const { nextNo, inputs, outputs } = selected;
 
 const header = Buffer.alloc(16);
 header.write("MRLIST1\0", 0, "ascii");

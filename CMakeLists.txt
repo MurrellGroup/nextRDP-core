@@ -25,6 +25,7 @@ add_executable(rdp-core
     src/main.cpp
     src/mutation_state.cpp
     src/rescan_schedule.cpp
+    src/round_state.cpp
     src/scan_state.cpp
     src/tree_state.cpp
     src/xover_state.cpp

@@ -6,6 +6,7 @@ workspace_dir=$(cd "$project_dir/.." && pwd)
 capture_dir="$project_dir/sandbox/make-rlist-capture"
 run_dir="$capture_dir/run"
 trace_path="$workspace_dir/sandbox/native-trace/find-actual-events-trace.bin"
+make_rlist_trace_path="$workspace_dir/sandbox/native-trace/make-rlist-trace.bin"
 strip_trace_path="$workspace_dir/sandbox/native-trace/strip-dup-inv-trace.bin"
 rcompat_trace_path="$workspace_dir/sandbox/native-trace/rcompat-trace-current-d0.bin"
 collect_trace_path="$workspace_dir/sandbox/native-trace/collectevents-boundary.bin"
@@ -31,6 +32,7 @@ cp "$runtime_dir/DNA5.dll" "$run_dir/DNA5_original.dll"
 cp "$workspace_dir/sandbox/native-trace/dna5-proxy/DNA5.collect-boundary.dll" \
   "$run_dir/DNA5.dll"
 touch "$trace_path"
+touch "$make_rlist_trace_path"
 touch "$strip_trace_path"
 touch "$rcompat_trace_path"
 touch "$collect_trace_path"
@@ -44,6 +46,7 @@ dataset_numbers=${DATASET_NUMBERS:-"0 1 2 3 4 5 6 7 8 9"}
 for number in $dataset_numbers; do
   dataset="Dataset$number"
   before=$(stat -c %s "$trace_path")
+  make_rlist_before=$(stat -c %s "$make_rlist_trace_path")
   strip_before=$(stat -c %s "$strip_trace_path")
   rcompat_before=$(stat -c %s "$rcompat_trace_path")
   collect_before=$(stat -c %s "$collect_trace_path")
@@ -61,6 +64,7 @@ for number in $dataset_numbers; do
       > "$dataset.find-actual.out" 2> "$dataset.find-actual.err"
   )
   after=$(stat -c %s "$trace_path")
+  make_rlist_after=$(stat -c %s "$make_rlist_trace_path")
   strip_after=$(stat -c %s "$strip_trace_path")
   rcompat_after=$(stat -c %s "$rcompat_trace_path")
   collect_after=$(stat -c %s "$collect_trace_path")
@@ -73,6 +77,10 @@ for number in $dataset_numbers; do
   cmaxd_after=$(stat -c %s "$cmaxd_trace_path")
   if [[ $after -le $before ]]; then
     printf 'no FindActualEvents trace captured for %s\n' "$dataset" >&2
+    exit 1
+  fi
+  if [[ $make_rlist_after -le $make_rlist_before ]]; then
+    printf 'no MakeRList trace captured for %s\n' "$dataset" >&2
     exit 1
   fi
   if [[ $strip_after -le $strip_before ]]; then
@@ -114,6 +122,19 @@ for number in $dataset_numbers; do
   "$node_bin" "$project_dir/tools/convert-find-actual-events-trace.mjs" \
     "$capture_dir/$dataset-find-actual-events-trace.bin" \
     "$capture_dir/$dataset-find-actual-events-v1.bin"
+  "$node_bin" "$project_dir/tools/convert-find-actual-events-trace.mjs" \
+    "$capture_dir/$dataset-find-actual-events-trace.bin" \
+    "$capture_dir/$dataset-find-actual-events-v2.bin" 2
+  dd if="$make_rlist_trace_path" \
+    of="$capture_dir/$dataset-make-rlist-trace.bin" bs=1 \
+    skip="$make_rlist_before" count="$((make_rlist_after-make_rlist_before))" \
+    status=none
+  "$node_bin" "$project_dir/tools/convert-make-rlist-trace.mjs" \
+    "$capture_dir/$dataset-make-rlist-trace.bin" \
+    "$capture_dir/$dataset-make-rlist-v1.bin"
+  "$node_bin" "$project_dir/tools/convert-make-rlist-trace.mjs" \
+    "$capture_dir/$dataset-make-rlist-trace.bin" \
+    "$capture_dir/$dataset-make-rlist-v2.bin" 2
   dd if="$strip_trace_path" \
     of="$capture_dir/$dataset-strip-dup-inv-trace.bin" \
     bs=1 skip="$strip_before" count="$((strip_after-strip_before))" \

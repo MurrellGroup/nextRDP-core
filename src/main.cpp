@@ -10,6 +10,7 @@
 #include "preprocess_fixture.hpp"
 #include "rdp_walk_fixture.hpp"
 #include "rescan_schedule.hpp"
+#include "round_state.hpp"
 #include "scan_state.hpp"
 #include "tree_state.hpp"
 #include "xover_state.hpp"
@@ -2718,6 +2719,57 @@ int fasta_all_redo_events_fixture(
         correlation_sequences, correlation_comparison,
         actual_starts, actual_ends, correlation_decisions, candidate_lists,
         dont_redo, events, scan_state.next_no);
+    const auto reusable_round_prefix = identify_rdp_round_prefix(
+        scan_state, distance_state, events, selected, missing_data,
+        check_header.minimum_sequence_size);
+    const bool reusable_round_prefix_matches =
+        reusable_round_prefix.sequences == correlation_sequences &&
+        reusable_round_prefix.breakpoint_distance == breakpoint_distance &&
+        reusable_round_prefix.remainder_distance == remainder_distance &&
+        reusable_round_prefix.region_distance.distance ==
+            region_distance_state.distance &&
+        reusable_round_prefix.matrices.background ==
+            generated_matrices.background &&
+        reusable_round_prefix.matrices.event_region ==
+            generated_matrices.event_region &&
+        reusable_round_prefix.background_adjusted == background_adjusted &&
+        reusable_round_prefix.region_adjusted == region_adjusted &&
+        reusable_round_prefix.starts == actual_starts &&
+        reusable_round_prefix.ends == actual_ends &&
+        reusable_round_prefix.summary_matrix == summary_matrix &&
+        reusable_round_prefix.regional_distance_matrix ==
+            regional_distance_matrix &&
+        reusable_round_prefix.actual_resolution.candidates.last ==
+            actual_resolution.candidates.last &&
+        reusable_round_prefix.actual_resolution.candidates.list ==
+            actual_resolution.candidates.list &&
+        reusable_round_prefix.actual_resolution.candidates.inverse ==
+            actual_resolution.candidates.inverse &&
+        reusable_round_prefix.actual_resolution.inversion_penalty ==
+            actual_resolution.inversion_penalty;
+    if (!reusable_round_prefix_matches) {
+        std::cerr << "Reusable round-prefix mismatch: sequences="
+                  << (reusable_round_prefix.sequences ==
+                      correlation_sequences)
+                  << " distances="
+                  << (reusable_round_prefix.region_distance.distance ==
+                      region_distance_state.distance)
+                  << " matrices="
+                  << (reusable_round_prefix.matrices.background ==
+                      generated_matrices.background) << ','
+                  << (reusable_round_prefix.matrices.event_region ==
+                      generated_matrices.event_region)
+                  << " adjusted="
+                  << (reusable_round_prefix.background_adjusted ==
+                      background_adjusted) << ','
+                  << (reusable_round_prefix.region_adjusted ==
+                      region_adjusted)
+                  << " candidates="
+                  << (reusable_round_prefix.actual_resolution.candidates.last ==
+                      actual_resolution.candidates.last) << ','
+                  << (reusable_round_prefix.actual_resolution.candidates.list ==
+                      actual_resolution.candidates.list) << '\n';
+    }
     const auto as_vector = [](const auto& values) {
         return std::vector<typename std::decay_t<decltype(values)>::value_type>(
             values.begin(), values.end());
@@ -5189,6 +5241,271 @@ int fasta_all_redo_events_fixture(
         second_trace[1] == native_second_selection.trace_slot &&
         probability_matches(second_low_probability,
                             native_second_selection.low_probability_after);
+    bool second_round_prefix_matches = false;
+    if (second_trace[0] >= 0 && second_trace[0] <= dropped_rescan_state.next_no &&
+        second_trace[1] >= 1 &&
+        static_cast<std::size_t>(second_trace[1]) <=
+            post_rescan_events.xover_list[second_trace[0]].size()) {
+        const int identification_next_no = dropped_rescan_state.next_no;
+        const int next_sequence_cells =
+            (identification_next_no + 1) *
+            (scan_state.sequence_length + 1);
+        std::vector<short> next_sequence_data(
+            expanded_scan_state.sequence_data.begin(),
+            expanded_scan_state.sequence_data.begin() + next_sequence_cells);
+        const auto next_scan_state = rebuild_rdp_scan_state(
+            identification_next_no, scan_state.sequence_length,
+            next_sequence_data, preprocess_api);
+        std::vector<unsigned char> next_missing(
+            expanded_missing.begin(),
+            expanded_missing.begin() + next_sequence_cells);
+        const auto next_distance_state = build_rdp_distance_state(
+            next_scan_state, 1, next_scan_state.sequence_length);
+        auto second_selected = post_rescan_events.xover_list[
+            second_trace[0]][second_trace[1] - 1];
+        const auto trace_to_permanent = [&](const std::int16_t sequence) {
+            return static_cast<std::int16_t>(
+                sequence > identification_next_no &&
+                    sequence < static_cast<int>(
+                        dropped_rescan_state.trace_sub.size())
+                ? dropped_rescan_state.trace_sub[sequence] : sequence);
+        };
+        second_selected.daughter = trace_to_permanent(
+            second_selected.daughter);
+        second_selected.minor_parent = trace_to_permanent(
+            second_selected.minor_parent);
+        second_selected.major_parent = trace_to_permanent(
+            second_selected.major_parent);
+        auto identification_events = post_rescan_events;
+        identification_events.xover_list.resize(identification_next_no + 1);
+        identification_events.current_xover.resize(
+            identification_next_no + 1);
+        const auto second_round_prefix = identify_rdp_round_prefix(
+            next_scan_state, next_distance_state, identification_events,
+            second_selected, next_missing,
+            check_header.minimum_sequence_size);
+        std::string second_actual_path = find_actual_events_fixture_path;
+        const std::string first_suffix = "find-actual-events-v1.bin";
+        const auto suffix_position = second_actual_path.rfind(first_suffix);
+        if (suffix_position != std::string::npos) {
+            second_actual_path.replace(
+                suffix_position, first_suffix.size(),
+                "find-actual-events-v2.bin");
+            std::ifstream second_fixture_probe(second_actual_path);
+            if (second_fixture_probe) {
+                const char second_actual_magic[8] = {
+                    'F', 'A', 'E', 'V', 'E', 'N', 'T', '1'};
+                const auto second_actual_fixture =
+                    load_rdp_sectioned_fixture<FindActualEventsCaptureHeader>(
+                        second_actual_path, second_actual_magic);
+                second_round_prefix_matches =
+                    second_actual_fixture.header.next_no ==
+                        next_scan_state.next_no &&
+                    std::vector<int>(
+                        second_round_prefix.sequences.begin(),
+                        second_round_prefix.sequences.end()) ==
+                        rdp_fixture_section<int>(second_actual_fixture, 1);
+                for (int role = 0; role < 3; ++role) {
+                    const int base = role * 1000;
+                    const auto& call =
+                        second_round_prefix.actual_resolution.calls[role];
+                    second_round_prefix_matches =
+                        second_round_prefix_matches &&
+                        std::vector<int>(
+                            call.candidate_last_before.begin(),
+                            call.candidate_last_before.end()) ==
+                            rdp_fixture_section<int>(
+                                second_actual_fixture, base + 16) &&
+                        call.candidate_list_before ==
+                            rdp_fixture_section<int>(
+                                second_actual_fixture, base + 17) &&
+                        call.found_after == rdp_fixture_section<int>(
+                            second_actual_fixture, base + 106) &&
+                        call.breakpoint_matches_after ==
+                            rdp_fixture_section<int>(
+                                second_actual_fixture, base + 103) &&
+                        call.best_matches_after ==
+                            rdp_fixture_section<float>(
+                                second_actual_fixture, base + 104);
+                }
+            }
+        }
+        if (!second_round_prefix_matches) {
+            std::cerr << "Second reusable round-prefix mismatch: selected="
+                      << second_round_prefix.sequences[0] << ','
+                      << second_round_prefix.sequences[1] << ','
+                      << second_round_prefix.sequences[2]
+                      << " next=" << next_scan_state.next_no
+                      << " minpair="
+                      << static_cast<int>(second_round_prefix.minimum_pair[0])
+                      << ','
+                      << static_cast<int>(second_round_prefix.minimum_pair[1])
+                      << " redos=";
+            for (int sequence = 0; sequence <= next_scan_state.next_no;
+                 ++sequence) {
+                if (second_round_prefix.matrices.background[
+                        sequence + sequence *
+                            (next_scan_state.next_no + 1)] == 3.0F) {
+                    std::cerr << sequence << ',';
+                }
+            }
+            std::cerr << " direct=";
+            for (int first = 0; first < 2; ++first) {
+                for (int second = first + 1; second < 3; ++second) {
+                    const auto matrix_offset = static_cast<std::size_t>(
+                        second_round_prefix.sequences[first] +
+                        second_round_prefix.sequences[second] *
+                            (next_scan_state.next_no + 1));
+                    std::cerr
+                        << second_round_prefix.matrices.background[
+                               matrix_offset]
+                        << '/'
+                        << second_round_prefix.matrices.event_region[
+                               matrix_offset]
+                        << ':'
+                        << next_distance_state.valid_sites[matrix_offset]
+                        << '/'
+                        << second_round_prefix.region_distance.valid_sites[
+                               matrix_offset]
+                        << ',';
+                }
+            }
+            std::cerr << " fragment=";
+            for (const int selected_sequence :
+                 second_round_prefix.sequences) {
+                const auto matrix_offset = static_cast<std::size_t>(
+                    selected_sequence + next_scan_state.next_no *
+                        (next_scan_state.next_no + 1));
+                std::cerr
+                    << selected_sequence << ':'
+                    << next_distance_state.valid_sites[matrix_offset] << '/'
+                    << second_round_prefix.region_distance.valid_sites[
+                           matrix_offset]
+                    << ',';
+            }
+            if (suffix_position != std::string::npos) {
+                std::ifstream probe(second_actual_path);
+                if (probe) {
+                    const char magic[8] = {
+                        'F', 'A', 'E', 'V', 'E', 'N', 'T', '1'};
+                    const auto fixture =
+                        load_rdp_sectioned_fixture<
+                            FindActualEventsCaptureHeader>(
+                            second_actual_path, magic);
+                    for (int role = 0; role < 3; ++role) {
+                        const int base = role * 1000;
+                        const auto& call = second_round_prefix
+                            .actual_resolution.calls[role];
+                        std::cerr << " role" << role << " in="
+                                  << (std::vector<int>(
+                                          call.candidate_last_before.begin(),
+                                          call.candidate_last_before.end()) ==
+                                      rdp_fixture_section<int>(
+                                          fixture, base + 16))
+                                  << ','
+                                  << (call.candidate_list_before ==
+                                      rdp_fixture_section<int>(
+                                          fixture, base + 17))
+                                  << " out="
+                                  << (call.found_after ==
+                                      rdp_fixture_section<int>(
+                                          fixture, base + 106))
+                                  << ','
+                                  << (call.breakpoint_matches_after ==
+                                      rdp_fixture_section<int>(
+                                          fixture, base + 103))
+                                  << ','
+                                  << (call.best_matches_after ==
+                                      rdp_fixture_section<float>(
+                                          fixture, base + 104));
+                        const auto expected_list = rdp_fixture_section<int>(
+                            fixture, base + 17);
+                        if (call.candidate_list_before.size() !=
+                            expected_list.size()) {
+                            std::cerr << " list-size="
+                                      << call.candidate_list_before.size()
+                                      << '/' << expected_list.size();
+                        }
+                        for (std::size_t index = 0;
+                             index < call.candidate_list_before.size() &&
+                             index < expected_list.size(); ++index) {
+                            if (call.candidate_list_before[index] !=
+                                expected_list[index]) {
+                                std::cerr << " list@" << index << '='
+                                          << call.candidate_list_before[index]
+                                          << '/' << expected_list[index];
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            std::string second_rlist_path = make_rlist_fixture_path;
+            const std::string rlist_suffix = "make-rlist-v1.bin";
+            const auto rlist_position = second_rlist_path.rfind(rlist_suffix);
+            if (rlist_position != std::string::npos) {
+                second_rlist_path.replace(
+                    rlist_position, rlist_suffix.size(),
+                    "make-rlist-v2.bin");
+                std::ifstream rlist_probe(second_rlist_path);
+                if (rlist_probe) {
+                    const char magic[8] = {
+                        'M', 'R', 'L', 'I', 'S', 'T', '1', '\0'};
+                    const auto fixture =
+                        load_rdp_sectioned_fixture<MakeRListCaptureHeader>(
+                            second_rlist_path, magic);
+                    const auto expected_acceptable =
+                        rdp_fixture_section<unsigned char>(fixture, 6);
+                    std::cerr << " rlist(selected/good/inv/corr/accept/warn/out)="
+                              << (std::vector<int>(
+                                      second_round_prefix.sequences.begin(),
+                                      second_round_prefix.sequences.end()) ==
+                                  rdp_fixture_section<int>(fixture, 1))
+                              << ','
+                              << (second_round_prefix.good_comparisons ==
+                                  rdp_fixture_section<int>(fixture, 2))
+                              << ','
+                              << (second_round_prefix.correlation_decisions
+                                      .correlations.inversion ==
+                                  rdp_fixture_section<float>(fixture, 3))
+                              << ','
+                              << (second_round_prefix.correlation_decisions
+                                      .correlations.correlation ==
+                                  rdp_fixture_section<float>(fixture, 4))
+                              << ','
+                              << (second_round_prefix.acceptable_correlations ==
+                                  expected_acceptable)
+                              << ','
+                              << (std::vector<unsigned char>(
+                                      second_round_prefix
+                                          .correlation_decisions.warnings.begin(),
+                                      second_round_prefix
+                                          .correlation_decisions.warnings.end()) ==
+                                  rdp_fixture_section<unsigned char>(fixture, 7))
+                              << ','
+                              << (second_round_prefix.actual_resolution
+                                      .calls[0].candidate_list_before ==
+                                  rdp_fixture_section<int>(fixture, 102));
+                    for (std::size_t index = 0;
+                         index < expected_acceptable.size() &&
+                         index < second_round_prefix
+                             .acceptable_correlations.size(); ++index) {
+                        if (expected_acceptable[index] !=
+                            second_round_prefix.acceptable_correlations[index]) {
+                            std::cerr << " accept@" << index << '='
+                                      << static_cast<int>(second_round_prefix
+                                             .acceptable_correlations[index])
+                                      << '/'
+                                      << static_cast<int>(
+                                             expected_acceptable[index]);
+                            break;
+                        }
+                    }
+                }
+            }
+            std::cerr << '\n';
+        }
+    }
     if (!second_make_test_matches || !second_selection_matches) {
         std::cerr << "Second selection mismatch: MakeTest="
                   << second_make_test_matches << " values="
@@ -5285,6 +5602,8 @@ int fasta_all_redo_events_fixture(
               << (second_make_test_matches ? "PASS" : "FAIL")
               << ", second selection "
               << (second_selection_matches ? "PASS" : "FAIL")
+              << ", second round prefix "
+              << (second_round_prefix_matches ? "PASS" : "FAIL")
               << "\n";
 
     return make_test_structure_matches && first_selection_matches &&
@@ -5304,6 +5623,8 @@ int fasta_all_redo_events_fixture(
              && post_rescan_events_match
              && second_make_test_matches
              && second_selection_matches
+             && reusable_round_prefix_matches
+             && second_round_prefix_matches
              ? 0 : 1) : 1;
 }
 
