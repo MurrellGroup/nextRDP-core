@@ -196,6 +196,11 @@ The exact `AddjustCXO` redistribution boundary is now also a reusable library
 routine rather than fixture-runner-only code; its retained event matrix,
 done-state matrix, and pair-rescan schedule remain covered by the same ten
 dataset gate.
+The immediately following inner- and outer-pair rescan screening is now also
+fixture-independent library code. It preserves the source `AlistRDP3` call,
+including the flattened triplet order and correction threshold, and remains
+exact through both post-rescan event sets, the second `MakeTestPVs`/selection,
+and the second resolved-round prefix on all ten datasets.
 Native zero-filled slots created by disabled-method bookkeeping are excluded
 from the RDP-event fixture because they contain no event and cannot overlap a
 real interval. The enclosing post-event sequence-mutation and cyclic rescan

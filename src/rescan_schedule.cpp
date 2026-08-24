@@ -1,5 +1,7 @@
 #include "rescan_schedule.hpp"
 
+#include "MathFuncsDll.h"
+
 #include <stdexcept>
 
 namespace {
@@ -17,6 +19,56 @@ void validate_pairs(int upper_bound,
 }
 
 }  // namespace
+
+std::vector<short> flatten_rdp_triplets(
+    const std::vector<std::array<int, 3>>& triplets) {
+    std::vector<short> output;
+    output.reserve(triplets.size() * 3);
+    for (const auto& triplet : triplets) {
+        for (const int sequence : triplet) {
+            output.push_back(static_cast<short>(sequence));
+        }
+    }
+    return output;
+}
+
+std::vector<unsigned char> screen_rdp_rescan_triplets(
+    const std::vector<std::array<int, 3>>& triplets,
+    const RdpScanState& scan_state,
+    const RdpDistanceState& distance_state,
+    const RdpTreeState& tree_state,
+    const RdpRescanScreenSettings& settings,
+    std::vector<unsigned char>& fss_rdp,
+    std::vector<double>& probability_estimate,
+    std::vector<double>& fact_three,
+    std::vector<double>& fact) {
+    if (triplets.empty()) return {};
+    auto analysis_list = flatten_rdp_triplets(triplets);
+    std::vector<unsigned char> redo(triplets.size(), 0);
+    const double uncorrected_threshold = settings.correction_flag == 0
+        ? settings.probability_cutoff / settings.correction_tests
+        : settings.probability_cutoff;
+    MathFuncs::MyMathFuncs::AlistRDP3(
+        analysis_list.data(), static_cast<int>(triplets.size()) - 1, 0,
+        static_cast<int>(triplets.size()) - 1, scan_state.next_no,
+        uncorrected_threshold, redo.data(), settings.circular,
+        settings.correction_tests, settings.correction_flag,
+        settings.probability_cutoff, settings.target,
+        scan_state.sequence_length, settings.short_output,
+        scan_state.next_no,
+        const_cast<float*>(distance_state.distance.data()),
+        scan_state.next_no,
+        const_cast<float*>(tree_state.tree_distance.data()),
+        settings.fss_upper_bound, scan_state.compressed_sequence_ub,
+        const_cast<unsigned char*>(scan_state.compressed_sequence.data()),
+        const_cast<short*>(scan_state.sequence_data.data()),
+        settings.half_window, settings.full_window, fss_rdp.data(),
+        settings.probability_file_flag,
+        settings.probability_one_upper_bound,
+        settings.probability_two_upper_bound, probability_estimate.data(),
+        settings.factorial_three_upper_bound, fact_three.data(), fact.data());
+    return redo;
+}
 
 void propagate_rdp_group_pairs(
     const int next_no, const int winning_role,

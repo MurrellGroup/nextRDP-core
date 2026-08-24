@@ -4994,15 +4994,33 @@ int fasta_all_redo_events_fixture(
     auto rescan_probability_estimate = probability_estimate;
     auto rescan_fact_three = fact_three;
     auto rescan_fact = fact;
+    RdpRescanScreenSettings reusable_rescan_settings;
+    reusable_rescan_settings.circular = h.circular;
+    reusable_rescan_settings.correction_tests = h.mc_correction;
+    reusable_rescan_settings.correction_flag = h.mc_flag;
+    reusable_rescan_settings.probability_cutoff = h.lowest_probability;
+    reusable_rescan_settings.target = h.target_x;
+    reusable_rescan_settings.short_output = h.short_output;
+    reusable_rescan_settings.fss_upper_bound = h.fss_rdp_ub;
+    reusable_rescan_settings.half_window = h.xover_window;
+    reusable_rescan_settings.full_window = h.xover_window_x;
+    reusable_rescan_settings.probability_file_flag = h.probability_file_flag;
+    reusable_rescan_settings.probability_one_upper_bound =
+        h.probability_one_ub;
+    reusable_rescan_settings.probability_two_upper_bound =
+        h.probability_two_ub;
+    reusable_rescan_settings.factorial_three_upper_bound = h.fact_three_ub;
     const auto inner_scan_state = rebuild_rdp_scan_state(
         scan_state.next_no, scan_state.sequence_length,
         mutation_state.sequence_data, preprocess_api);
-    const auto inner_redo = screen_rdp_rescan_triplets(
-        inner_triplets, inner_scan_state, distance_state, tree_state, h,
+    const auto inner_redo = ::screen_rdp_rescan_triplets(
+        inner_triplets, inner_scan_state, distance_state, tree_state,
+        reusable_rescan_settings,
         rescan_fss_rdp, rescan_probability_estimate, rescan_fact_three,
         rescan_fact);
     auto inner_event_scan_state = inner_scan_state;
-    inner_event_scan_state.analysis_list = flatten_rdp_triplets(inner_triplets);
+    inner_event_scan_state.analysis_list =
+        ::flatten_rdp_triplets(inner_triplets);
     inner_event_scan_state.analysis_list_last =
         static_cast<int>(inner_triplets.size()) - 1;
     const auto inner_rescan_events = scan_rdp_redo_triplets(
@@ -5018,12 +5036,13 @@ int fasta_all_redo_events_fixture(
     combined_rescan_events.current_xover.resize(expanded_next_no + 1, 0);
     const auto expanded_tree_state = build_rdp_upgma_tree_state(
         expanded_next_no, expanded_distance_state);
-    const auto outer_redo = screen_rdp_rescan_triplets(
+    const auto outer_redo = ::screen_rdp_rescan_triplets(
         outer_triplets, expanded_scan_state, expanded_distance_state,
-        expanded_tree_state, h, rescan_fss_rdp,
+        expanded_tree_state, reusable_rescan_settings, rescan_fss_rdp,
         rescan_probability_estimate, rescan_fact_three, rescan_fact);
     auto outer_event_scan_state = expanded_scan_state;
-    outer_event_scan_state.analysis_list = flatten_rdp_triplets(outer_triplets);
+    outer_event_scan_state.analysis_list =
+        ::flatten_rdp_triplets(outer_triplets);
     outer_event_scan_state.analysis_list_last =
         static_cast<int>(outer_triplets.size()) - 1;
     std::vector<double> expanded_store_lpv(
