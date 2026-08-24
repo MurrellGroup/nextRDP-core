@@ -201,5 +201,12 @@ captured triplet order. Runtime traces establish that this path uses the fixed
 `FindAllFlagX=1`. Reproducing the observed flag, the source `CalcChiVals4P3`
 lookup path, compressed informative-site map, and initial `CentreBP` branch
 reduces Dataset0 MaxChi output from 1,286 port records to 636 versus 634 in
-the oracle. The first 40 dispatched triplets now have equal event counts; the
-remaining growth divergence is localized to call 41 for `(0,18,23)`.
+the oracle. A direct trace of the first remaining divergent growth call then
+showed that circular `MCXoverF` does not use that lookup path for its initial
+scan: it calls formula-based `CalcChiValsP`, preserving a full-precision
+double peak value. The port's rounded float-table peak compared equal to a
+later window and reset `GrowMChiWinP2`'s failure count, while the native peak
+compared strictly greater. Restoring the source's circular/formula branch
+removes that event and advances the first count divergence from call 41 to
+call 341. Dataset0 is now 2,033 port records versus 2,034 in the oracle, with
+24 of 25 event-bearing sequence rows exact.

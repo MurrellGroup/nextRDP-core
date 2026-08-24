@@ -1045,10 +1045,20 @@ void run_rdp_maxchi_recheck(
     const std::uint64_t chi_map_hash = fnv1a64(
         reinterpret_cast<const unsigned char*>(table.map.data()),
         table.map.size() * sizeof(int));
-    double maximum = MathFuncs::MyMathFuncs::CalcChiVals4P3(
-        win_upper, critical, half_window, informative, length,
-        window_scores.data(), chi_values.data(), banned_windows.data(),
-        const_cast<float*>(table.values.data() + table.map[half_window]));
+    // MCXoverF uses the full formula path for circular scans.  The float
+    // lookup table is only selected by FindAllFlag=0, CircularFlag=0.
+    // Keeping this distinction is important: the rounded lookup value can
+    // compare equal during GrowMChiWinP2 where the formula value compares
+    // strictly greater.
+    double maximum = settings.circular == 0
+        ? MathFuncs::MyMathFuncs::CalcChiVals4P3(
+              win_upper, critical, half_window, informative, length,
+              window_scores.data(), chi_values.data(), banned_windows.data(),
+              const_cast<float*>(
+                  table.values.data() + table.map[half_window]))
+        : MathFuncs::MyMathFuncs::CalcChiValsP(
+              win_upper, critical, half_window, informative, length,
+              window_scores.data(), chi_values.data());
     if (MathFuncs::MyMathFuncs::ChiPVal2P(maximum) *
             (static_cast<double>(informative) / half_window) * 3.0 >
         settings.lowest_probability) return;
