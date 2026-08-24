@@ -1094,8 +1094,8 @@ void run_rdp_maxchi_recheck(
             maximum_position = settings.circular
                 ? maximum_position - informative : informative - 1;
         }
-        int top_left = left_count;
-        int top_right = right_count;
+        int top_left = growing_window >= half_window ? left_count : 0;
+        int top_right = growing_window >= half_window ? right_count : 0;
         ++growing_window;
         double probability = initial_probability *
             (static_cast<double>(informative) / half_window);
@@ -1308,8 +1308,8 @@ void run_rdp_chimaera_recheck(
             &left_count, &right_count, scores.data());
         const int peak_position = maximum_position;
         maximum_position = circular_position(maximum_position, informative);
-        int top_left = left_count;
-        int top_right = right_count;
+        int top_left = growing_window >= half_window ? left_count : 0;
+        int top_right = growing_window >= half_window ? right_count : 0;
         ++growing_window;
         double probability = initial_probability *
             (static_cast<double>(informative) / half_window);
