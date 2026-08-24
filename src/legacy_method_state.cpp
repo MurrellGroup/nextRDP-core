@@ -1447,7 +1447,7 @@ void run_rdp_chimaera_recheck(
     const std::vector<double>& store_lpv, const int store_lpv_ub,
     const RdpProbabilitySettings& settings,
     RdpLegacyEventAllocator& allocator, const int event_beginning,
-    const int event_ending) {
+    const int event_ending, const bool initial_scan) {
     constexpr int window_size = 60;
     const int length = scan_state.sequence_length;
     int half_window = vb_clng(window_size / 2.0);
@@ -1461,9 +1461,16 @@ void run_rdp_chimaera_recheck(
         const_cast<short*>(scan_state.sequence_data.data()),
         difference_position.data(), position_difference.data());
     if (informative < critical * 2 || informative < 7) return;
-    half_window = event_half_window(
-        event_beginning, event_ending, informative, critical, half_window,
-        position_difference);
+    if (initial_scan) {
+        if (half_window * 2 > informative)
+            half_window = vb_clng(informative * 0.75 / 2.0 + 0.00001) - 1;
+        if (half_window <= critical)
+            half_window = vb_clng(informative / 2.0 + 0.00001) - 1;
+    } else {
+        half_window = event_half_window(
+            event_beginning, event_ending, informative, critical, half_window,
+            position_difference);
+    }
     if (half_window < 0) return;
 
     const int win_upper = length + half_window * 2;
@@ -1488,6 +1495,8 @@ void run_rdp_chimaera_recheck(
     MathFuncs::MyMathFuncs::SmoothChiVals3P(
         informative, length, chi_values.data(), smooth.data());
 
+    int wasted_peaks = 0;
+    double prior_initial_probability = 0.0;
     for (int repetition = 1; repetition <= 100; ++repetition) {
         int maximum_position = -1;
         short comparison = -1;
@@ -1497,6 +1506,8 @@ void run_rdp_chimaera_recheck(
         if (maximum_position < 0 || comparison < 0) return;
         const double initial_probability =
             MathFuncs::MyMathFuncs::ChiPVal2P(maximum);
+        if (initial_probability == prior_initial_probability) return;
+        prior_initial_probability = initial_probability;
         if (initial_probability *
                 (static_cast<double>(informative) / half_window) * 3.0 >
                 settings.lowest_probability ||
@@ -1507,7 +1518,7 @@ void run_rdp_chimaera_recheck(
         if (maximum_position == 0) maximum_position = 1;
         int growing_window = half_window;
         MathFuncs::MyMathFuncs::MakeTWinP(
-            2, half_window, &growing_window, informative);
+            initial_scan ? 0 : 2, half_window, &growing_window, informative);
         int maximum_failures = std::min(
             half_window * 2, (informative - growing_window * 2) / 2);
         if (maximum_failures == 0) maximum_failures = 1;
@@ -1558,30 +1569,101 @@ void run_rdp_chimaera_recheck(
             legacy_find_side(top_left, top_right, length, left, right,
                              best_window, informative, 0, scores,
                              high_left, high_right);
+            if (high_left == 0.0 && high_right == 0.0) return;
             int beginning = 0;
             int ending = 0;
+            int polish_comparison = 0;
             if (high_left >= high_right) {
+                polish_comparison = top_right > top_left ? 1 : 0;
                 left = legacy_opt_left(left, high_left, top_left,
                     maximum_position, 0, best_window, informative,
                     length, scores, missing_map, nullptr);
-                left = circular_position(left, informative);
-                right = circular_position(maximum_position - 1, informative);
+                if (left > informative) left = 1;
+                if (left < 1) left += informative;
+                if (maximum_position < 1)
+                    right = informative + maximum_position;
+                else if (maximum_position > informative)
+                    right = maximum_position - informative;
+                else if (maximum_position == 1)
+                    right = missing_map[1] == 0 ? maximum_position : informative;
+                else
+                    right = maximum_position;
+                if (right > 0) --right;
+                while (missing_map[right] != 0) {
+                    --right;
+                    if (right < 1) right = informative;
+                }
                 ++right;
                 if (right > informative) right = informative;
                 beginning = difference_position[
                     left + 1 > informative ? left : left + 1];
                 ending = difference_position[right];
             } else {
+                polish_comparison = top_right > top_left ? 0 : 1;
                 right = legacy_opt_right(right, high_right, top_right,
                     maximum_position, 0, best_window, informative,
                     length, scores, missing_map);
-                right = circular_position(right, informative);
-                left = circular_position(maximum_position + 1, informative);
+                if (right < 1) right = informative;
+                if (right >= informative * 2) right -= informative * 2;
+                if (right > informative) right -= informative;
+                if (maximum_position < 0)
+                    left = informative + maximum_position;
+                else if (maximum_position > informative)
+                    left = maximum_position - informative;
+                else
+                    left = maximum_position;
+                if (left < informative) ++left;
+                while (missing_map[left] != 0) {
+                    ++left;
+                    if (left > informative) left = 1;
+                }
                 --left;
                 if (left < 1) left = 1;
                 beginning = difference_position[
                     left + 1 > informative ? left : left + 1];
                 ending = difference_position[right];
+            }
+            std::uint8_t outside_flag = 0;
+            if (initial_scan) {
+                centre_initial_breakpoints(
+                    beginning, ending, position_difference,
+                    difference_position, length, informative,
+                    settings.circular != 0);
+                const int left_index = position_difference[beginning];
+                const int right_index = position_difference[ending];
+                std::array<int, 2> inside{};
+                std::array<int, 2> outside{};
+                const auto count_score = [&](std::array<int, 2>& counts,
+                                             const int index) {
+                    ++counts[scores[index] == 0 ? 0 : 1];
+                };
+                if (left_index < right_index) {
+                    for (int x = 0; x < left_index; ++x)
+                        count_score(outside, x);
+                    for (int x = left_index; x <= right_index; ++x)
+                        count_score(inside, x);
+                    for (int x = right_index + 1; x <= informative; ++x)
+                        count_score(outside, x);
+                } else {
+                    for (int x = 0; x <= right_index; ++x)
+                        count_score(inside, x);
+                    for (int x = right_index + 1; x < left_index; ++x)
+                        count_score(outside, x);
+                    for (int x = left_index; x <= informative; ++x)
+                        count_score(inside, x);
+                }
+                outside_flag =
+                    (inside[0] > inside[1] && outside[0] > outside[1]) ||
+                    (inside[1] > inside[0] && outside[1] > outside[0]);
+                legacy_polish_maxchi_breakpoints(
+                    polish_comparison, true, sequences, length, informative,
+                    settings.circular != 0, position_difference,
+                    difference_position, missing_map,
+                    scan_state.sequence_data, beginning, ending, nullptr);
+                centre_initial_breakpoints(
+                    beginning, ending, position_difference,
+                    difference_position, length, informative,
+                    settings.circular != 0);
             }
             maximum_position = peak_position;
             if (left < right) {
@@ -1604,8 +1686,13 @@ void run_rdp_chimaera_recheck(
             // FindallFlag>1 reverse-region allocation block is skipped.
             fill_legacy_event(allocator, active, 4, probability,
                               beginning, ending, best_window, false);
+            auto& event = allocator.event(active[0], allocator.count(active[0]));
+            event.outside_flag = outside_flag;
+            event.distance_holder = sequences[0];
+            wasted_peaks = 0;
         } else {
-            int point = original_maximum;
+            if (++wasted_peaks == 3) return;
+            int point = peak_position;
             double scratch[2]{};
             MathFuncs::MyMathFuncs::DestroyPeakP(
                 0, length, point, point, informative, scratch,

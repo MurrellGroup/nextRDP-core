@@ -109,7 +109,8 @@ void run_rdp_chimaera_recheck(
     const RdpScanState& scan_state, const std::array<int, 3>& sequences,
     const std::vector<double>& store_lpv, int store_lpv_ub,
     const RdpProbabilitySettings& settings,
-    RdpLegacyEventAllocator& allocator, int event_beginning, int event_ending);
+    RdpLegacyEventAllocator& allocator, int event_beginning, int event_ending,
+    bool initial_scan = false);
 
 // Literal allocation/order portion of Module3.TSXOver(1).  The two tested
 // excursions are emitted in source order and each accepted event requests
