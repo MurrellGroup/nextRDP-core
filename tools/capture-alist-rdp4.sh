@@ -52,6 +52,10 @@ awk '
       print "    FindSubSeqGCAP7=FindSubSeqGCAP7Capture@52 " ordinal
     else if (name == "FindSubSeqMCPB")
       print "    FindSubSeqMCPB=FindSubSeqMCPBCapture@40 " ordinal
+    else if (name == "MakeTWinP")
+      print "    MakeTWinP=MakeTWinPCapture@16 " ordinal
+    else if (name == "GrowMChiWinP2")
+      print "    GrowMChiWinP2=GrowMChiWinP2Capture@84 " ordinal
     else if (name == "MakeTestPVs")
       print "    MakeTestPVs=MakeTestPVsCapture@32 " ordinal
     else if (name == "FindBestRecSignalP2")

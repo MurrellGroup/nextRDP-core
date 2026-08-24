@@ -25,9 +25,11 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <set>
 #include <string_view>
 #include <tuple>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -5814,11 +5816,44 @@ int fasta_geneconv_events_fixture(
             });
         }
     }
+    struct MaxchiEmissionTrace {
+        int invocation;
+        std::array<int, 3> input;
+        RdpRawEvent event;
+    };
+    struct MaxchiCallPeakTrace {
+        int invocation;
+        std::array<int, 3> input;
+        std::vector<MaxchiPeakTrace> peaks;
+    };
+    std::vector<MaxchiEmissionTrace> maxchi_trace;
+    std::vector<MaxchiCallPeakTrace> maxchi_peak_trace;
     if (enable_maxchi) {
+        int maxchi_informative_mismatches = 0;
+        int maxchi_invocation = 0;
         const auto run_maxchi = [&](const std::array<int, 3>& sequences) {
+            const auto before = events.current_xover;
+            if (maxchi_invocation == 0) {
+                std::cerr << "First MaxChi input pre-counts="
+                          << before[sequences[0]] << ','
+                          << before[sequences[1]] << ','
+                          << before[sequences[2]] << '\n';
+            }
+            std::vector<MaxchiPeakTrace> peaks;
             run_rdp_maxchi_recheck(
                 scan_state, sequences, store_lpv, h.store_lpv_ub,
-                probability_settings, allocator, 0, 0, true);
+                probability_settings, allocator, 0, 0, true, &peaks);
+            ++maxchi_invocation;
+            maxchi_peak_trace.push_back(
+                {maxchi_invocation, sequences, std::move(peaks)});
+            for (int sequence = 0; sequence <= scan_state.next_no; ++sequence) {
+                for (int slot = before[sequence] + 1;
+                     slot <= events.current_xover[sequence]; ++slot) {
+                    maxchi_trace.push_back({
+                        maxchi_invocation, sequences,
+                        events.xover_list[sequence][slot - 1]});
+                }
+            }
         };
         if (!maxchi_order_path.empty()) {
             std::ifstream count_input(maxchi_count_path, std::ios::binary);
@@ -5832,6 +5867,20 @@ int fasta_geneconv_events_fixture(
                     reinterpret_cast<char*>(record.data()), sizeof(record));
                 if (!order_input)
                     throw std::runtime_error("truncated MaxChi call-order fixture");
+                std::vector<int> difference_position(
+                    scan_state.sequence_length + 2, 0);
+                std::vector<int> position_difference(
+                    scan_state.sequence_length + 2, 0);
+                const int informative = MathFuncs::MyMathFuncs::FindSubSeqCP(
+                    scan_state.sequence_length + 1,
+                    static_cast<short>(scan_state.next_no),
+                    static_cast<short>(record[4]),
+                    static_cast<short>(record[5]),
+                    static_cast<short>(record[6]),
+                    const_cast<short*>(scan_state.sequence_data.data()),
+                    difference_position.data(), position_difference.data());
+                if (informative != record[7])
+                    ++maxchi_informative_mismatches;
                 run_maxchi({record[4], record[5], record[6]});
             }
         } else {
@@ -5844,6 +5893,8 @@ int fasta_geneconv_events_fixture(
                 });
             }
         }
+        std::cout << "MaxChi informative-count mismatches: "
+                  << maxchi_informative_mismatches << '\n';
     }
 
     const char make_test_magic[8] = {
@@ -5998,6 +6049,89 @@ int fasta_geneconv_events_fixture(
             }
         }
         if (found_different_role) break;
+    }
+    if (enable_maxchi) {
+        using MaxchiIdentity = std::tuple<int, int, int, int, int>;
+        const auto actual_identity = [](const RdpRawEvent& event) {
+            return MaxchiIdentity{
+                event.daughter, event.minor_parent, event.major_parent,
+                event.beginning, event.ending};
+        };
+        const auto expected_identity = [](const XOVERDEFINE& event) {
+            return MaxchiIdentity{
+                event.Daughter, event.MinorP, event.MajorP,
+                event.Beginning, event.Ending};
+        };
+        std::set<std::array<int, 3>> checked;
+        for (const auto& trace : maxchi_trace) {
+            auto sorted_input = trace.input;
+            std::sort(sorted_input.begin(), sorted_input.end());
+            if (!checked.insert(sorted_input).second) continue;
+            std::vector<MaxchiIdentity> actual_group;
+            std::vector<MaxchiIdentity> expected_group;
+            for (const auto& candidate : maxchi_trace) {
+                auto roles = candidate.input;
+                std::sort(roles.begin(), roles.end());
+                if (roles == sorted_input)
+                    actual_group.push_back(actual_identity(candidate.event));
+            }
+            for (int sequence = 0; sequence <= scan_state.next_no; ++sequence) {
+                for (int slot = 1; slot <= native_current[sequence]; ++slot) {
+                    const auto& candidate = native_events[
+                        static_cast<std::size_t>(sequence) +
+                        static_cast<std::size_t>(slot) *
+                            (make_test_fixture.header.xover_rows_ub + 1)];
+                    if (candidate.ProgramFlag != 3) continue;
+                    std::array<int, 3> roles{
+                        candidate.Daughter, candidate.MinorP,
+                        candidate.MajorP};
+                    std::sort(roles.begin(), roles.end());
+                    if (roles == sorted_input)
+                        expected_group.push_back(expected_identity(candidate));
+                }
+            }
+            if (actual_group.size() == expected_group.size()) continue;
+            std::cerr << "Earliest MaxChi triplet event count differs: call="
+                      << trace.invocation << " input=" << trace.input[0] << ','
+                      << trace.input[1] << ',' << trace.input[2] << " actual="
+                      << actual_group.size() << " expected="
+                      << expected_group.size() << '\n';
+            for (const auto& value : actual_group) {
+                std::cerr << "  actual " << std::get<0>(value) << ','
+                          << std::get<1>(value) << ',' << std::get<2>(value)
+                          << ',' << std::get<3>(value) << ','
+                          << std::get<4>(value) << '\n';
+            }
+            for (const auto& value : expected_group) {
+                std::cerr << "  expected " << std::get<0>(value) << ','
+                          << std::get<1>(value) << ',' << std::get<2>(value)
+                          << ',' << std::get<3>(value) << ','
+                          << std::get<4>(value) << '\n';
+            }
+            for (const auto& call : maxchi_peak_trace) {
+                if (call.invocation != trace.invocation) continue;
+                for (const auto& peak : call.peaks) {
+                    std::cerr << "  peak r=" << peak.repetition
+                              << " pos=" << peak.maximum_position
+                              << " cmp=" << peak.comparison
+                              << " twin=" << peak.test_window
+                              << " initial=" << peak.initial_left << ','
+                              << peak.initial_right
+                              << " win=" << peak.best_window
+                              << " counts=" << peak.top_left << ','
+                              << peak.top_right << " limits="
+                              << peak.top_left_position << ','
+                              << peak.top_right_position << " chi="
+                              << std::setprecision(17)
+                              << peak.initial_maximum << "->"
+                              << peak.grown_maximum << " p="
+                              << peak.probability << " accepted="
+                              << peak.accepted << '\n';
+                }
+                break;
+            }
+            break;
+        }
     }
     using GeneconvIdentity =
         std::tuple<int, int, int, int, int>;

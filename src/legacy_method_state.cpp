@@ -324,10 +324,88 @@ void populate_geneconv_fss_triplet(
     }
 }
 
+int find_subseq_maxchi_compressed(
+    const RdpScanState& scan_state, const std::array<int, 3>& sequences,
+    std::vector<int>& difference_position,
+    std::vector<int>& position_difference) {
+    const int stride = scan_state.compressed_sequence_ub + 1;
+    const auto decode = [](const int code) {
+        return std::array<int, 3>{
+            code / 25, (code / 5) % 5, code % 5};
+    };
+    int informative = 0;
+    int site_position = 0;
+    for (int packed = 1;
+         packed <= scan_state.compressed_sequence_ub; ++packed) {
+        const int first_code = scan_state.compressed_sequence[
+            packed + sequences[0] * stride];
+        const int second_code = scan_state.compressed_sequence[
+            packed + sequences[1] * stride];
+        const int third_code = scan_state.compressed_sequence[
+            packed + sequences[2] * stride];
+        const auto first = decode(first_code);
+        const auto second = decode(second_code);
+        const auto third = decode(third_code);
+        for (int site = 0; site < 3; ++site) {
+            ++site_position;
+            if (first_code < 125 && second_code < 125 && third_code < 125 &&
+                first[site] != 0 && second[site] != 0 && third[site] != 0 &&
+                (first[site] != third[site] ||
+                 first[site] != second[site])) {
+                ++informative;
+                difference_position[informative] = site_position;
+            }
+            position_difference[site_position] = informative;
+        }
+    }
+    return informative;
+}
+
 int circular_position(int position, const int length) {
     while (position < 1) position += length;
     while (position > length) position -= length;
     return position;
+}
+
+// Module3.CentreBP with OBE=OEN=0 and SEventNumber=0, the initial-scan
+// branch. It centres each raw informative-site boundary in the flanking
+// invariant interval before MCXoverF stores the event.
+void centre_initial_breakpoints(
+    int& beginning, int& ending, std::vector<int>& position_difference,
+    const std::vector<int>& difference_position, const int sequence_length,
+    const int informative, const bool circular) {
+    const int beginning_index = position_difference[beginning];
+    if (beginning_index - 1 > 0) {
+        beginning -= vb_clng(
+            (static_cast<double>(
+                beginning - difference_position[beginning_index - 1]) /
+             2.0) - 0.1);
+    } else {
+        beginning -= vb_clng(
+            (static_cast<double>(
+                beginning + sequence_length -
+                difference_position[informative]) /
+             2.0) - 0.1);
+    }
+    if (beginning == 0) beginning = 1;
+    else if (beginning < 1)
+        beginning = circular ? sequence_length + beginning : 1;
+
+    position_difference[sequence_length] = informative;
+    const int ending_index = position_difference[ending];
+    if (ending_index + 1 <= informative) {
+        ending += vb_clng(
+            (static_cast<double>(
+                difference_position[ending_index + 1] - ending) /
+             2.0) - 0.1);
+    } else {
+        ending += vb_clng(
+            (static_cast<double>(
+                difference_position[1] + sequence_length - ending) /
+             2.0) - 0.1);
+    }
+    if (ending > sequence_length)
+        ending = circular ? ending - sequence_length : sequence_length;
 }
 
 int event_half_window(const int event_beginning, const int event_ending,
@@ -897,20 +975,17 @@ void run_rdp_maxchi_recheck(
     const std::vector<double>& store_lpv, const int store_lpv_ub,
     const RdpProbabilitySettings& settings,
     RdpLegacyEventAllocator& allocator, const int event_beginning,
-    const int event_ending, const bool initial_scan) {
+    const int event_ending, const bool initial_scan,
+    std::vector<MaxchiPeakTrace>* trace) {
     constexpr int window_size = 70;
     constexpr int max_window = ChiLookupTable::max_window;
     const int length = scan_state.sequence_length;
     int half_window = vb_clng(window_size / 2.0);
     int critical = critical_difference(window_size, settings.lowest_probability);
-    std::vector<int> difference_position(length + 2, 0);
-    std::vector<int> position_difference(length + 2, 0);
-    const int informative = MathFuncs::MyMathFuncs::FindSubSeqCP(
-        length + 1, static_cast<short>(scan_state.next_no),
-        static_cast<short>(sequences[0]), static_cast<short>(sequences[1]),
-        static_cast<short>(sequences[2]),
-        const_cast<short*>(scan_state.sequence_data.data()),
-        difference_position.data(), position_difference.data());
+    std::vector<int> difference_position(length + 201, 0);
+    std::vector<int> position_difference(length + 201, 0);
+    const int informative = find_subseq_maxchi_compressed(
+        scan_state, sequences, difference_position, position_difference);
     if (informative < critical * 2 || informative < 7) return;
     if (initial_scan) {
         // MakeWindowSize takes the configured fixed width when BEP=ENP=0,
@@ -937,6 +1012,7 @@ void run_rdp_maxchi_recheck(
         static_cast<std::size_t>(sequence_stride) * 3, 0.0);
     std::vector<double> smooth(
         static_cast<std::size_t>(sequence_stride) * 3, 0.0);
+    std::vector<int> banned_windows(length + 2, 0);
     std::vector<unsigned char> missing_map(length + 3, 0);
     MathFuncs::MyMathFuncs::WinScoreCalcP(
         win_upper, critical, half_window, informative, length + 1,
@@ -944,16 +1020,17 @@ void run_rdp_maxchi_recheck(
         difference_position.data(),
         const_cast<short*>(scan_state.sequence_data.data()),
         window_scores.data());
-    double maximum = MathFuncs::MyMathFuncs::CalcChiValsP(
+    const auto& table = chi_lookup_table();
+    double maximum = MathFuncs::MyMathFuncs::CalcChiVals4P3(
         win_upper, critical, half_window, informative, length,
-        window_scores.data(), chi_values.data());
+        window_scores.data(), chi_values.data(), banned_windows.data(),
+        const_cast<float*>(table.values.data() + table.map[half_window]));
     if (MathFuncs::MyMathFuncs::ChiPVal2P(maximum) *
             (static_cast<double>(informative) / half_window) * 3.0 >
         settings.lowest_probability) return;
     MathFuncs::MyMathFuncs::SmoothChiValsP(
         informative, length, chi_values.data(), smooth.data());
 
-    const auto& table = chi_lookup_table();
     int wasted_peaks = 0;
     for (int repetition = 1; repetition <= 100; ++repetition) {
         int maximum_position = -1;
@@ -971,10 +1048,11 @@ void run_rdp_maxchi_recheck(
         if (initial_probability >= settings.lowest_probability) return;
 
         const int original_maximum = maximum_position;
+        const double initial_maximum = maximum;
         if (maximum_position == 0) maximum_position = 1;
         int growing_window = half_window;
         MathFuncs::MyMathFuncs::MakeTWinP(
-            1, half_window, &growing_window, informative);
+            initial_scan ? 0 : 1, half_window, &growing_window, informative);
         int maximum_failures = half_window * 2;
         maximum_failures = std::min(
             maximum_failures, (informative - growing_window * 2) / 2);
@@ -1019,6 +1097,15 @@ void run_rdp_maxchi_recheck(
             : 1.0e-200;
         probability *= 3.0;
         if (settings.mc_flag == 0) probability *= settings.mc_correction;
+
+        if (trace) {
+            trace->push_back({
+                repetition, original_maximum, comparison, growing_window,
+                left_count, right_count, best_window, top_left, top_right,
+                top_left_position,
+                top_right_position, initial_maximum, maximum, probability,
+                probability < settings.lowest_probability});
+        }
 
         left = maximum_position - best_window;
         right = maximum_position + best_window - 1;
@@ -1078,6 +1165,12 @@ void run_rdp_maxchi_recheck(
                     left + 1 > informative ? left : left + 1];
                 ending = difference_position[right];
             }
+            if (initial_scan) {
+                centre_initial_breakpoints(
+                    beginning, ending, position_difference,
+                    difference_position, length, informative,
+                    settings.circular != 0);
+            }
             maximum_position = peak_position;
             if (left < right) {
                 if (!(maximum_position >= left && maximum_position <= right)) {
@@ -1096,7 +1189,7 @@ void run_rdp_maxchi_recheck(
             const auto active = choose_active(
                 sequences, 3, store_lpv, store_lpv_ub, allocator);
             fill_legacy_event(allocator, active, 3, probability,
-                              beginning, ending, best_window, true);
+                              beginning, ending, best_window, !initial_scan);
             // MCXoverF resets WasteOfTime after every accepted grown peak.
             wasted_peaks = 0;
         } else {

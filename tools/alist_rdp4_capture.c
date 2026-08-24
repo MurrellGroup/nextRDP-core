@@ -64,6 +64,10 @@ typedef int(STDCALL *FindSubSeqGCAP7Fn)(
 typedef int(STDCALL *FindSubSeqMCPBFn)(
     int, int, int, int, int, int, unsigned char *, int *, int *,
     unsigned char *);
+typedef int(STDCALL *MakeTWinPFn)(unsigned char, int, int *, int);
+typedef int(STDCALL *GrowMChiWinP2Fn)(
+    int, int, int, int, int, int, int, int, int, int, int, double *, int *,
+    double *, int *, int *, int *, int *, unsigned char *, float *, int *);
 
 typedef struct XOVERDEFINE {
   unsigned char OutsideFlag;
@@ -606,6 +610,8 @@ static void write_section(HANDLE file, u32 id, const void *data, u32 bytes) {
 
 static int geneconv_invocation;
 static int maxchi_invocation;
+static int maxchi_make_twin_invocation;
+static int maxchi_grow_invocation;
 
 int STDCALL XOHomologyPCapture(
     short inlyer, int sequence_length, int xover_length, short xover_window,
@@ -2282,6 +2288,99 @@ int STDCALL FindSubSeqMCPBCapture(
       SetFilePointer(file, 0, (long *)0, FILE_END);
     write_bytes(file, record, (DWORD)sizeof(record));
     CloseHandle(file);
+  }
+  return result;
+}
+
+int STDCALL MakeTWinPCapture(
+    unsigned char find_all, int half_window, int *test_window,
+    int informative) {
+  static MakeTWinPFn original;
+  int record[7];
+  int result;
+  HANDLE file;
+  if (!original) {
+    HMODULE module = LoadLibraryA("DNA5_original.dll");
+    if (module)
+      original = (MakeTWinPFn)GetProcAddress(module, "MakeTWinP");
+  }
+  if (!original) return 0;
+  record[0] = maxchi_invocation;
+  record[1] = (int)find_all;
+  record[2] = half_window;
+  record[3] = *test_window;
+  record[4] = informative;
+  result = original(find_all, half_window, test_window, informative);
+  record[5] = *test_window;
+  record[6] = result;
+  if (maxchi_invocation > 0) {
+    ++maxchi_make_twin_invocation;
+    file = CreateFileA(
+        "maxchi-make-twin.bin", GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, (void *)0,
+        maxchi_make_twin_invocation == 1 ? CREATE_ALWAYS : OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
+    if (file != INVALID_HANDLE_VALUE) {
+      SetFilePointer(file, 0, (long *)0, FILE_END);
+      write_bytes(file, record, (DWORD)sizeof(record));
+      CloseHandle(file);
+    }
+  }
+  return result;
+}
+
+int STDCALL GrowMChiWinP2Capture(
+    int max_ab_window, int left, int right, int informative, int half_window,
+    int test_window, int comparison, int sequence_length, int left_count,
+    int right_count, int max_failures, double *probability, int *best_window,
+    double *maximum, int *top_left, int *top_right, int *top_left_position,
+    int *top_right_position, unsigned char *scores, float *chi_table,
+    int *chi_map) {
+  static GrowMChiWinP2Fn original;
+  int record[16];
+  int result;
+  HANDLE file;
+  if (!original) {
+    HMODULE module = LoadLibraryA("DNA5_original.dll");
+    if (module)
+      original = (GrowMChiWinP2Fn)GetProcAddress(
+          module, "GrowMChiWinP2");
+  }
+  if (!original) return 0;
+  record[0] = maxchi_invocation;
+  record[1] = half_window;
+  record[2] = test_window;
+  record[3] = informative;
+  record[4] = comparison;
+  record[5] = left_count;
+  record[6] = right_count;
+  record[7] = max_failures;
+  record[8] = *best_window;
+  result = original(
+      max_ab_window, left, right, informative, half_window, test_window,
+      comparison, sequence_length, left_count, right_count, max_failures,
+      probability, best_window, maximum, top_left, top_right,
+      top_left_position, top_right_position, scores, chi_table, chi_map);
+  record[9] = result;
+  record[10] = *best_window;
+  record[11] = *top_left;
+  record[12] = *top_right;
+  record[13] = *top_left_position;
+  record[14] = *top_right_position;
+  record[15] = (int)(*maximum * 1000000.0);
+  if (maxchi_invocation > 0) {
+    ++maxchi_grow_invocation;
+    file = CreateFileA(
+        "maxchi-grow.bin", GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, (void *)0,
+        maxchi_grow_invocation == 1 ? CREATE_ALWAYS : OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
+    if (file != INVALID_HANDLE_VALUE) {
+      if (maxchi_grow_invocation != 1)
+        SetFilePointer(file, 0, (long *)0, FILE_END);
+      write_bytes(file, record, (DWORD)sizeof(record));
+      CloseHandle(file);
+    }
   }
   return result;
 }

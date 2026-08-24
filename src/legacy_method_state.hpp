@@ -14,6 +14,24 @@ struct GeneconvEmissionTrace {
     RdpRawEvent event{};
 };
 
+struct MaxchiPeakTrace {
+    int repetition = 0;
+    int maximum_position = 0;
+    int comparison = 0;
+    int test_window = 0;
+    int initial_left = 0;
+    int initial_right = 0;
+    int best_window = 0;
+    int top_left = 0;
+    int top_right = 0;
+    int top_left_position = 0;
+    int top_right_position = 0;
+    double initial_maximum = 0.0;
+    double grown_maximum = 0.0;
+    double probability = 1.0;
+    bool accepted = false;
+};
+
 // State shared by the methods called from Module2.FinalTrim.  In VB6 the
 // methods all append through UpdateXOList3 into one rectangular XOverList;
 // its second-dimension upper bound is observable (TSXOver has a strict-bound
@@ -56,7 +74,8 @@ void run_rdp_maxchi_recheck(
     const std::vector<double>& store_lpv, int store_lpv_ub,
     const RdpProbabilitySettings& settings,
     RdpLegacyEventAllocator& allocator, int event_beginning, int event_ending,
-    bool initial_scan = false);
+    bool initial_scan = false,
+    std::vector<MaxchiPeakTrace>* trace = nullptr);
 
 // Module30.CXoverA(2), the Chimaera recheck used in each of FinalTrim's three
 // source-order role rotations.

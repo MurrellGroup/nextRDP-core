@@ -193,3 +193,13 @@ Native zero-filled slots created by disabled-method bookkeeping are excluded
 from the RDP-event fixture because they contain no event and cannot overlap a
 real interval. The enclosing post-event sequence-mutation and cyclic rescan
 loop remains the next parity boundary.
+
+The initial method stream now also enters MaxChi using the native dispatcher’s
+captured triplet order. Runtime traces establish that this path uses the fixed
+70-site window and `FindAllFlag=0`: the first `GrowMChiWinP2` call gets
+`TWin=10`, not the `TWin=36` implied by the supplied VB caller’s assignment of
+`FindAllFlagX=1`. Reproducing the observed flag, the source `CalcChiVals4P3`
+lookup path, compressed informative-site map, and initial `CentreBP` branch
+reduces Dataset0 MaxChi output from 1,286 port records to 636 versus 634 in
+the oracle. The first 40 dispatched triplets now have equal event counts; the
+remaining growth divergence is localized to call 41 for `(0,18,23)`.
