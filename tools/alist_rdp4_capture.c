@@ -66,6 +66,8 @@ typedef int(STDCALL *FindSubSeqGCAP7Fn)(
 typedef int(STDCALL *FindSubSeqMCPBFn)(
     int, int, int, int, int, int, unsigned char *, int *, int *,
     unsigned char *);
+typedef int(STDCALL *FindSubSeqDPFn)(
+    int, short, short, short, short, short *, int *, int *);
 typedef int(STDCALL *MakeTWinPFn)(unsigned char, int, int *, int);
 typedef int(STDCALL *GrowMChiWinP2Fn)(
     int, int, int, int, int, int, int, int, int, int, int, double *, int *,
@@ -625,6 +627,7 @@ static u64 fnv1a64(const void *data, u32 bytes) {
 
 static int geneconv_invocation;
 static int maxchi_invocation;
+static int chimaera_invocation;
 static int maxchi_make_twin_invocation;
 static int maxchi_grow_invocation;
 static int maxchi_chi_hash_ready;
@@ -1219,6 +1222,15 @@ int STDCALL MakeTestPVsCapture(
     if (file != INVALID_HANDLE_VALUE) {
       write_bytes(file, &maxchi_invocation,
                   (DWORD)sizeof(maxchi_invocation));
+      CloseHandle(file);
+    }
+    file = CreateFileA(
+        "chimaera-count-at-first-make-test.bin", GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, (void *)0, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
+    if (file != INVALID_HANDLE_VALUE) {
+      write_bytes(file, &chimaera_invocation,
+                  (DWORD)sizeof(chimaera_invocation));
       CloseHandle(file);
     }
   }
@@ -2331,6 +2343,45 @@ int STDCALL FindSubSeqMCPBCapture(
       write_bytes(file, hash_record, (DWORD)sizeof(hash_record));
       CloseHandle(file);
     }
+  }
+  return result;
+}
+
+/* Record source-order triplets entering the Chimaera CXoverA path. */
+int STDCALL FindSubSeqDPCapture(
+    int sequence_length, short next_no, short seq1, short seq2, short seq3,
+    short *sequence_data, int *difference_position,
+    int *position_difference) {
+  static FindSubSeqDPFn original;
+  static HANDLE trace_file = INVALID_HANDLE_VALUE;
+  int record[8];
+  int result;
+  if (!original) {
+    HMODULE module = LoadLibraryA("DNA5_original.dll");
+    if (module)
+      original = (FindSubSeqDPFn)GetProcAddress(module, "FindSubSeqDP");
+  }
+  if (!original) return 0;
+  result = original(
+      sequence_length, next_no, seq1, seq2, seq3, sequence_data,
+      difference_position, position_difference);
+  ++chimaera_invocation;
+  record[0] = chimaera_invocation;
+  record[1] = sequence_length;
+  record[2] = next_no;
+  record[3] = seq1;
+  record[4] = seq2;
+  record[5] = seq3;
+  record[6] = result;
+  record[7] = maxchi_invocation;
+  if (trace_file == INVALID_HANDLE_VALUE) {
+    trace_file = CreateFileA(
+        "chimaera-call-order.bin", GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, (void *)0, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
+  }
+  if (trace_file != INVALID_HANDLE_VALUE) {
+    write_bytes(trace_file, record, (DWORD)sizeof(record));
   }
   return result;
 }
