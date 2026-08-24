@@ -3525,7 +3525,13 @@ int fasta_all_redo_events_fixture(
                   << (pattern_state.done == expected_pattern_done) << '\n';
     }
     bool final_trim_prefix_matches = true;
-    bool final_trim_runs = false;
+    const auto all_positive = [](const std::array<int, 3>& values) {
+        return std::all_of(values.begin(), values.end(),
+                           [](const int value) { return value > 0; });
+    };
+    const bool final_trim_runs =
+        all_positive(initial_tree_compatibility.background_compatibility) &&
+        all_positive(initial_tree_compatibility.region_compatibility);
     RdpFinalTrimState downstream_candidates;
     downstream_candidates.candidate_last = actual_resolution.candidates.last;
     downstream_candidates.candidate_list = actual_resolution.candidates.list;
@@ -3534,6 +3540,7 @@ int fasta_all_redo_events_fixture(
     std::array<int, 3> expected_trim_last{};
     std::vector<int> expected_trim_list;
     for (unsigned int call_index = 6;
+         final_trim_runs &&
          call_index < rcompat_fixture.header.calls; ++call_index) {
         const int base = static_cast<int>(call_index) * 1000;
         const auto call_last =
@@ -3546,7 +3553,6 @@ int fasta_all_redo_events_fixture(
                 expected_trim_last = {
                     call_last[0], call_last[1], call_last[2]};
                 expected_trim_list = call_list;
-                final_trim_runs = true;
             }
             break;
         }
@@ -4092,6 +4098,63 @@ int fasta_all_redo_events_fixture(
         first_direct_small, second_direct_small,
         first_adjusted_small, second_adjusted_small,
         downstream_candidates);
+    const auto reusable_complete_round = identify_rdp_complete_round(
+        scan_state, distance_state, events, selected, missing_data,
+        scan_state.next_no, check_header.minimum_sequence_size);
+    bool reusable_complete_round_matches =
+        reusable_complete_round.consensus_retrimmed == final_trim_runs &&
+        reusable_complete_round.pattern.pattern == pattern_state.pattern &&
+        reusable_complete_round.pattern.done == pattern_state.done &&
+        reusable_complete_round.tree_compatibility.background ==
+            tree_compatibility_flow.background &&
+        reusable_complete_round.tree_compatibility.region ==
+            tree_compatibility_flow.region &&
+        reusable_complete_round.triplet_scores == triplet_scores &&
+        reusable_complete_round.post_trim_background ==
+            post_trim_background &&
+        reusable_complete_round.post_trim_region == post_trim_region &&
+        reusable_complete_round.consensus.winning_role == expected_winner &&
+        reusable_complete_round.final_candidates.candidate_last ==
+            final_candidates.candidate_last;
+    for (int role = 0; role < 3 && reusable_complete_round_matches; ++role) {
+        reusable_complete_round_matches =
+            reusable_complete_round.phylpro[role].scores ==
+                phpr_states[role].scores;
+        for (int slot = 0;
+             slot <= final_candidates.candidate_last[role] &&
+             reusable_complete_round_matches;
+             ++slot) {
+            reusable_complete_round_matches =
+                reusable_complete_round.final_candidates.candidate_list[
+                    role + slot * 3] ==
+                final_candidates.candidate_list[role + slot * 3];
+        }
+    }
+    if (!reusable_complete_round_matches) {
+        std::cerr << "Reusable complete round mismatch: retrim="
+                  << reusable_complete_round.consensus_retrimmed << '/'
+                  << final_trim_runs << " winner="
+                  << reusable_complete_round.consensus.winning_role << '/'
+                  << expected_winner << " lists=";
+        for (int role = 0; role < 3; ++role) {
+            std::cerr << reusable_complete_round.final_candidates
+                             .candidate_last[role]
+                      << '/' << final_candidates.candidate_last[role] << ',';
+        }
+        std::cerr << " compatibility=";
+        for (const int value : reusable_complete_round.tree_compatibility.background) {
+            std::cerr << value << ',';
+        }
+        std::cerr << '/';
+        for (const int value : reusable_complete_round.tree_compatibility.region) {
+            std::cerr << value << ',';
+        }
+        std::cerr << " post=";
+        for (const int value : post_trim_background) std::cerr << value << ',';
+        std::cerr << '/';
+        for (const int value : post_trim_region) std::cerr << value << ',';
+        std::cerr << '\n';
+    }
     bool second_final_trim_matches = expected_final_last.size() == 3;
     for (int role = 0; role < 3 && second_final_trim_matches; ++role) {
         second_final_trim_matches = expected_final_last[role] ==
@@ -5714,6 +5777,8 @@ int fasta_all_redo_events_fixture(
               << (second_selection_matches ? "PASS" : "FAIL")
               << ", second round prefix "
               << (second_round_prefix_matches ? "PASS" : "FAIL")
+              << ", reusable complete round "
+              << (reusable_complete_round_matches ? "PASS" : "FAIL")
               << "\n";
 
     return make_test_structure_matches && first_selection_matches &&
@@ -5735,6 +5800,7 @@ int fasta_all_redo_events_fixture(
              && second_selection_matches
              && reusable_round_prefix_matches
              && second_round_prefix_matches
+             && reusable_complete_round_matches
              ? 0 : 1) : 1;
 }
 

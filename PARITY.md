@@ -201,6 +201,12 @@ fixture-independent library code. It preserves the source `AlistRDP3` call,
 including the flattened triplet order and correction threshold, and remains
 exact through both post-rescan event sets, the second `MakeTestPVs`/selection,
 and the second resolved-round prefix on all ten datasets.
+The entire identification path for one selected event is now exposed as a
+fixture-independent production routine. Starting only from live scan state,
+the selected raw event, and the current event list, it reproduces the source
+compatibility-family ordering, PhylPro and tree support, literal retrim
+condition, consensus winner, and strict final candidate groups on all ten
+datasets. No fixture or precomputed consensus value is read by this routine.
 Native zero-filled slots created by disabled-method bookkeeping are excluded
 from the RDP-event fixture because they contain no event and cannot overlap a
 real interval. The enclosing post-event sequence-mutation and cyclic rescan

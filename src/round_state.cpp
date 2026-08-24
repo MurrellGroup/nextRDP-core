@@ -364,3 +364,248 @@ RdpRoundPrefixState identify_rdp_round_prefix(
         std::move(candidates), state.dont_redo, events, next_no);
     return state;
 }
+
+RdpCompleteRoundState identify_rdp_complete_round(
+    const RdpScanState& scan_state,
+    const RdpDistanceState& full_distance,
+    const RdpRawEventState& events,
+    const RdpRawEvent& selected,
+    const std::vector<unsigned char>& missing_data,
+    int permanent_next_no,
+    const int minimum_sequence_size) {
+    RdpCompleteRoundState state;
+    state.prefix = identify_rdp_round_prefix(
+        scan_state, full_distance, events, selected, missing_data,
+        minimum_sequence_size);
+    const int next_no = scan_state.next_no;
+    if (permanent_next_no < 0) permanent_next_no = next_no;
+    const auto& prefix = state.prefix;
+    const auto& sequences = prefix.sequences;
+    constexpr std::array<int, 6> comparison{1, 0, 0, 2, 2, 1};
+
+    const auto initial_compatibility = evaluate_rdp_tree_compatibility(
+        next_no, sequences, comparison,
+        prefix.actual_resolution.inversion_penalty,
+        prefix.actual_resolution.candidates.last,
+        prefix.actual_resolution.candidates.list, prefix.good_comparisons,
+        prefix.background_adjusted, prefix.region_adjusted);
+    const auto tied = [](const std::array<int, 3>& values) {
+        return values[0] == values[1] && values[0] == values[2];
+    };
+    std::vector<float> background_secondary;
+    std::vector<float> region_secondary;
+    if (tied(initial_compatibility.background_compatibility)) {
+        background_secondary = prefix.background_collapsed;
+    }
+    if (tied(initial_compatibility.region_compatibility)) {
+        region_secondary = prefix.region_collapsed;
+    }
+    state.tree_compatibility = run_rdp_tree_compatibility_flow(
+        scan_state.sequence_length, next_no, selected.beginning,
+        selected.ending, sequences, comparison,
+        prefix.actual_resolution.inversion_penalty,
+        prefix.actual_resolution.candidates.last,
+        prefix.actual_resolution.candidates.list, prefix.good_comparisons,
+        prefix.background_adjusted, prefix.region_adjusted,
+        background_secondary, region_secondary, events);
+
+    state.score_filters[0] = make_rdp_score_filter(
+        next_no, sequences, prefix.first_direct_small,
+        prefix.first_direct_small, prefix.region_direct_small);
+    state.phylpro[0] = make_rdp_phylpro_scores(
+        next_no, 1.0e-14, state.score_filters[0], sequences,
+        prefix.matrices.background, prefix.matrices.event_region);
+    state.phylpro[1] = make_rdp_phylpro_scores(
+        next_no, 1.0e-14, state.score_filters[0], sequences,
+        prefix.background_adjusted, prefix.region_adjusted);
+    state.score_filters[1] = make_rdp_score_filter(
+        next_no, sequences, prefix.first_direct_small,
+        prefix.first_direct_small, prefix.region_direct_small);
+    state.phylpro[2] = make_rdp_phylpro_scores(
+        next_no, 1.0e-14, state.score_filters[1], sequences,
+        prefix.background_collapsed, prefix.region_collapsed);
+
+    for (int role = 0; role < 3; ++role) {
+        state.triplet_groups[role] = make_rdp_triplet_groups(
+            role, next_no, sequences, comparison,
+            prefix.first_adjusted_small);
+        state.triplet_scores[role] = make_rdp_triplet_tree_score(
+            role, next_no, sequences, prefix.first_adjusted_small,
+            prefix.region_adjusted_small, state.triplet_groups[role]);
+    }
+
+    const std::array<int, 3> pattern_starts{
+        prefix.starts[0], prefix.starts[2], prefix.starts[4]};
+    const std::array<int, 3> pattern_ends{
+        prefix.ends[1], prefix.ends[3], prefix.ends[4]};
+    state.pattern = check_rdp_sequence_patterns(
+        scan_state.sequence_length, next_no, sequences, pattern_starts,
+        pattern_ends, comparison, scan_state.sequence_data,
+        prefix.actual_resolution.acceptable_sequences);
+    state.consensus_candidates.candidate_last =
+        prefix.actual_resolution.candidates.last;
+    state.consensus_candidates.candidate_list =
+        prefix.actual_resolution.candidates.list;
+    state.consensus_candidates.acceptable_sequences =
+        state.pattern.acceptable_sequences;
+
+    // Module3 tests the first FAMat/SAMat MakeRCompat families here. The
+    // later fallback/set families feed MakeConsensusC but do not control
+    // RetrimFlag.
+    state.consensus_retrimmed =
+        std::all_of(initial_compatibility.background_compatibility.begin(),
+                    initial_compatibility.background_compatibility.end(),
+                    [](const int value) { return value > 0; }) &&
+        std::all_of(initial_compatibility.region_compatibility.begin(),
+                    initial_compatibility.region_compatibility.end(),
+                    [](const int value) { return value > 0; });
+    if (state.consensus_retrimmed) {
+        auto trimmed = run_rdp_final_trim_candidate_maintenance(
+            next_no, sequences, comparison, prefix.minimum_pair,
+            prefix.role_lists.inside,
+            prefix.correlation_decisions.warnings,
+            prefix.actual_resolution.unfound,
+            prefix.actual_resolution.correlations.correlations.correlation,
+            prefix.actual_resolution.correlations.correlations.inversion,
+            prefix.local_distance_panels, prefix.first_adjusted_small,
+            prefix.region_adjusted_small, prefix.first_collapsed_small,
+            prefix.region_collapsed_small,
+            prefix.actual_resolution.candidates.last,
+            prefix.actual_resolution.candidates.list,
+            state.pattern.acceptable_sequences);
+        trimmed.acceptable_sequences = calculate_rdp_match_evidence(
+            scan_state.sequence_length, next_no, selected.beginning,
+            selected.ending, sequences, comparison, scan_state.sequence_data,
+            trimmed.acceptable_sequences, true);
+        state.consensus_candidates = make_rdp_consensus_candidates(
+            next_no, sequences, comparison,
+            prefix.correlation_decisions.warnings,
+            prefix.actual_resolution.correlations.correlations.correlation,
+            prefix.actual_resolution.correlations.correlations.inversion,
+            prefix.matrices.background, prefix.matrices.event_region,
+            prefix.background_adjusted, prefix.region_adjusted,
+            prefix.first_direct_small, prefix.region_direct_small,
+            prefix.first_adjusted_small, prefix.region_adjusted_small,
+            prefix.first_collapsed_small, prefix.region_collapsed_small,
+            std::move(trimmed), true);
+    }
+
+    const std::vector<unsigned char> maximum_distance_mask(
+        static_cast<std::size_t>(next_no + 1), 0);
+    state.maximum_distance = calculate_rdp_maximum_distances(
+        scan_state.sequence_length, next_no, sequences, selected.beginning,
+        selected.ending, scan_state.sequence_data, maximum_distance_mask);
+    state.split_distances = calculate_rdp_split_distances(
+        next_no, sequences, prefix.role_lists.inside,
+        prefix.first_adjusted_small, prefix.matrices.background,
+        prefix.matrices.event_region, state.score_filters[0]);
+    state.simple_distances = calculate_rdp_simple_distances(
+        next_no, sequences, prefix.role_lists.inside,
+        prefix.actual_resolution.candidates.last,
+        prefix.actual_resolution.candidates.list, prefix.matrices.background,
+        prefix.matrices.event_region);
+    if (prefix.minimum_pair[0] != prefix.minimum_pair[1]) {
+        state.outlier_checks = calculate_rdp_outlier_checks(
+            next_no, sequences, prefix.role_lists.inside,
+            prefix.first_adjusted_small, prefix.region_adjusted_small);
+        state.list_correlations = calculate_rdp_list_correlations(
+            next_no, sequences, prefix.role_lists.inside,
+            prefix.correlation_decisions.warnings,
+            prefix.actual_resolution.candidates.last,
+            prefix.actual_resolution.candidates.list,
+            prefix.actual_resolution.correlations.correlations.inversion,
+            prefix.actual_resolution.correlations.correlations
+                .tested_correlation,
+            prefix.first_adjusted_small, prefix.region_adjusted_small);
+    }
+    state.bad_distances = calculate_rdp_bad_distances(
+        next_no, sequences, comparison,
+        prefix.actual_resolution.candidates.last,
+        prefix.actual_resolution.candidates.list,
+        prefix.actual_resolution.unfound,
+        prefix.actual_resolution.correlations.correlations.correlation,
+        prefix.first_adjusted_small, prefix.local_distance_panels);
+
+    if (state.consensus_retrimmed) {
+        const auto run_post_trim = [&](const std::vector<float>& matrix,
+                                       const std::array<double, 3>& distances,
+                                       std::array<int, 3>& compatibility) {
+            std::array<int, 3> reverse{};
+            for (int role = 0; role < 3; ++role) {
+                std::array<int, 3> nonrecombinant_last{};
+                std::vector<int> nonrecombinant_list(
+                    static_cast<std::size_t>(3) * (next_no + 1), 0);
+                make_rdp_tree_compatibility_call(
+                    next_no, sequences, comparison, role,
+                    prefix.actual_resolution.inversion_penalty,
+                    state.consensus_candidates.candidate_last,
+                    state.consensus_candidates.candidate_list,
+                    prefix.good_comparisons, matrix, distances,
+                    compatibility, reverse, nonrecombinant_last,
+                    nonrecombinant_list);
+            }
+        };
+        run_post_trim(prefix.background_adjusted,
+                      state.tree_compatibility.calls[0].list_distances,
+                      state.post_trim_background);
+        run_post_trim(prefix.region_adjusted,
+                      state.tree_compatibility.calls[3].list_distances,
+                      state.post_trim_region);
+    }
+
+    RdpConsensusInputs consensus_inputs;
+    consensus_inputs.next_no = next_no;
+    consensus_inputs.permanent_next_no = permanent_next_no;
+    consensus_inputs.comparison_matrix = comparison;
+    consensus_inputs.list_correlation = state.list_correlations.mismatches;
+    consensus_inputs.simple_distance_strength =
+        state.simple_distances.strengths;
+    consensus_inputs.simple_distance_score = state.simple_distances.scores;
+    consensus_inputs.phylpro = state.phylpro[0].scores;
+    consensus_inputs.phylpro_secondary = state.phylpro[1].scores;
+    consensus_inputs.phylpro_collapsed = state.phylpro[2].scores;
+    consensus_inputs.subtree_score = state.phylpro[0].sub_distance_scores;
+    consensus_inputs.split_distance = state.split_distances.distances;
+    consensus_inputs.outlier_index = state.split_distances.outlier_index;
+    consensus_inputs.subtree_phylpro = state.phylpro[0].sub_scores;
+    consensus_inputs.subtree_score_secondary =
+        state.phylpro[1].sub_distance_scores;
+    consensus_inputs.subtree_phylpro_secondary = state.phylpro[1].sub_scores;
+    consensus_inputs.compatibility = state.tree_compatibility.background;
+    consensus_inputs.compatibility_secondary =
+        state.tree_compatibility.background_secondary;
+    consensus_inputs.compatibility_tertiary =
+        state.tree_compatibility.background_sets;
+    consensus_inputs.compatibility_quaternary =
+        state.tree_compatibility.background_secondary_sets;
+    consensus_inputs.region_compatibility = state.tree_compatibility.region;
+    consensus_inputs.region_compatibility_secondary =
+        state.tree_compatibility.region_secondary;
+    consensus_inputs.region_compatibility_tertiary =
+        state.tree_compatibility.region_sets;
+    consensus_inputs.region_compatibility_quaternary =
+        state.tree_compatibility.region_secondary_sets;
+    consensus_inputs.post_trim_compatibility = state.post_trim_background;
+    consensus_inputs.post_trim_region_compatibility = state.post_trim_region;
+    consensus_inputs.triplet_score = state.triplet_scores;
+    consensus_inputs.bad_distances = state.bad_distances;
+    for (int role = 0; role < 3; ++role) {
+        consensus_inputs.outside_list[role] =
+            prefix.role_lists.outside[role];
+    }
+    consensus_inputs.list_correlation_secondary =
+        state.list_correlations.expected_strength;
+    consensus_inputs.list_correlation_tertiary =
+        state.list_correlations.absent_strength;
+    consensus_inputs.outlier_check = state.outlier_checks;
+    consensus_inputs.maximum_distance =
+        state.maximum_distance.maximum_distances;
+    consensus_inputs.ranks = state.simple_distances.ranks;
+    state.consensus = make_rdp_consensus(std::move(consensus_inputs));
+    state.final_candidates = apply_rdp_strict_group_constraints(
+        next_no, sequences, comparison, prefix.matrices.background,
+        prefix.matrices.event_region, prefix.first_direct_small,
+        prefix.region_direct_small, prefix.first_adjusted_small,
+        prefix.region_adjusted_small, state.consensus_candidates);
+    return state;
+}
