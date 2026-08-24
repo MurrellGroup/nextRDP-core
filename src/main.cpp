@@ -1,4 +1,5 @@
 #include "MathFuncsDll.h"
+#include "analysis.hpp"
 #include "alist_rdp4_fixture.hpp"
 #include "distance_fixture.hpp"
 #include "distance_state.hpp"
@@ -5712,6 +5713,78 @@ int fasta_all_redo_events_fixture(
              ? 0 : 1) : 1;
 }
 
+int fasta_rdp_initial_fixture(
+    const std::string& fasta_path, const std::string& make_test_fixture_path) {
+    const auto result = run_rdp_initial_analysis_from_fasta_file(fasta_path);
+    const char magic[8] = {'M', 'K', 'T', 'E', 'S', 'T', 'P', 'V'};
+    const auto fixture =
+        load_rdp_sectioned_fixture<MakeTestPVsCaptureHeader>(
+            make_test_fixture_path, magic);
+    const auto expected_counts = rdp_fixture_section<short>(fixture, 2);
+    const auto expected_events = rdp_fixture_section<XOVERDEFINE>(fixture, 3);
+    int actual_total = 0;
+    int expected_total = 0;
+    int matching_rows = 0;
+    int matching_identities = 0;
+    int matching_probabilities = 0;
+    int compared = 0;
+    for (int sequence = 0; sequence <= result.alignment.next_no; ++sequence) {
+        const int actual_count = result.events.current_xover[sequence];
+        const int expected_count = expected_counts[sequence];
+        actual_total += actual_count;
+        expected_total += expected_count;
+        matching_rows += actual_count == expected_count;
+        const int common = std::min(actual_count, expected_count);
+        for (int slot = 1; slot <= common; ++slot) {
+            const auto& actual = result.events.xover_list[sequence][slot - 1];
+            const auto& expected = expected_events[
+                static_cast<std::size_t>(sequence) +
+                static_cast<std::size_t>(slot) *
+                    (fixture.header.xover_rows_ub + 1)];
+            matching_identities +=
+                actual.outside_flag == expected.OutsideFlag &&
+                actual.misidentify_flag == expected.MissIdentifyFlag &&
+                actual.program_flag == expected.ProgramFlag &&
+                actual.sbp_flag == expected.SBPFlag &&
+                actual.accept == expected.Accept &&
+                actual.major_parent == expected.MajorP &&
+                actual.minor_parent == expected.MinorP &&
+                actual.daughter == expected.Daughter &&
+                actual.beginning == expected.Beginning &&
+                actual.ending == expected.Ending &&
+                actual.length_holder == expected.LHolder &&
+                actual.event_number == expected.Eventnumber &&
+                actual.permutation_pvalue == expected.PermPVal &&
+                actual.begin_parent == expected.BeginP &&
+                actual.end_parent == expected.EndP &&
+                actual.distance_holder == expected.DHolder;
+            const double scale = std::max({
+                std::abs(actual.probability),
+                std::abs(expected.Probability),
+                std::numeric_limits<double>::min(),
+            });
+            matching_probabilities +=
+                actual.probability == expected.Probability ||
+                std::abs(actual.probability - expected.Probability) <=
+                    scale * 1.0e-5;
+            ++compared;
+        }
+    }
+    const bool pass = actual_total == expected_total &&
+        matching_rows == result.alignment.next_no + 1 &&
+        matching_identities == compared &&
+        matching_probabilities == compared && compared == expected_total;
+    std::cout << "RDP standalone initial events "
+              << (pass ? "PASS" : "FAIL") << ": total="
+              << actual_total << '/' << expected_total << " rows="
+              << matching_rows << '/' << result.alignment.next_no + 1
+              << " scanned=" << result.events.scanned_triplets
+              << " identities=" << matching_identities << '/' << compared
+              << " probabilities=" << matching_probabilities << '/'
+              << compared << '\n';
+    return pass ? 0 : 1;
+}
+
 int fasta_geneconv_events_fixture(
     const std::string& fasta_path, const std::string& alist_fixture_path,
     const std::string& define_event_fixture_path,
@@ -6459,6 +6532,10 @@ int main(int argc, char** argv) {
     if (argc == 4 &&
         std::string_view(argv[1]) == "fasta-tree-distance-fixture") {
         return fasta_tree_distance_fixture(argv[2], argv[3]);
+    }
+    if (argc == 4 &&
+        std::string_view(argv[1]) == "fasta-rdp-initial-fixture") {
+        return fasta_rdp_initial_fixture(argv[2], argv[3]);
     }
     if (argc == 4 &&
         std::string_view(argv[1]) == "fasta-alist-rdp4-fixture") {

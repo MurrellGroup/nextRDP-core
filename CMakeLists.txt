@@ -20,6 +20,7 @@ target_compile_options(rdp_dna5_exact PRIVATE
 )
 
 add_library(next_rdp_core STATIC
+    src/analysis.cpp
     src/distance_state.cpp
     src/identification_state.cpp
     src/legacy_method_state.cpp
