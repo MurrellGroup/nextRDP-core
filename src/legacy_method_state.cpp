@@ -1429,7 +1429,10 @@ void run_rdp_maxchi_recheck(
             // Three consecutive grown peaks above LowestProb terminate the
             // source loop before the third peak is deleted.
             if (++wasted_peaks == 3) return;
-            int point = original_maximum;
+            // MCXoverF saves maxz before normalizing a position-zero peak,
+            // but saves pMaxX afterwards. DestroyPeakP receives pMaxX while
+            // the following scalar clear still addresses maxz.
+            int point = peak_position;
             double scratch[2]{};
             MathFuncs::MyMathFuncs::DestroyPeakP(
                 comparison, length, point, point, informative, scratch,
