@@ -31,11 +31,18 @@ struct MaxchiPeakTrace {
     double grown_maximum = 0.0;
     double probability = 1.0;
     std::uint64_t difference_position_hash = 0;
+    std::uint64_t position_difference_hash = 0;
     std::uint64_t score_hash = 0;
     std::array<std::uint64_t, 3> score_plane_hash{};
     std::uint64_t chi_table_hash = 0;
     std::uint64_t chi_map_hash = 0;
     bool accepted = false;
+    int raw_beginning = 0;
+    int raw_ending = 0;
+    int centered_beginning = 0;
+    int centered_ending = 0;
+    int destroy_left = 0;
+    int destroy_right = 0;
 };
 
 // State shared by the methods called from Module2.FinalTrim.  In VB6 the

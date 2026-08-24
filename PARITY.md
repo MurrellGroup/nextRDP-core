@@ -209,4 +209,10 @@ later window and reset `GrowMChiWinP2`'s failure count, while the native peak
 compared strictly greater. Restoring the source's circular/formula branch
 removes that event and advances the first count divergence from call 41 to
 call 341. Dataset0 is now 2,033 port records versus 2,034 in the oracle, with
-24 of 25 event-bearing sequence rows exact.
+24 of 25 event-bearing sequence rows exact. The remaining call-341 miss came
+from collapsing MCXoverF's explicit `MaxX = 1` opposite-boundary branch into a
+generic circular-position helper. That changed the `DestroyPeaks` interval
+from `(1203,1)` to `(1,1492)` and erased an adjacent peak. Reinstating the
+literal source branch restores Dataset0 to 2,034/2,034 records, 25/25 row
+counts, and 2,034/2,034 probabilities. Breakpoint/window structural identity
+is currently 1,755/2,034 and is the next MaxChi boundary.

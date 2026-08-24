@@ -998,6 +998,10 @@ void run_rdp_maxchi_recheck(
     const std::uint64_t difference_position_hash = fnv1a64(
         reinterpret_cast<const unsigned char*>(difference_position.data()),
         static_cast<std::size_t>(informative + 1) * sizeof(int));
+    const std::uint64_t position_difference_hash = fnv1a64(
+        reinterpret_cast<const unsigned char*>(position_difference.data()),
+        static_cast<std::size_t>(
+            scan_state.compressed_sequence_ub * 3 + 1) * sizeof(int));
     if (informative < critical * 2 || informative < 7) return;
     if (initial_scan) {
         // MakeWindowSize takes the configured fixed width when BEP=ENP=0,
@@ -1138,7 +1142,8 @@ void run_rdp_maxchi_recheck(
                 left_count, right_count, best_window, top_left, top_right,
                 top_left_position,
                 top_right_position, initial_maximum, maximum, probability,
-                difference_position_hash, score_hash, score_plane_hash,
+                difference_position_hash, position_difference_hash,
+                score_hash, score_plane_hash,
                 chi_table_hash, chi_map_hash,
                 probability < settings.lowest_probability});
         }
@@ -1169,12 +1174,17 @@ void run_rdp_maxchi_recheck(
                     right = informative + maximum_position;
                 else if (maximum_position > informative)
                     right = maximum_position - informative;
-                else if (maximum_position == 1)
-                    right = maximum_position;
+                else if (maximum_position == 1) {
+                    right = missing_map[1] == 0 && banned_windows[1] == 0
+                        ? maximum_position : informative;
+                }
                 else
                     right = maximum_position;
                 if (right > 0) --right;
-                right = circular_position(right, informative);
+                while (missing_map[right] != 0) {
+                    --right;
+                    if (right < 1) right = informative;
+                }
                 ++right;
                 if (right > informative) right = informative;
                 beginning = difference_position[
@@ -1194,7 +1204,10 @@ void run_rdp_maxchi_recheck(
                 else
                     left = maximum_position;
                 if (left < informative) ++left;
-                left = circular_position(left, informative);
+                while (missing_map[left] != 0) {
+                    ++left;
+                    if (left > informative) left = 1;
+                }
                 --left;
                 if (left < 1) left = 1;
                 beginning = difference_position[
@@ -1202,10 +1215,18 @@ void run_rdp_maxchi_recheck(
                 ending = difference_position[right];
             }
             if (initial_scan) {
+                if (trace) {
+                    trace->back().raw_beginning = beginning;
+                    trace->back().raw_ending = ending;
+                }
                 centre_initial_breakpoints(
                     beginning, ending, position_difference,
                     difference_position, length, informative,
                     settings.circular != 0);
+            }
+            if (trace) {
+                trace->back().centered_beginning = beginning;
+                trace->back().centered_ending = ending;
             }
             maximum_position = peak_position;
             if (left < right) {
@@ -1218,6 +1239,10 @@ void run_rdp_maxchi_recheck(
                 if (std::abs(maximum_position - left) >
                     std::abs(maximum_position - right)) right = maximum_position;
                 else left = maximum_position;
+            }
+            if (trace) {
+                trace->back().destroy_left = left;
+                trace->back().destroy_right = right;
             }
             legacy_destroy_peaks(comparison, informative, length, left, right,
                                  smooth, chi_values);
