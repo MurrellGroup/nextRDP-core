@@ -1,5 +1,6 @@
 #include "analysis.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cctype>
@@ -126,14 +127,60 @@ void json_string(std::ostringstream& output, const std::string& value) {
 std::string summary_json(const WebContext& context) {
     const auto count = context.alignment.sequences.size();
     const auto length = context.alignment.sequences.front().size();
+    std::size_t variable_sites = 0;
+    std::size_t informative_sites = 0;
+    for (std::size_t position = 0; position < length; ++position) {
+        std::array<int, 5> states{};
+        for (const auto& sequence : context.alignment.sequences) {
+            const char character = sequence[position];
+            int state = 0;
+            if (character == 'A' || character == 'a') state = 1;
+            else if (character == 'C' || character == 'c') state = 2;
+            else if (character == 'G' || character == 'g') state = 3;
+            else if (character == 'T' || character == 't' || character == 'U' || character == 'u') state = 4;
+            if (state != 0) ++states[state];
+        }
+        int observed = 0;
+        int repeated_states = 0;
+        for (int state = 1; state <= 4; ++state) {
+            if (states[state] > 0) ++observed;
+            if (states[state] > 1) ++repeated_states;
+        }
+        if (observed > 1) ++variable_sites;
+        if (repeated_states > 1) ++informative_sites;
+    }
+    double minimum_identity = 1.0;
+    double identity_sum = 0.0;
+    std::size_t identity_pairs = 0;
+    for (std::size_t first = 0; first < count; ++first) {
+        for (std::size_t second = first + 1; second < count; ++second) {
+            std::size_t compared = 0;
+            std::size_t matches = 0;
+            for (std::size_t position = 0; position < length; ++position) {
+                const char left = context.alignment.sequences[first][position];
+                const char right = context.alignment.sequences[second][position];
+                if (left == '-' || right == '-' || left == '?' || right == '?') continue;
+                ++compared;
+                if (std::toupper(static_cast<unsigned char>(left)) ==
+                    std::toupper(static_cast<unsigned char>(right))) ++matches;
+            }
+            if (compared == 0) continue;
+            const double identity = static_cast<double>(matches) / static_cast<double>(compared);
+            minimum_identity = std::min(minimum_identity, identity);
+            identity_sum += identity;
+            ++identity_pairs;
+        }
+    }
     std::ostringstream output;
     output << "{\"format\":\"FASTA\",\"sequenceCount\":" << count
            << ",\"alignmentLength\":" << length
            << ",\"activeSequenceCount\":" << count
            << ",\"tripletCount\":" << count * (count - 1) * (count - 2) / 6
-           << ",\"variableSiteCount\":0,\"informativeSiteCount\":0"
-           << ",\"minimumPairIdentity\":null,\"meanPairIdentity\":null"
-           << ",\"recommendedMinimumDistance\":0,\"partitionBoundaries\":[]"
+           << ",\"variableSiteCount\":" << variable_sites
+           << ",\"informativeSiteCount\":" << informative_sites
+           << ",\"minimumPairIdentity\":" << (identity_pairs == 0 ? 0.0 : minimum_identity)
+           << ",\"meanPairIdentity\":" << (identity_pairs == 0 ? 0.0 : identity_sum / identity_pairs)
+           << ",\"recommendedMinimumDistance\":0,\"partitionBoundaries\":[1," << length << "]"
            << ",\"sequences\":[";
     for (std::size_t index = 0; index < count; ++index) {
         if (index != 0) output << ',';
