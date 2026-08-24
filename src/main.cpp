@@ -6,6 +6,7 @@
 #include "find_subseq_pb3_fixture.hpp"
 #include "identification_fixture.hpp"
 #include "identification_state.hpp"
+#include "legacy_method_state.hpp"
 #include "mutation_state.hpp"
 #include "preprocess_fixture.hpp"
 #include "rdp_walk_fixture.hpp"
@@ -22,12 +23,34 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <string_view>
 #include <type_traits>
 #include <vector>
 
 namespace {
+
+std::vector<float> load_rdp_three_seq_table(const std::string& fasta_path,
+                                            int& table_bound) {
+    const auto slash = fasta_path.find_last_of("/\\");
+    const std::string path = (slash == std::string::npos
+        ? std::string{} : fasta_path.substr(0, slash + 1)) + "3seqTable";
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input) return {};
+    const auto bytes = static_cast<std::size_t>(input.tellg());
+    if (bytes < sizeof(int) + sizeof(float)) return {};
+    input.seekg(0);
+    int maximum_permutation_distance = 0;
+    input.read(reinterpret_cast<char*>(&maximum_permutation_distance),
+               sizeof(maximum_permutation_distance));
+    std::vector<float> table((bytes - sizeof(int)) / sizeof(float));
+    input.read(reinterpret_cast<char*>(table.data()),
+               static_cast<std::streamsize>(table.size() * sizeof(float)));
+    // Build3SeqTable uses ReDim XTable(MaxPermDists + 1, ...).
+    table_bound = maximum_permutation_distance + 1;
+    return table;
+}
 
 #pragma pack(push, 1)
 struct ModSeqNumYCaptureHeader {
@@ -157,6 +180,11 @@ bool raw_event_equivalent(const RdpRawEvent& first,
         first.end_parent == second.end_parent &&
         close(first.probability, second.probability) &&
         close(first.distance_holder, second.distance_holder);
+}
+
+bool is_blank_event(const RdpRawEvent& event) {
+    static const RdpRawEvent blank{};
+    return raw_event_equivalent(event, blank);
 }
 
 std::vector<AlistRdp3TraceCall> load_alist_rdp3_trace(
@@ -4151,8 +4179,11 @@ int fasta_all_redo_events_fixture(
                 probability_estimate, fact_three, fact, xover_api, 1,
                 &target_events, &rescan_triplet);
         }
-      }
+        }
     };
+    int three_seq_table_bound = -1;
+    const auto three_seq_table = load_rdp_three_seq_table(
+        fasta_path, three_seq_table_bound);
     // The source FinalTrim invocation clears its temporary XOverList,
     // populates it, and then copies every active slot into persistent PXOList.
     RdpRawEventState events_after_rescan = events;
@@ -4166,6 +4197,50 @@ int fasta_all_redo_events_fixture(
         temporary.xover_list.resize(scan_state.next_no + 1);
         add_synthetic_events(pass, temporary);
         run_rescan_pass(pass, temporary);
+        // Module2.FinalTrim's second recheck loop deliberately invokes every
+        // method other than the selected one, even when that method is
+        // disabled in DoScans. All calls share the same UpdateXOList3 state.
+        RdpLegacyEventAllocator legacy_events(temporary, 1);
+        const int role = expected_winner;
+        for (int slot = 0; slot <= pass.candidate_last[role]; ++slot) {
+            const int sequence = pass.candidate_list[role + slot * 3];
+            std::array<int, 3> triplet{
+                sequence,
+                correlation_sequences[correlation_comparison[role]],
+                correlation_sequences[correlation_comparison[role + 3]]};
+            if (selected_collection_event.program_flag != 1) {
+                run_rdp_geneconv_recheck(
+                    scan_state, triplet, store_lpv, h.store_lpv_ub,
+                    probability_settings, legacy_events);
+            }
+            if (selected_collection_event.program_flag != 3) {
+                run_rdp_maxchi_recheck(
+                    scan_state, triplet, store_lpv, h.store_lpv_ub,
+                    probability_settings, legacy_events,
+                    selected.beginning, selected.ending);
+            }
+            if (selected_collection_event.program_flag != 4) {
+                auto rotated = triplet;
+                for (int rotation = 0; rotation < 3; ++rotation) {
+                    run_rdp_chimaera_recheck(
+                        scan_state, rotated, store_lpv, h.store_lpv_ub,
+                        probability_settings, legacy_events,
+                        selected.beginning, selected.ending);
+                    rotated = {rotated[1], rotated[2], rotated[0]};
+                }
+            }
+            if (selected_collection_event.program_flag != 8 &&
+                !three_seq_table.empty()) {
+                auto rotated = triplet;
+                for (int rotation = 0; rotation < 3; ++rotation) {
+                    run_rdp_three_seq_recheck(
+                        scan_state, rotated, store_lpv, h.store_lpv_ub,
+                        probability_settings, three_seq_table,
+                        three_seq_table_bound, legacy_events);
+                    rotated = {rotated[1], rotated[2], rotated[0]};
+                }
+            }
+        }
         append_rdp_events(events_after_rescan, temporary);
         rescan_events = std::move(temporary);
     };
@@ -4257,7 +4332,7 @@ int fasta_all_redo_events_fixture(
         for (std::size_t slot = 0;
              slot < collection_event_list.xover_list[row].size(); ++slot) {
             const auto& event = collection_event_list.xover_list[row][slot];
-            if (event.program_flag != 0) continue;
+            if (event.program_flag != 0 || is_blank_event(event)) continue;
             const bool event_ok =
                 working_event_index < expected_rdp_events.size() &&
                 expected_rdp_locations[working_event_index * 2] == row &&
@@ -4377,7 +4452,9 @@ int fasta_all_redo_events_fixture(
         std::vector<short> actual_rdp_current(scan_state.next_no + 1, 0);
         for (int row = 0; row <= scan_state.next_no; ++row) {
             for (const auto& event : collection_event_list.xover_list[row]) {
-                if (event.program_flag == 0) ++actual_rdp_current[row];
+                if (event.program_flag == 0 && !is_blank_event(event)) {
+                    ++actual_rdp_current[row];
+                }
             }
         }
         const bool call_matches =
@@ -4806,6 +4883,33 @@ int fasta_all_redo_events_fixture(
                   << correlation_sequences[1] << ','
                   << correlation_sequences[2]
                   << '\n';
+        std::array<int, 9> rescan_program_counts{};
+        std::cerr << "  temporary methods:";
+        for (std::size_t row = 0; row < rescan_events.xover_list.size();
+             ++row) {
+            bool printed_row = false;
+            for (const auto& event : rescan_events.xover_list[row]) {
+                if (event.program_flag < rescan_program_counts.size()) {
+                    ++rescan_program_counts[event.program_flag];
+                }
+                if (event.program_flag != 0) {
+                    if (!printed_row) {
+                        std::cerr << " row" << row << '=';
+                        printed_row = true;
+                    }
+                    std::cerr << static_cast<int>(event.program_flag) << ',';
+                }
+            }
+        }
+        std::cerr << " totals";
+        for (std::size_t program = 0; program < rescan_program_counts.size();
+             ++program) {
+            if (rescan_program_counts[program] != 0) {
+                std::cerr << ' ' << program << ':'
+                          << rescan_program_counts[program];
+            }
+        }
+        std::cerr << '\n';
         for (std::size_t row = 0;
              row < redistributed.events.xover_list.size(); ++row) {
             if (redistributed.events.xover_list[row].size() !=
