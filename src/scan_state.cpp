@@ -6,16 +6,16 @@
 #include <cmath>
 #include <cstddef>
 #include <fstream>
+#include <istream>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace {
 
-std::vector<std::string> read_fasta_sequences(const std::string& path) {
-    std::ifstream input(path);
-    if (!input) throw std::runtime_error("cannot open FASTA: " + path);
+std::vector<std::string> read_fasta_sequences(std::istream& input) {
     std::vector<std::string> sequences;
     std::string line;
     while (std::getline(input, line)) {
@@ -168,7 +168,28 @@ RdpScanState rebuild_rdp_scan_state(
 
 RdpScanState build_rdp_scan_state_from_fasta(
     const std::string& fasta_path, const Dna5ScanPreprocessApi& api) {
-    const auto fasta = read_fasta_sequences(fasta_path);
+    std::ifstream input(fasta_path);
+    if (!input) throw std::runtime_error("cannot open FASTA: " + fasta_path);
+    const auto fasta = read_fasta_sequences(input);
+    const int next_no = static_cast<int>(fasta.size()) - 1;
+    const int sequence_length = static_cast<int>(fasta.front().size());
+    const int sequence_stride = sequence_length + 1;
+    std::vector<short> sequence_data(
+        static_cast<std::size_t>(sequence_stride) * fasta.size(), 0);
+    for (int sequence = 0; sequence <= next_no; ++sequence) {
+        for (int site = 1; site <= sequence_length; ++site) {
+            sequence_data[site + sequence * sequence_stride] =
+                rdp_sequence_character(fasta[sequence][site - 1]);
+        }
+    }
+    return rebuild_rdp_scan_state(
+        next_no, sequence_length, sequence_data, api);
+}
+
+RdpScanState build_rdp_scan_state_from_fasta_text(
+    const std::string& fasta_text, const Dna5ScanPreprocessApi& api) {
+    std::istringstream input(fasta_text);
+    const auto fasta = read_fasta_sequences(input);
     const int next_no = static_cast<int>(fasta.size()) - 1;
     const int sequence_length = static_cast<int>(fasta.front().size());
     const int sequence_stride = sequence_length + 1;

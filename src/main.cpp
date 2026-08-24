@@ -659,7 +659,22 @@ int self_test() {
         return 1;
     }
 
-    std::cout << "MakeAListP2: ok (10 triplets)\n";
+    const Dna5ScanPreprocessApi preprocess_api{
+        &MathFuncs::MyMathFuncs::MakeAListP2,
+        &MathFuncs::MyMathFuncs::CountNucs,
+        &MathFuncs::MyMathFuncs::RecodeNucs,
+        &MathFuncs::MyMathFuncs::DoRecodeP,
+        &MathFuncs::MyMathFuncs::MakeCompressSeqP,
+    };
+    const auto text_state = build_rdp_scan_state_from_fasta_text(
+        ">one\nACGT\n>two\nACGA\n>three\nTCGT\n", preprocess_api);
+    if (text_state.next_no != 2 || text_state.sequence_length != 4 ||
+        text_state.analysis_list_last != 0) {
+        std::cerr << "in-memory FASTA self-test failed\n";
+        return 1;
+    }
+
+    std::cout << "MakeAListP2: ok (10 triplets); in-memory FASTA: ok\n";
     return 0;
 }
 
