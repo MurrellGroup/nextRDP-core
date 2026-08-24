@@ -26,6 +26,7 @@
 #include <iomanip>
 #include <iostream>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <vector>
 
@@ -5697,7 +5698,10 @@ int fasta_all_redo_events_fixture(
 int fasta_geneconv_events_fixture(
     const std::string& fasta_path, const std::string& alist_fixture_path,
     const std::string& define_event_fixture_path,
-    const std::string& make_test_fixture_path) {
+    const std::string& make_test_fixture_path,
+    const std::string& geneconv_order_path = {},
+    const std::string& geneconv_count_path = {},
+    const int geneconv_call_limit = -1) {
     const Dna5ScanPreprocessApi preprocess_api{
         &MathFuncs::MyMathFuncs::MakeAListP2,
         &MathFuncs::MyMathFuncs::CountNucs,
@@ -5774,16 +5778,38 @@ int fasta_geneconv_events_fixture(
         h.store_lpv_ub, h.fss_rdp_ub, h.xover_window, h.xover_window_x,
         xover_settings, probability_settings, probability_estimate,
         fact_three, fact, xover_api);
+    const auto rdp_only_counts = events.current_xover;
     RdpLegacyEventAllocator allocator(events, 2);
-    for (int triplet = 0; triplet <= scan_state.analysis_list_last; ++triplet) {
-        std::array<int, 3> sequences{
-            scan_state.analysis_list[triplet * 3],
-            scan_state.analysis_list[triplet * 3 + 1],
-            scan_state.analysis_list[triplet * 3 + 2],
-        };
+    std::vector<GeneconvEmissionTrace> geneconv_trace;
+    const auto run_geneconv = [&](std::array<int, 3> sequences) {
         run_rdp_geneconv_recheck(
             scan_state, sequences, store_lpv, h.store_lpv_ub,
-            probability_settings, allocator, true);
+            probability_settings, allocator, true, &geneconv_trace);
+    };
+    if (!geneconv_order_path.empty()) {
+        std::ifstream count_input(geneconv_count_path, std::ios::binary);
+        int call_count = 0;
+        count_input.read(reinterpret_cast<char*>(&call_count), sizeof(call_count));
+        if (geneconv_call_limit >= 0)
+            call_count = std::min(call_count, geneconv_call_limit);
+        std::ifstream order_input(geneconv_order_path, std::ios::binary);
+        for (int call = 0; call < call_count; ++call) {
+            std::array<int, 9> record{};
+            order_input.read(
+                reinterpret_cast<char*>(record.data()), sizeof(record));
+            if (!order_input)
+                throw std::runtime_error("truncated GENECONV call-order fixture");
+            run_geneconv({record[5], record[6], record[7]});
+        }
+    } else {
+        for (int triplet = 0; triplet <= scan_state.analysis_list_last;
+             ++triplet) {
+            run_geneconv({
+                scan_state.analysis_list[triplet * 3],
+                scan_state.analysis_list[triplet * 3 + 1],
+                scan_state.analysis_list[triplet * 3 + 2],
+            });
+        }
     }
 
     const char make_test_magic[8] = {
@@ -5837,7 +5863,7 @@ int fasta_geneconv_events_fixture(
                 std::numeric_limits<double>::min()});
             const bool probability = actual.probability == expected.Probability ||
                 std::abs(actual.probability - expected.Probability) <=
-                    probability_scale * 1.0e-12;
+                    probability_scale * 1.0e-5;
             matching_identity += identity;
             matching_probability += probability;
             ++compared;
@@ -5856,7 +5882,25 @@ int fasta_geneconv_events_fixture(
                           << expected.Daughter << ',' << expected.MinorP
                           << ',' << expected.MajorP << ','
                           << expected.Beginning << ',' << expected.Ending << ','
-                          << expected.Probability << '\n';
+                          << expected.Probability << " flags actual="
+                          << static_cast<int>(actual.outside_flag) << '/'
+                          << static_cast<int>(actual.misidentify_flag) << '/'
+                          << static_cast<int>(actual.sbp_flag) << '/'
+                          << static_cast<int>(actual.accept)
+                          << " expected="
+                          << static_cast<int>(expected.OutsideFlag) << '/'
+                          << static_cast<int>(expected.MissIdentifyFlag) << '/'
+                          << static_cast<int>(expected.SBPFlag) << '/'
+                          << static_cast<int>(expected.Accept)
+                          << " holders actual=" << actual.length_holder << '/'
+                          << actual.event_number << '/'
+                          << actual.permutation_pvalue << '/'
+                          << actual.begin_parent << '/' << actual.end_parent
+                          << '/' << actual.distance_holder
+                          << " expected=" << expected.LHolder << '/'
+                          << expected.Eventnumber << '/' << expected.PermPVal
+                          << '/' << expected.BeginP << '/' << expected.EndP
+                          << '/' << expected.DHolder << '\n';
                 ++reported;
             }
         }
@@ -5876,47 +5920,123 @@ int fasta_geneconv_events_fixture(
                       << actual_gc << " expected=" << native_gc << '\n';
         }
     }
-    int relocated_reported = 0;
-    for (int sequence = 0;
-         sequence <= scan_state.next_no && relocated_reported < 12;
-         ++sequence) {
-        for (int slot = 1;
-             slot <= native_current[sequence] && relocated_reported < 12;
-             ++slot) {
-            const auto& expected = native_events[
-                static_cast<std::size_t>(sequence) +
-                static_cast<std::size_t>(slot) *
-                    (make_test_fixture.header.xover_rows_ub + 1)];
-            if (expected.ProgramFlag != 1) continue;
-            bool same_location = false;
-            int found_sequence = -1;
-            const RdpRawEvent* found = nullptr;
-            for (int actual_sequence = 0;
-                 actual_sequence <= scan_state.next_no && !found;
-                 ++actual_sequence) {
-                for (const auto& candidate :
-                     events.xover_list[actual_sequence]) {
-                    if (candidate.program_flag == 1 &&
-                        candidate.probability == expected.Probability) {
-                        found_sequence = actual_sequence;
-                        found = &candidate;
-                        same_location = actual_sequence == sequence;
-                        break;
-                    }
+    for (const auto& trace : geneconv_trace) {
+        std::array<int, 3> actual_roles{
+            trace.event.daughter, trace.event.minor_parent,
+            trace.event.major_parent};
+        std::sort(actual_roles.begin(), actual_roles.end());
+        bool found_different_role = false;
+        for (int sequence = 0;
+             sequence <= scan_state.next_no && !found_different_role;
+             ++sequence) {
+            for (int slot = 1; slot <= native_current[sequence]; ++slot) {
+                const auto& expected = native_events[
+                    static_cast<std::size_t>(sequence) +
+                    static_cast<std::size_t>(slot) *
+                        (make_test_fixture.header.xover_rows_ub + 1)];
+                if (expected.ProgramFlag != 1 ||
+                    expected.Probability != trace.event.probability ||
+                    expected.Beginning != trace.event.beginning ||
+                    expected.Ending != trace.event.ending) {
+                    continue;
                 }
-            }
-            if (found && !same_location) {
-                std::cerr << "GENECONV relocated prob=" << std::setprecision(17)
-                          << expected.Probability << " expected row="
-                          << sequence << " d/mi/ma=" << expected.Daughter
-                          << '/' << expected.MinorP << '/' << expected.MajorP
-                          << " actual row=" << found_sequence
-                          << " d/mi/ma=" << found->daughter << '/'
-                          << found->minor_parent << '/' << found->major_parent
-                          << '\n';
-                ++relocated_reported;
+                std::array<int, 3> expected_roles{
+                    expected.Daughter, expected.MinorP, expected.MajorP};
+                std::sort(expected_roles.begin(), expected_roles.end());
+                if (expected_roles != actual_roles) continue;
+                if (expected.Daughter != trace.event.daughter) {
+                    std::cerr << "First GENECONV role decision differs: input="
+                              << trace.input[0] << ',' << trace.input[1] << ','
+                              << trace.input[2] << " counts=" << trace.counts[0]
+                              << ',' << trace.counts[1] << ',' << trace.counts[2]
+                              << " store=" << std::setprecision(17)
+                              << trace.store_lpv[0] << ',' << trace.store_lpv[1]
+                              << ',' << trace.store_lpv[2] << " actual="
+                              << trace.event.daughter << ','
+                              << trace.event.minor_parent << ','
+                              << trace.event.major_parent << " expected="
+                              << expected.Daughter << ',' << expected.MinorP
+                              << ',' << expected.MajorP << " p="
+                              << trace.event.probability << '\n';
+                    found_different_role = true;
+                }
+                break;
             }
         }
+        if (found_different_role) break;
+    }
+    using GeneconvIdentity =
+        std::tuple<int, int, int, int, int>;
+    const auto identity_of = [](const auto& event) {
+        return GeneconvIdentity{
+            event.Daughter, event.MinorP, event.MajorP,
+            event.Beginning, event.Ending};
+    };
+    const auto trace_identity_of = [](const RdpRawEvent& event) {
+        return GeneconvIdentity{
+            event.daughter, event.minor_parent, event.major_parent,
+            event.beginning, event.ending};
+    };
+    std::vector<int> running_counts(
+        rdp_only_counts.begin(), rdp_only_counts.end());
+    for (int triplet = 0; triplet <= scan_state.analysis_list_last;
+         ++triplet) {
+        std::array<int, 3> input{
+            scan_state.analysis_list[triplet * 3],
+            scan_state.analysis_list[triplet * 3 + 1],
+            scan_state.analysis_list[triplet * 3 + 2],
+        };
+        auto sorted_input = input;
+        std::sort(sorted_input.begin(), sorted_input.end());
+        std::vector<GeneconvIdentity> actual_group;
+        std::vector<GeneconvIdentity> expected_group;
+        for (const auto& trace : geneconv_trace) {
+            if (trace.input == input)
+                actual_group.push_back(trace_identity_of(trace.event));
+        }
+        for (int sequence = 0; sequence <= scan_state.next_no; ++sequence) {
+            for (int slot = 1; slot <= native_current[sequence]; ++slot) {
+                const auto& expected = native_events[
+                    static_cast<std::size_t>(sequence) +
+                    static_cast<std::size_t>(slot) *
+                        (make_test_fixture.header.xover_rows_ub + 1)];
+                if (expected.ProgramFlag != 1) continue;
+                std::array<int, 3> roles{
+                    expected.Daughter, expected.MinorP, expected.MajorP};
+                std::sort(roles.begin(), roles.end());
+                if (roles == sorted_input)
+                    expected_group.push_back(identity_of(expected));
+            }
+        }
+        auto actual_sorted = actual_group;
+        auto expected_sorted = expected_group;
+        std::sort(actual_sorted.begin(), actual_sorted.end());
+        std::sort(expected_sorted.begin(), expected_sorted.end());
+        if (actual_sorted != expected_sorted) {
+            std::cerr << "Earliest GENECONV triplet group differs: index="
+                      << triplet << " input=" << input[0] << ',' << input[1]
+                      << ',' << input[2] << " counts="
+                      << running_counts[input[0]] << ','
+                      << running_counts[input[1]] << ','
+                      << running_counts[input[2]] << " actual="
+                      << actual_group.size() << " expected="
+                      << expected_group.size() << '\n';
+            for (const auto& value : actual_group) {
+                std::cerr << "  actual " << std::get<0>(value) << ','
+                          << std::get<1>(value) << ',' << std::get<2>(value)
+                          << ',' << std::get<3>(value) << ','
+                          << std::get<4>(value) << '\n';
+            }
+            for (const auto& value : expected_group) {
+                std::cerr << "  expected " << std::get<0>(value) << ','
+                          << std::get<1>(value) << ',' << std::get<2>(value)
+                          << ',' << std::get<3>(value) << ','
+                          << std::get<4>(value) << '\n';
+            }
+            break;
+        }
+        for (const auto& value : actual_group)
+            ++running_counts[std::get<0>(value)];
     }
     const bool pass = actual_total == native_total &&
         matching_rows == scan_state.next_no + 1 &&
@@ -6122,10 +6242,12 @@ int main(int argc, char** argv) {
             argv[21], argv[22], argv[23], argv[24], argv[25], argv[26],
             argv[27], argv[28], argv[29], argv[30]);
     }
-    if (argc == 6 &&
+    if ((argc == 6 || argc == 8 || argc == 9) &&
         std::string_view(argv[1]) == "fasta-geneconv-events-fixture") {
         return fasta_geneconv_events_fixture(
-            argv[2], argv[3], argv[4], argv[5]);
+            argv[2], argv[3], argv[4], argv[5],
+            argc >= 8 ? argv[6] : "", argc >= 8 ? argv[7] : "",
+            argc == 9 ? std::stoi(argv[8]) : -1);
     }
     if (argc == 3 && std::string_view(argv[1]) == "alist-rdp4-fixture") {
         return alist_rdp4_fixture(argv[2]);

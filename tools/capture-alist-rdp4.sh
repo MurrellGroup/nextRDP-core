@@ -48,6 +48,8 @@ awk '
       print "    ProbCalcP=ProbCalcPCapture@24 " ordinal
     else if (name == "CleanXOSNW")
       print "    CleanXOSNW=CleanXOSNWCapture@16 " ordinal
+    else if (name == "FindSubSeqGCAP7")
+      print "    FindSubSeqGCAP7=FindSubSeqGCAP7Capture@52 " ordinal
     else if (name == "MakeTestPVs")
       print "    MakeTestPVs=MakeTestPVsCapture@32 " ordinal
     else if (name == "FindBestRecSignalP2")

@@ -58,6 +58,9 @@ typedef int(STDCALL *FindSubSeqPB4Fn)(
 typedef int(STDCALL *FindFirstCOPFn)(int, int, int, int, int, int *);
 typedef double(STDCALL *ProbCalcPFn)(double *, int, int, double, int);
 typedef int(STDCALL *CleanXOSNWFn)(int, int, int, char *);
+typedef int(STDCALL *FindSubSeqGCAP7Fn)(
+    int, unsigned char *, int, unsigned char *, char, int, int, int, int,
+    char *, int *, int *, int *);
 
 typedef struct XOVERDEFINE {
   unsigned char OutsideFlag;
@@ -597,6 +600,8 @@ static void write_section(HANDLE file, u32 id, const void *data, u32 bytes) {
   write_bytes(file, &section, (DWORD)sizeof(section));
   if (bytes != 0) write_bytes(file, data, bytes);
 }
+
+static int geneconv_invocation;
 
 int STDCALL XOHomologyPCapture(
     short inlyer, int sequence_length, int xover_length, short xover_window,
@@ -1168,6 +1173,15 @@ int STDCALL MakeTestPVsCapture(
       write_section(file, MTP_CURRENT_XOVER_IN, current_xover, current_bytes);
       write_section(file, MTP_XOVER_LIST_IN, xover_list, list_bytes);
       write_section(file, MTP_TEST_PVS_IN, test_pvs, probability_bytes);
+      CloseHandle(file);
+    }
+    file = CreateFileA(
+        "geneconv-count-at-first-make-test.bin", GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, (void *)0, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
+    if (file != INVALID_HANDLE_VALUE) {
+      write_bytes(file, &geneconv_invocation,
+                  (DWORD)sizeof(geneconv_invocation));
       CloseHandle(file);
     }
   }
@@ -2170,4 +2184,49 @@ int STDCALL AlistRDP4Capture(
     }
     return result;
   }
+}
+
+/* Record the source-order triplets which survive AlistGC2 and enter the
+ * serial VB GCXoverD pass.  The original call is still delegated unchanged. */
+int STDCALL FindSubSeqGCAP7Capture(
+    int compressed_ub, unsigned char *compressed, int fss_ub,
+    unsigned char *fss, char indel_flag, int sequence_length,
+    int seq1, int seq2, int seq3, char *subsequence, int *differences,
+    int *difference_position, int *position_difference) {
+  static FindSubSeqGCAP7Fn original;
+  int record[9];
+  HANDLE file;
+  int result;
+  if (!original) {
+    HMODULE module = LoadLibraryA("DNA5_original.dll");
+    if (module)
+      original = (FindSubSeqGCAP7Fn)GetProcAddress(module, "FindSubSeqGCAP7");
+  }
+  if (!original) return 0;
+  result = original(
+      compressed_ub, compressed, fss_ub, fss, indel_flag, sequence_length,
+      seq1, seq2, seq3, subsequence, differences, difference_position,
+      position_difference);
+  ++geneconv_invocation;
+  record[0] = geneconv_invocation;
+  record[1] = compressed_ub;
+  record[2] = fss_ub;
+  record[3] = (unsigned char)indel_flag;
+  record[4] = sequence_length;
+  record[5] = seq1;
+  record[6] = seq2;
+  record[7] = seq3;
+  record[8] = result;
+  file = CreateFileA(
+      "geneconv-call-order.bin", GENERIC_WRITE,
+      FILE_SHARE_READ | FILE_SHARE_WRITE, (void *)0,
+      geneconv_invocation == 1 ? CREATE_ALWAYS : OPEN_EXISTING,
+      FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
+  if (file != INVALID_HANDLE_VALUE) {
+    if (geneconv_invocation != 1)
+      SetFilePointer(file, 0, (long *)0, FILE_END);
+    write_bytes(file, record, (DWORD)sizeof(record));
+    CloseHandle(file);
+  }
+  return result;
 }

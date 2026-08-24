@@ -268,6 +268,62 @@ const ChiLookupTable& chi_lookup_table() {
     return table;
 }
 
+// Module4.FillFSSRDP constructs this lookup with nine nested 0..4 loops.
+// GCXoverD uses the resulting FSSGC table through FindSubSeqGCAP7 whenever
+// UseCompress=1, which is the active initial command-line scan path.
+std::vector<unsigned char>& geneconv_fss_table() {
+    constexpr int upper_bound = 125;
+    constexpr int width = upper_bound + 1;
+    static std::vector<unsigned char> table(
+        static_cast<std::size_t>(4) * width * width * width, 0);
+    return table;
+}
+
+void populate_geneconv_fss_triplet(
+    const RdpScanState& scan_state, const std::array<int, 3>& sequences,
+    std::vector<unsigned char>& table) {
+    constexpr int width = 126;
+    const int stride = scan_state.compressed_sequence_ub + 1;
+    const auto decode = [](const int code) {
+        return std::array<int, 3>{
+            code / 25, (code / 5) % 5, code % 5};
+    };
+    for (int position = 1;
+         position <= scan_state.compressed_sequence_ub; ++position) {
+        const int first_code = scan_state.compressed_sequence[
+            position + sequences[0] * stride];
+        const int second_code = scan_state.compressed_sequence[
+            position + sequences[1] * stride];
+        const int third_code = scan_state.compressed_sequence[
+            position + sequences[2] * stride];
+        // FillFSSRDP leaves the unused code-125 plane zero-filled.
+        if (first_code >= 125 || second_code >= 125 || third_code >= 125)
+            continue;
+        const auto first = decode(first_code);
+        const auto second = decode(second_code);
+        const auto third = decode(third_code);
+        const std::size_t offset =
+            static_cast<std::size_t>(first_code) * 4 +
+            static_cast<std::size_t>(second_code) * 4 * width +
+            static_cast<std::size_t>(third_code) * 4 * width * width;
+        int total = 0;
+        for (int site = 0; site < 3; ++site) {
+            int action = 0;
+            if (first[site] != 0 && second[site] != 0 && third[site] != 0 &&
+                (first[site] != third[site] ||
+                 first[site] != second[site])) {
+                if (first[site] == second[site]) action = 1;
+                else if (first[site] == third[site]) action = 2;
+                else if (third[site] == second[site]) action = 3;
+                else action = 7;
+            }
+            table[offset + site] = static_cast<unsigned char>(action);
+            total += action;
+        }
+        table[offset + 3] = static_cast<unsigned char>(total);
+    }
+}
+
 int circular_position(int position, const int length) {
     while (position < 1) position += length;
     while (position > length) position -= length;
@@ -610,21 +666,36 @@ void run_rdp_geneconv_recheck(
     const RdpScanState& scan_state, std::array<int, 3>& sequences,
     const std::vector<double>& store_lpv, const int store_lpv_ub,
     const RdpProbabilitySettings& settings,
-    RdpLegacyEventAllocator& allocator, const bool long_winded) {
+    RdpLegacyEventAllocator& allocator, const bool long_winded,
+    std::vector<GeneconvEmissionTrace>* trace) {
     constexpr short mismatch_penalty = 1;
     constexpr short max_overlap_fragments = 1;
     const int length = scan_state.sequence_length;
-    const int dimension = length;
+    // GCXoverD receives the global GCDimSize separately from the alignment
+    // length and passes that upper bound to every fragment/probability DLL
+    // routine.  The pinned command-line oracle initializes it to 2999; using
+    // the alignment length here changes the VB column stride and therefore
+    // which peaks DelPValsP removes on longer alignments.
+    constexpr int dimension = 2999;
     const int stride = dimension + 1;
-    std::vector<char> subsequence(static_cast<std::size_t>(length + 1) * 7, 0);
-    std::vector<int> difference_position(length + 2, 0);
-    std::vector<int> position_difference(length + 2, 0);
+    const int subsequence_stride = length + 1;
+    std::vector<char> subsequence(
+        static_cast<std::size_t>(subsequence_stride) * 7, 0);
+    // Module2 dimensions both maps as Len(StrainSeq(0)) + 200.  The
+    // compressed routine expands each packed byte to three sites and can
+    // write through the final padded triplet beyond the alignment endpoint.
+    std::vector<int> difference_position(length + 201, 0);
+    std::vector<int> position_difference(length + 201, 0);
     std::array<int, 8> differences{};
-    const int informative = MathFuncs::MyMathFuncs::FindSubSeqGCAP(
-        0, length, sequences[0], sequences[1], sequences[2],
-        const_cast<short*>(scan_state.sequence_data.data()),
-        subsequence.data(), position_difference.data(),
-        difference_position.data(), differences.data());
+    auto& fss_gc = geneconv_fss_table();
+    populate_geneconv_fss_triplet(scan_state, sequences, fss_gc);
+    const int informative = MathFuncs::MyMathFuncs::FindSubSeqGCAP7(
+        scan_state.compressed_sequence_ub,
+        const_cast<unsigned char*>(scan_state.compressed_sequence.data()),
+        125, const_cast<unsigned char*>(fss_gc.data()), 0, length,
+        sequences[0], sequences[1], sequences[2], subsequence.data(),
+        differences.data(), difference_position.data(),
+        position_difference.data());
     if (differences[0] == informative || differences[1] == informative ||
         differences[2] == informative || informative < 1) {
         return;
@@ -723,11 +794,18 @@ void run_rdp_geneconv_recheck(
             return;
         }
         prior = pvalue;
-        if (MathFuncs::MyMathFuncs::DelPValsP(
+        const int deletion_accepted = MathFuncs::MyMathFuncs::DelPValsP(
                 max_overlap_fragments, y, comparison, dimension,
                 pvalues.data(), fragment_count.data(), fragment_start.data(),
                 fragment_end.data(), max_score_position.data(),
-                deleted.data()) == 1 && pvalues[y + comparison * stride] < cutoff) {
+                deleted.data());
+        if (deletion_accepted == 1 &&
+            pvalues[y + comparison * stride] < cutoff) {
+            const std::array<int, 3> counts{
+                allocator.count(sequences[0]),
+                allocator.count(sequences[1]),
+                allocator.count(sequences[2]),
+            };
             std::array<int, 3> active{};
             if (long_winded) {
                 active = choose_active(
@@ -771,7 +849,7 @@ void run_rdp_geneconv_recheck(
                 }
                 event.outside_flag = legacy_qc_topology_change(
                     event.beginning, event.ending, position_difference,
-                    subsequence, stride, informative);
+                    subsequence, subsequence_stride, informative);
                 // CheckEndsVB and FixEnds precede CentreBP in GCXoverD.  At
                 // this first MakeTestPVs boundary SEventNumber is zero and
                 // MissingData is the zero-filled initial matrix, hence both
@@ -782,15 +860,35 @@ void run_rdp_geneconv_recheck(
                     event.beginning, event.ending);
                 event.program_flag = 1;
                 event.probability = adjusted;
+                if (trace != nullptr) {
+                    trace->push_back(GeneconvEmissionTrace{
+                        sequences,
+                        counts,
+                        {
+                            store_probability(store_lpv, store_lpv_ub, 1,
+                                              sequences[0]),
+                            store_probability(store_lpv, store_lpv_ub, 1,
+                                              sequences[1]),
+                            store_probability(store_lpv, store_lpv_ub, 1,
+                                              sequences[2]),
+                        },
+                        active,
+                        event,
+                    });
+                }
                 // The current GCXoverD source restores ActiveSeq/Minor/Major
                 // after each peak and does not rewrite Seq1/Seq2/Seq3.
             }
+            // This call is inside both `If GoOn = 1` and
+            // `If PVals(Y, X) < PCO` in GCXoverD.  Rejected overlapping
+            // candidates are set to 100 by DelPValsP but must not expand the
+            // occupied-region map themselves.
+            MathFuncs::MyMathFuncs::MakeDeleteArrayP(
+                fragment_start[y + comparison * stride],
+                fragment_end[max_score_position[y + comparison * stride] +
+                             comparison * stride],
+                fragment_count[comparison], deleted.data());
         }
-        MathFuncs::MyMathFuncs::MakeDeleteArrayP(
-            fragment_start[y + comparison * stride],
-            fragment_end[max_score_position[y + comparison * stride] +
-                         comparison * stride],
-            fragment_count[comparison], deleted.data());
     }
 }
 

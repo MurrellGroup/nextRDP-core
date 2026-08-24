@@ -6,6 +6,14 @@
 #include <array>
 #include <vector>
 
+struct GeneconvEmissionTrace {
+    std::array<int, 3> input{};
+    std::array<int, 3> counts{};
+    std::array<double, 3> store_lpv{};
+    std::array<int, 3> active{};
+    RdpRawEvent event{};
+};
+
 // State shared by the methods called from Module2.FinalTrim.  In VB6 the
 // methods all append through UpdateXOList3 into one rectangular XOverList;
 // its second-dimension upper bound is observable (TSXOver has a strict-bound
@@ -37,7 +45,8 @@ void run_rdp_geneconv_recheck(
     const RdpScanState& scan_state, std::array<int, 3>& sequences,
     const std::vector<double>& store_lpv, int store_lpv_ub,
     const RdpProbabilitySettings& settings,
-    RdpLegacyEventAllocator& allocator, bool long_winded = true);
+    RdpLegacyEventAllocator& allocator, bool long_winded = true,
+    std::vector<GeneconvEmissionTrace>* trace = nullptr);
 
 // Module5.MCXoverF(1), the MaxChi recheck used by FinalTrim.  This is the
 // enumerating VB path (not DNA5.FastRecCheckMC2, which deliberately returns

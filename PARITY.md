@@ -50,6 +50,9 @@ outputs use the user's accepted platform-math tolerance when Windows and WASM
 | 41 | `ConsensusOK` | post-retrim candidate state from fresh local-RDP runs on all ten datasets | exact active candidate bounds, membership, and list order |
 | 42 | second `FinalTrim` strict-group block | first-event path from fresh local-RDP runs on all ten datasets | exact active candidate bounds, list order, synthetic RDP group records, and RDP rescan tail |
 | 43 | `MakeRelevant` / `MakeCollecteventsC` | both parent calls for the first event from fresh local-RDP runs on all ten datasets | exact relevant membership, nonblank RDP working records, per-row counts, and collected parent-event outputs; accepted platform-math tolerance for p-values |
+| 44 | `FillFSSGC` / `FindSubSeqGCAP7` | every initial GENECONV triplet through the first `MakeTestPVs` boundary | exact compressed informative-site stream, difference counts, and coordinate maps on all ten datasets |
+| 45 | `GetFragsP` / `GetMaxFragScoreP` / `CalcKMaxP` / `GCCalcPValP2` | targeted native peak traces plus the complete initial GENECONV scan | exact peak order and accepted-fragment topology, preserving the independent `GCDimSize=2999` fragment stride |
+| 46 | `GCGetHiPValP` / `DelPValsP` / `MakeDeleteArrayP` / `GCXoverD` caller loop | complete first `MakeTestPVs` state with only RDP and GENECONV enabled on all ten datasets | exact counts, rows, event identities, ordering, and p-values except one accepted platform-math difference on Dataset8 |
 
 The live `AlistRDP4` fixture covers 2,300 triplets and changes 709 redo states.
 Because the exact C++ implementation calls `FastRecCheckPB` internally, that
@@ -106,6 +109,13 @@ the same first event on all ten datasets. Run
 `tools/check-all-event-state-parity.sh` for the current table. Probability
 cells retain the accepted Windows/WASM final-rounding differences and are not
 part of the structural identity gate.
+
+The initial mixed-method path now follows the RDP scan with the literal
+compressed `GCXoverD` path.  Its generated event state matches the locally
+compiled oracle on all ten datasets: totals are 1,400, 663, 987, 1,144, 775,
+3,366, 6,008, 3,799, 3,797, and 4,556 respectively, with every row count and
+all 26,495 structural event identities exact.  Dataset8 has one accepted
+last-bit probability difference; every other probability cell is exact.
 
 The selected event now continues through the first phylogenetic test. The
 generated full-alignment state and selected-region state match the native
