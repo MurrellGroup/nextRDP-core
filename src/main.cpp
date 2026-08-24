@@ -6,20 +6,377 @@
 #include "find_subseq_pb3_fixture.hpp"
 #include "identification_fixture.hpp"
 #include "identification_state.hpp"
+#include "mutation_state.hpp"
 #include "preprocess_fixture.hpp"
 #include "rdp_walk_fixture.hpp"
+#include "rescan_schedule.hpp"
 #include "scan_state.hpp"
 #include "tree_state.hpp"
 #include "xover_state.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <fstream>
 #include <iostream>
 #include <string_view>
 #include <type_traits>
 #include <vector>
 
 namespace {
+
+#pragma pack(push, 1)
+struct ModSeqNumYCaptureHeader {
+    char magic[8];
+    std::uint32_t version;
+    std::uint32_t calls;
+    std::uint32_t reserved;
+};
+using MutationTailCaptureHeader = ModSeqNumYCaptureHeader;
+#pragma pack(pop)
+static_assert(sizeof(ModSeqNumYCaptureHeader) == 20);
+
+struct AlistRdp3TraceCall {
+    int next_no = -1;
+    std::vector<std::array<int, 3>> triplets;
+    std::vector<unsigned char> redo;
+};
+
+struct NativeXoverDefine {
+    std::uint8_t outside_flag;
+    std::uint8_t misidentify_flag;
+    std::uint8_t program_flag;
+    std::uint8_t sbp_flag;
+    std::uint8_t accept;
+    std::int16_t major_parent;
+    std::int16_t minor_parent;
+    std::int16_t daughter;
+    std::int32_t beginning;
+    std::int32_t ending;
+    std::int32_t length_holder;
+    std::int32_t event_number;
+    float permutation_pvalue;
+    std::int32_t begin_parent;
+    std::int32_t end_parent;
+    double probability;
+    double distance_holder;
+};
+static_assert(sizeof(NativeXoverDefine) == 56);
+static_assert(offsetof(NativeXoverDefine, major_parent) == 6);
+static_assert(offsetof(NativeXoverDefine, probability) == 40);
+
+RdpRawEvent to_raw_event(const NativeXoverDefine& source) {
+    RdpRawEvent event;
+    event.outside_flag = source.outside_flag;
+    event.misidentify_flag = source.misidentify_flag;
+    event.program_flag = source.program_flag;
+    event.sbp_flag = source.sbp_flag;
+    event.accept = source.accept;
+    event.major_parent = source.major_parent;
+    event.minor_parent = source.minor_parent;
+    event.daughter = source.daughter;
+    event.beginning = source.beginning;
+    event.ending = source.ending;
+    event.length_holder = source.length_holder;
+    event.event_number = source.event_number;
+    event.permutation_pvalue = source.permutation_pvalue;
+    event.begin_parent = source.begin_parent;
+    event.end_parent = source.end_parent;
+    event.probability = source.probability;
+    event.distance_holder = source.distance_holder;
+    return event;
+}
+
+bool raw_event_equivalent(const RdpRawEvent& first,
+                          const RdpRawEvent& second) {
+    const auto close = [](const double actual, const double expected) {
+        return std::abs(actual - expected) <= 1e-12 * std::max(
+            {1.0, std::abs(actual), std::abs(expected)});
+    };
+    return first.outside_flag == second.outside_flag &&
+        first.misidentify_flag == second.misidentify_flag &&
+        first.program_flag == second.program_flag &&
+        first.sbp_flag == second.sbp_flag && first.accept == second.accept &&
+        first.major_parent == second.major_parent &&
+        first.minor_parent == second.minor_parent &&
+        first.daughter == second.daughter &&
+        first.beginning == second.beginning && first.ending == second.ending &&
+        first.length_holder == second.length_holder &&
+        first.event_number == second.event_number &&
+        std::memcmp(&first.permutation_pvalue, &second.permutation_pvalue,
+                    sizeof(float)) == 0 &&
+        first.begin_parent == second.begin_parent &&
+        first.end_parent == second.end_parent &&
+        close(first.probability, second.probability) &&
+        close(first.distance_holder, second.distance_holder);
+}
+
+std::vector<AlistRdp3TraceCall> load_alist_rdp3_trace(
+    const std::string& path) {
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input) throw std::runtime_error("cannot open AlistRDP3 trace: " + path);
+    const auto length = input.tellg();
+    input.seekg(0);
+    std::vector<unsigned char> bytes(static_cast<std::size_t>(length));
+    input.read(reinterpret_cast<char*>(bytes.data()), length);
+    std::size_t offset = 0;
+    const auto read_int = [&]() {
+        if (offset + sizeof(int) > bytes.size()) {
+            throw std::runtime_error("truncated AlistRDP3 trace");
+        }
+        int value = 0;
+        std::memcpy(&value, bytes.data() + offset, sizeof(value));
+        offset += sizeof(value);
+        return value;
+    };
+    std::vector<AlistRdp3TraceCall> calls;
+    while (offset < bytes.size()) {
+        const int magic = read_int();
+        const int invocation = read_int();
+        const int list_length = read_int();
+        const int start = read_int();
+        const int end = read_int();
+        const int next_no = read_int();
+        const int result = read_int();
+        const int sequence_length = read_int();
+        (void)invocation;
+        (void)result;
+        (void)sequence_length;
+        if (magic != 0x41523343 || start < 0 || end < start ||
+            list_length < end) {
+            throw std::runtime_error("AlistRDP3 trace header differs");
+        }
+        AlistRdp3TraceCall call;
+        call.next_no = next_no;
+        for (int item = start; item <= end; ++item) {
+            std::array<int, 3> triplet{};
+            for (int role = 0; role < 3; ++role) {
+                if (offset + sizeof(short) > bytes.size()) {
+                    throw std::runtime_error("truncated AlistRDP3 triplet");
+                }
+                short value = 0;
+                std::memcpy(&value, bytes.data() + offset, sizeof(value));
+                offset += sizeof(value);
+                triplet[role] = value;
+            }
+            if (offset >= bytes.size()) {
+                throw std::runtime_error("truncated AlistRDP3 redo list");
+            }
+            call.triplets.push_back(triplet);
+            call.redo.push_back(bytes[offset++]);
+        }
+        calls.push_back(std::move(call));
+    }
+    return calls;
+}
+
+std::vector<unsigned char> load_first_addjust_pairs(
+    const std::string& path, int expected_next_no) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) throw std::runtime_error("cannot open AddjustCXO pair trace");
+    std::array<int, 5> header{};
+    input.read(reinterpret_cast<char*>(header.data()), sizeof(header));
+    if (header[0] != 0x41445052 || header[2] != expected_next_no) {
+        throw std::runtime_error("AddjustCXO pair trace header differs");
+    }
+    std::vector<unsigned char> pairs(
+        static_cast<std::size_t>(expected_next_no + 1) *
+        (expected_next_no + 1));
+    input.read(reinterpret_cast<char*>(pairs.data()), pairs.size());
+    if (!input) throw std::runtime_error("truncated AddjustCXO pair trace");
+    return pairs;
+}
+
+RdpRawEventState load_first_addjust_events(const std::string& pairs_path) {
+    std::string path = pairs_path;
+    const std::string suffix = "addjust-dopairs.bin";
+    const auto suffix_position = path.rfind(suffix);
+    if (suffix_position == std::string::npos) {
+        throw std::runtime_error("cannot derive AddjustCXO event trace path");
+    }
+    path.replace(suffix_position, suffix.size(), "addjust-cxo-temp.bin");
+    std::ifstream input(path, std::ios::binary);
+    if (!input) throw std::runtime_error("cannot open AddjustCXO event trace");
+    std::array<int, 12> header{};
+    input.read(reinterpret_cast<char*>(header.data()), sizeof(header));
+    if (!input || header[0] != 0x41435854 || header[1] != 1 ||
+        header[11] != static_cast<int>(sizeof(NativeXoverDefine))) {
+        throw std::runtime_error("AddjustCXO event trace header differs");
+    }
+    const int next_no = header[2];
+    const int trace_ub = header[5];
+    const int row_ub = header[6];
+    const int slot_ub = header[7];
+    std::vector<int> trace_sub(trace_ub + 1);
+    input.read(reinterpret_cast<char*>(trace_sub.data()),
+               static_cast<std::streamsize>(trace_sub.size() * sizeof(int)));
+    std::vector<std::int16_t> current(next_no + 1);
+    input.read(reinterpret_cast<char*>(current.data()),
+               static_cast<std::streamsize>(current.size() * sizeof(short)));
+    std::vector<NativeXoverDefine> matrix(
+        static_cast<std::size_t>(row_ub + 1) * (slot_ub + 1));
+    input.read(reinterpret_cast<char*>(matrix.data()),
+               static_cast<std::streamsize>(
+                   matrix.size() * sizeof(NativeXoverDefine)));
+    if (!input) throw std::runtime_error("truncated AddjustCXO event trace");
+    RdpRawEventState state;
+    state.current_xover = current;
+    state.xover_list.resize(next_no + 1);
+    for (int row = 0; row <= next_no; ++row) {
+        for (int slot = 1; slot <= current[row]; ++slot) {
+            state.xover_list[row].push_back(to_raw_event(
+                matrix[row + slot * (row_ub + 1)]));
+        }
+    }
+    return state;
+}
+
+RdpRawEventState load_findbetter_events(
+    const std::string& pairs_path, const int wanted_invocation) {
+    std::string path = pairs_path;
+    const std::string suffix = "addjust-dopairs.bin";
+    const auto suffix_position = path.rfind(suffix);
+    if (suffix_position == std::string::npos) {
+        throw std::runtime_error("cannot derive MakeTestPVs trace path");
+    }
+    path.replace(suffix_position, suffix.size(), "findbetter-pxolist.bin");
+    std::ifstream input(path, std::ios::binary);
+    if (!input) throw std::runtime_error("cannot open MakeTestPVs trace");
+    while (input) {
+        std::array<int, 8> header{};
+        input.read(reinterpret_cast<char*>(header.data()), sizeof(header));
+        if (!input) break;
+        if (header[0] != 0x4658504c ||
+            header[7] != static_cast<int>(sizeof(NativeXoverDefine))) {
+            throw std::runtime_error("MakeTestPVs trace header differs");
+        }
+        const int invocation = header[1];
+        const int done_row_ub = header[2];
+        const int next_no = header[3];
+        const int xover_row_ub = header[4];
+        const int xover_slot_ub = header[5];
+        std::vector<std::int16_t> current(next_no + 1);
+        input.read(reinterpret_cast<char*>(current.data()),
+                   static_cast<std::streamsize>(
+                       current.size() * sizeof(std::int16_t)));
+        input.seekg(
+            static_cast<std::streamoff>(done_row_ub + 1) *
+                (xover_slot_ub + 1),
+            std::ios::cur);
+        std::vector<NativeXoverDefine> matrix(
+            static_cast<std::size_t>(xover_row_ub + 1) *
+            (xover_slot_ub + 1));
+        input.read(reinterpret_cast<char*>(matrix.data()),
+                   static_cast<std::streamsize>(
+                       matrix.size() * sizeof(NativeXoverDefine)));
+        input.seekg(
+            static_cast<std::streamoff>(next_no + 1) *
+                (xover_slot_ub + 1) * sizeof(double),
+            std::ios::cur);
+        if (!input) throw std::runtime_error("truncated MakeTestPVs trace");
+        if (invocation != wanted_invocation) continue;
+        RdpRawEventState state;
+        state.current_xover = current;
+        state.xover_list.resize(next_no + 1);
+        for (int row = 0; row <= next_no; ++row) {
+            for (int slot = 1; slot <= current[row]; ++slot) {
+                state.xover_list[row].push_back(to_raw_event(
+                    matrix[row + slot * (xover_row_ub + 1)]));
+            }
+        }
+        return state;
+    }
+    throw std::runtime_error("requested MakeTestPVs invocation is absent");
+}
+
+void append_rdp_events(RdpRawEventState& destination,
+                       const RdpRawEventState& source) {
+    if (destination.xover_list.size() < source.xover_list.size()) {
+        destination.xover_list.resize(source.xover_list.size());
+        destination.current_xover.resize(source.xover_list.size(), 0);
+    }
+    for (std::size_t row = 0; row < source.xover_list.size(); ++row) {
+        destination.xover_list[row].insert(
+            destination.xover_list[row].end(),
+            source.xover_list[row].begin(), source.xover_list[row].end());
+        destination.current_xover[row] = static_cast<std::int16_t>(
+            destination.xover_list[row].size());
+    }
+}
+
+std::pair<bool, std::size_t> compare_rdp_event_states(
+    const RdpRawEventState& actual, const RdpRawEventState& expected) {
+    bool matches = actual.current_xover == expected.current_xover &&
+        actual.xover_list.size() == expected.xover_list.size();
+    std::size_t mismatches = 0;
+    const auto rows = std::min(
+        actual.xover_list.size(), expected.xover_list.size());
+    for (std::size_t row = 0; row < rows; ++row) {
+        const auto& actual_row = actual.xover_list[row];
+        const auto& expected_row = expected.xover_list[row];
+        if (actual_row.size() != expected_row.size()) {
+            matches = false;
+            mismatches += actual_row.size() > expected_row.size()
+                ? actual_row.size() - expected_row.size()
+                : expected_row.size() - actual_row.size();
+        }
+        const auto slots = std::min(actual_row.size(), expected_row.size());
+        for (std::size_t slot = 0; slot < slots; ++slot) {
+            if (!raw_event_equivalent(actual_row[slot], expected_row[slot])) {
+                matches = false;
+                ++mismatches;
+            }
+        }
+    }
+    return {matches, mismatches};
+}
+
+std::vector<short> flatten_rdp_triplets(
+    const std::vector<std::array<int, 3>>& triplets) {
+    std::vector<short> output;
+    output.reserve(triplets.size() * 3);
+    for (const auto& triplet : triplets) {
+        for (const int sequence : triplet) {
+            output.push_back(static_cast<short>(sequence));
+        }
+    }
+    return output;
+}
+
+std::vector<unsigned char> screen_rdp_rescan_triplets(
+    const std::vector<std::array<int, 3>>& triplets,
+    const RdpScanState& scan_state, const RdpDistanceState& distance_state,
+    const RdpTreeState& tree_state, const AlistRdp4CaptureHeader& settings,
+    std::vector<unsigned char>& fss_rdp,
+    std::vector<double>& probability_estimate,
+    std::vector<double>& fact_three, std::vector<double>& fact) {
+    if (triplets.empty()) return {};
+    auto analysis_list = flatten_rdp_triplets(triplets);
+    std::vector<unsigned char> redo(triplets.size(), 0);
+    const double uncorrected_threshold = settings.mc_flag == 0
+        ? settings.lowest_probability / settings.mc_correction
+        : settings.lowest_probability;
+    MathFuncs::MyMathFuncs::AlistRDP3(
+        analysis_list.data(), static_cast<int>(triplets.size()) - 1, 0,
+        static_cast<int>(triplets.size()) - 1, scan_state.next_no,
+        uncorrected_threshold, redo.data(), settings.circular,
+        settings.mc_correction, settings.mc_flag, settings.lowest_probability,
+        settings.target_x, scan_state.sequence_length, settings.short_output,
+        scan_state.next_no, const_cast<float*>(distance_state.distance.data()),
+        scan_state.next_no,
+        const_cast<float*>(tree_state.tree_distance.data()),
+        settings.fss_rdp_ub, scan_state.compressed_sequence_ub,
+        const_cast<unsigned char*>(scan_state.compressed_sequence.data()),
+        const_cast<short*>(scan_state.sequence_data.data()),
+        settings.xover_window, settings.xover_window_x, fss_rdp.data(),
+        settings.probability_file_flag, settings.probability_one_ub,
+        settings.probability_two_ub, probability_estimate.data(),
+        settings.fact_three_ub, fact_three.data(), fact.data());
+    return redo;
+}
 
 int self_test() {
     constexpr int next_no = 4;
@@ -878,7 +1235,11 @@ int fasta_all_redo_events_fixture(
     const std::string& check_pattern_fixture_path,
     const std::string& cmaxd_fixture_path,
     const std::string& consensus_fixture_path,
-    const std::string& collect_events_fixture_path) {
+    const std::string& collect_events_fixture_path,
+    const std::string& modseqnumy_fixture_path,
+    const std::string& mutation_tail_fixture_path,
+    const std::string& alist_rdp3_trace_path,
+    const std::string& addjust_pairs_trace_path) {
     const Dna5ScanPreprocessApi preprocess_api{
         &MathFuncs::MyMathFuncs::MakeAListP2,
         &MathFuncs::MyMathFuncs::CountNucs,
@@ -3492,14 +3853,12 @@ int fasta_all_redo_events_fixture(
         scan_state.next_no, final_candidates.candidate_last,
         final_candidates.candidate_list);
     const std::array<int, 2> collection_trace{trace[0], trace[1]};
-    RdpRawEventState rescan_events;
-    rescan_events.current_xover.assign(scan_state.next_no + 1, 0);
-    rescan_events.xover_list.resize(scan_state.next_no + 1);
     auto selected_collection_event =
         events.xover_list[collection_trace[0]][collection_trace[1] - 1];
     selected_collection_event.distance_holder =
         (selected_collection_event.distance_holder + 0.00000001) * -1.0;
-    const auto add_synthetic_events = [&](const RdpFinalTrimState& pass) {
+    const auto add_synthetic_events = [&] (
+        const RdpFinalTrimState& pass, RdpRawEventState& target_events) {
       for (const auto& seed : pass.synthetic_event_roles) {
         const int role = seed[0];
         const int sequence = seed[1];
@@ -3511,9 +3870,9 @@ int fasta_all_redo_events_fixture(
             correlation_sequences[correlation_comparison[role + 3]]);
         synthetic.probability = 0.9;
         synthetic.distance_holder = std::abs(synthetic.distance_holder);
-        rescan_events.xover_list[sequence].push_back(synthetic);
-        rescan_events.current_xover[sequence] = static_cast<std::int16_t>(
-            rescan_events.xover_list[sequence].size());
+        target_events.xover_list[sequence].push_back(synthetic);
+        target_events.current_xover[sequence] = static_cast<std::int16_t>(
+            target_events.xover_list[sequence].size());
       }
     };
     std::vector<unsigned char> single_redo(
@@ -3526,7 +3885,8 @@ int fasta_all_redo_events_fixture(
             selected_collection_event.probability * 100000.0),
         static_cast<double>(probability_settings.lowest_probability *
             probability_settings.mc_correction)});
-    const auto run_rescan_pass = [&](const RdpFinalTrimState& pass) {
+    const auto run_rescan_pass = [&] (
+        const RdpFinalTrimState& pass, RdpRawEventState& target_events) {
       for (int role = 0; role < 3; ++role) {
         for (int slot = 0; slot <= pass.candidate_last[role]; ++slot) {
             const int sequence =
@@ -3536,28 +3896,33 @@ int fasta_all_redo_events_fixture(
                 sequence,
                 correlation_sequences[correlation_comparison[role]],
                 correlation_sequences[correlation_comparison[role + 3]]};
-            rescan_events = scan_rdp_redo_triplets(
+            target_events = scan_rdp_redo_triplets(
                 scan_state, distance_state, tree_state, single_redo, fss_rdp,
                 store_lpv, h.store_lpv_ub, h.fss_rdp_ub, h.xover_window,
                 h.xover_window_x, xover_settings, rescan_probability_settings,
                 probability_estimate, fact_three, fact, xover_api, 1,
-                &rescan_events, &rescan_triplet);
+                &target_events, &rescan_triplet);
         }
       }
     };
-    // FinalTrim temporarily relaxes LowestProb for the RDP rescan tail.
-    add_synthetic_events(final_candidates);
-    run_rescan_pass(final_candidates);
+    // The source FinalTrim invocation clears its temporary XOverList,
+    // populates it, and then copies every active slot into persistent PXOList.
     RdpRawEventState events_after_rescan = events;
     events_after_rescan.xover_list[collection_trace[0]][
         collection_trace[1] - 1] = selected_collection_event;
-    for (int row = 0; row <= scan_state.next_no; ++row) {
-        for (const auto& rescanned : rescan_events.xover_list[row]) {
-            events_after_rescan.xover_list[row].push_back(rescanned);
-        }
-        events_after_rescan.current_xover[row] = static_cast<std::int16_t>(
-            events_after_rescan.xover_list[row].size());
-    }
+    RdpRawEventState rescan_events;
+    const auto run_final_trim_side_effects = [&] (
+        const RdpFinalTrimState& pass) {
+        RdpRawEventState temporary;
+        temporary.current_xover.assign(scan_state.next_no + 1, 0);
+        temporary.xover_list.resize(scan_state.next_no + 1);
+        add_synthetic_events(pass, temporary);
+        run_rescan_pass(pass, temporary);
+        append_rdp_events(events_after_rescan, temporary);
+        rescan_events = std::move(temporary);
+    };
+    // FinalTrim temporarily relaxes LowestProb for each RDP rescan tail.
+    run_final_trim_side_effects(final_candidates);
     const auto collection_event_list = prepare_rdp_collection_event_list(
         scan_state.next_no, expected_winner, correlation_sequences,
         collection_trace, final_candidates.candidate_last,
@@ -3845,6 +4210,642 @@ int fasta_all_redo_events_fixture(
     const bool collect_second_matches = check_collect_call(1, collect_second);
     collect_events_matches = collect_events_matches &&
         collect_first_matches && collect_second_matches;
+
+    const char modseq_magic[8] = {
+        'M', 'S', 'E', 'Q', 'Y', 'V', '1', '\0'};
+    const auto modseq_fixture =
+        load_rdp_sectioned_fixture<ModSeqNumYCaptureHeader>(
+            modseqnumy_fixture_path, modseq_magic);
+    const auto modseq_header = rdp_fixture_section<int>(modseq_fixture, 1);
+    const auto modseq_inputs = rdp_fixture_section<int>(modseq_fixture, 2);
+    const auto modseq_result = rdp_fixture_section<int>(modseq_fixture, 3);
+    const auto modseq_outputs = rdp_fixture_section<int>(modseq_fixture, 4);
+    const auto expected_mutated_sequences =
+        rdp_fixture_section<short>(modseq_fixture, 5);
+    const auto expected_saved_tracts =
+        rdp_fixture_section<short>(modseq_fixture, 6);
+    const auto expected_mutation_missing =
+        rdp_fixture_section<unsigned char>(modseq_fixture, 7);
+    bool mutation_metadata_matches = modseq_fixture.header.calls > 0 &&
+        modseq_header.size() == 10 && modseq_result == std::vector<int>{1} &&
+        modseq_header[2] == selected.beginning &&
+        modseq_header[3] == selected.ending &&
+        modseq_header[4] == scan_state.sequence_length &&
+        modseq_header[5] == expected_winner;
+    std::vector<int> generated_breakpoints(
+        static_cast<std::size_t>(2 *
+            (final_candidates.candidate_last[expected_winner] + 1)), 0);
+    for (int slot = 0;
+         slot <= final_candidates.candidate_last[expected_winner]; ++slot) {
+        // In the RDP-only MakeBreaks path every retained winner has a
+        // legitimate ProgramFlag-zero record. The literal assignment uses
+        // the selected BPos/EPos, not that record's own interval.
+        generated_breakpoints[slot * 2] = selected.beginning;
+        generated_breakpoints[slot * 2 + 1] = selected.ending;
+    }
+    for (std::size_t offset = 0; offset + 4 < modseq_inputs.size();
+         offset += 5) {
+        const int role = modseq_inputs[offset];
+        const int slot = modseq_inputs[offset + 1];
+        mutation_metadata_matches = mutation_metadata_matches &&
+            role >= 0 && role < 3 && slot >= 0 &&
+            slot <= final_candidates.candidate_last[role] &&
+            modseq_inputs[offset + 2] ==
+                final_candidates.candidate_list[role + slot * 3];
+        if (role == expected_winner) {
+            mutation_metadata_matches = mutation_metadata_matches &&
+                generated_breakpoints[slot * 2] ==
+                    modseq_inputs[offset + 3] &&
+                generated_breakpoints[slot * 2 + 1] ==
+                    modseq_inputs[offset + 4];
+        }
+    }
+    std::vector<unsigned char> initial_missing(scan_state.sequence_data.size(), 0);
+    const auto mutation_state = erase_rdp_recombinant_tracts(
+        scan_state.sequence_length, expected_winner,
+        final_candidates.candidate_last, final_candidates.candidate_list,
+        selected.beginning, selected.ending, generated_breakpoints,
+        scan_state.sequence_data, initial_missing);
+    const int selected_count =
+        final_candidates.candidate_last[expected_winner] + 1;
+    std::vector<short> actual_mutated_sequences;
+    actual_mutated_sequences.reserve(
+        static_cast<std::size_t>(selected_count) *
+            (scan_state.sequence_length + 1));
+    std::vector<unsigned char> actual_mutation_missing;
+    actual_mutation_missing.reserve(
+        static_cast<std::size_t>(selected_count) *
+            (scan_state.sequence_length + 1));
+    for (int slot = 0; slot < selected_count; ++slot) {
+        const int sequence =
+            final_candidates.candidate_list[expected_winner + slot * 3];
+        const auto begin = mutation_state.sequence_data.begin() +
+            static_cast<std::ptrdiff_t>(sequence) *
+                (scan_state.sequence_length + 1);
+        actual_mutated_sequences.insert(
+            actual_mutated_sequences.end(), begin,
+            begin + scan_state.sequence_length + 1);
+        const auto missing_begin = mutation_state.missing_data.begin() +
+            static_cast<std::ptrdiff_t>(sequence) *
+                (scan_state.sequence_length + 1);
+        actual_mutation_missing.insert(
+            actual_mutation_missing.end(), missing_begin,
+            missing_begin + scan_state.sequence_length + 1);
+        mutation_metadata_matches = mutation_metadata_matches &&
+            modseq_outputs[slot * 5] == expected_winner &&
+            modseq_outputs[slot * 5 + 1] == slot &&
+            modseq_outputs[slot * 5 + 2] == sequence &&
+            modseq_outputs[slot * 5 + 3] ==
+                mutation_state.breakpoints[slot * 2] &&
+            modseq_outputs[slot * 5 + 4] ==
+                mutation_state.breakpoints[slot * 2 + 1];
+    }
+    const bool modseqnumy_matches = mutation_metadata_matches &&
+        actual_mutated_sequences == expected_mutated_sequences &&
+        mutation_state.saved_tracts == expected_saved_tracts &&
+        actual_mutation_missing == expected_mutation_missing;
+    if (!modseqnumy_matches) {
+        std::cerr << "ModSeqNumY mismatch: metadata="
+                  << mutation_metadata_matches << " sequence="
+                  << (actual_mutated_sequences == expected_mutated_sequences)
+                  << " saved="
+                  << (mutation_state.saved_tracts == expected_saved_tracts)
+                  << " missing="
+                  << (actual_mutation_missing == expected_mutation_missing)
+                  << '\n';
+    }
+    const char mutation_tail_magic[8] = {
+        'M', 'T', 'A', 'I', 'L', 'V', '1', '\0'};
+    const auto mutation_tail_fixture =
+        load_rdp_sectioned_fixture<MutationTailCaptureHeader>(
+            mutation_tail_fixture_path, mutation_tail_magic);
+    const auto msn_header =
+        rdp_fixture_section<int>(mutation_tail_fixture, 1);
+    const auto msn_records =
+        rdp_fixture_section<int>(mutation_tail_fixture, 2);
+    const auto expected_fragment_sequences =
+        rdp_fixture_section<short>(mutation_tail_fixture, 3);
+    const auto expected_fragment_missing =
+        rdp_fixture_section<unsigned char>(mutation_tail_fixture, 4);
+    const auto modz_header =
+        rdp_fixture_section<int>(mutation_tail_fixture, 5);
+    const auto modz_records =
+        rdp_fixture_section<int>(mutation_tail_fixture, 6);
+    const auto expected_original_sequences =
+        rdp_fixture_section<short>(mutation_tail_fixture, 7);
+    const auto expected_original_missing =
+        rdp_fixture_section<unsigned char>(mutation_tail_fixture, 8);
+    const auto size_header =
+        rdp_fixture_section<int>(mutation_tail_fixture, 9);
+    const auto expected_sizes =
+        rdp_fixture_section<int>(mutation_tail_fixture, 10);
+    const int expanded_next_no = scan_state.next_no + selected_count;
+    auto expanded_sequences = mutation_state.sequence_data;
+    auto expanded_missing = mutation_state.missing_data;
+    rebuild_rdp_recombinant_tracts(
+        scan_state.sequence_length, expected_winner,
+        final_candidates.candidate_last, final_candidates.candidate_list,
+        mutation_state.breakpoints, mutation_state.saved_tracts,
+        expanded_sequences);
+    expanded_sequences.resize(
+        static_cast<std::size_t>(expanded_next_no + 1) *
+            (scan_state.sequence_length + 1), 0);
+    expanded_missing.resize(expanded_sequences.size(), 0);
+    auto tail_breakpoints = mutation_state.breakpoints;
+    make_rdp_fragment_rows(
+        scan_state.sequence_length, expanded_next_no, expected_winner,
+        final_candidates.candidate_last, final_candidates.candidate_list,
+        selected.beginning, selected.ending, tail_breakpoints,
+        expanded_sequences, expanded_missing);
+    std::vector<short> actual_fragment_sequences;
+    std::vector<unsigned char> actual_fragment_missing;
+    bool mutation_tail_metadata_matches =
+        mutation_tail_fixture.header.calls > 0 && msn_header.size() == 11 &&
+        msn_header[2] == expanded_next_no &&
+        msn_header[3] == scan_state.sequence_length &&
+        msn_header[4] == selected.beginning &&
+        msn_header[5] == selected.ending &&
+        msn_header[6] == expected_winner && msn_header[10] == 1;
+    for (int slot = 0; slot < selected_count; ++slot) {
+        const int source =
+            final_candidates.candidate_list[expected_winner + slot * 3];
+        const int created = expanded_next_no -
+            final_candidates.candidate_last[expected_winner] + slot;
+        mutation_tail_metadata_matches = mutation_tail_metadata_matches &&
+            msn_records[slot * 5] == slot &&
+            msn_records[slot * 5 + 1] == source &&
+            msn_records[slot * 5 + 2] == created &&
+            msn_records[slot * 5 + 3] == tail_breakpoints[slot * 2] &&
+            msn_records[slot * 5 + 4] == tail_breakpoints[slot * 2 + 1];
+        const auto sequence_begin = expanded_sequences.begin() +
+            static_cast<std::ptrdiff_t>(created) *
+                (scan_state.sequence_length + 1);
+        actual_fragment_sequences.insert(
+            actual_fragment_sequences.end(), sequence_begin,
+            sequence_begin + scan_state.sequence_length + 1);
+        const auto missing_begin = expanded_missing.begin() +
+            static_cast<std::ptrdiff_t>(created) *
+                (scan_state.sequence_length + 1);
+        actual_fragment_missing.insert(
+            actual_fragment_missing.end(), missing_begin,
+            missing_begin + scan_state.sequence_length + 1);
+    }
+    std::vector<int> compact_candidates(selected_count, 0);
+    for (int slot = 0; slot < selected_count; ++slot) {
+        compact_candidates[slot] =
+            final_candidates.candidate_list[expected_winner + slot * 3];
+    }
+    erase_rdp_original_tracts(
+        scan_state.sequence_length, expanded_next_no, expected_winner,
+        final_candidates.candidate_last, compact_candidates,
+        selected.beginning, selected.ending, tail_breakpoints,
+        expanded_sequences, expanded_missing);
+    std::vector<short> actual_original_sequences;
+    std::vector<unsigned char> actual_original_missing;
+    for (int slot = 0; slot < selected_count; ++slot) {
+        const int source = compact_candidates[slot];
+        mutation_tail_metadata_matches = mutation_tail_metadata_matches &&
+            modz_records[slot * 4] == slot &&
+            modz_records[slot * 4 + 1] == source &&
+            modz_records[slot * 4 + 2] == tail_breakpoints[slot * 2] &&
+            modz_records[slot * 4 + 3] == tail_breakpoints[slot * 2 + 1];
+        const auto sequence_begin = expanded_sequences.begin() +
+            static_cast<std::ptrdiff_t>(source) *
+                (scan_state.sequence_length + 1);
+        actual_original_sequences.insert(
+            actual_original_sequences.end(), sequence_begin,
+            sequence_begin + scan_state.sequence_length + 1);
+        const auto missing_begin = expanded_missing.begin() +
+            static_cast<std::ptrdiff_t>(source) *
+                (scan_state.sequence_length + 1);
+        actual_original_missing.insert(
+            actual_original_missing.end(), missing_begin,
+            missing_begin + scan_state.sequence_length + 1);
+    }
+    const auto actual_sizes = calculate_rdp_actual_sequence_sizes(
+        scan_state.sequence_length, expanded_next_no, expected_winner,
+        final_candidates.candidate_last, final_candidates.candidate_list,
+        expanded_sequences);
+    mutation_tail_metadata_matches = mutation_tail_metadata_matches &&
+        modz_header.size() == 11 && modz_header[2] == expanded_next_no &&
+        modz_header[6] == expected_winner && modz_header[10] == 1 &&
+        size_header.size() == 9 && size_header[2] == expanded_next_no &&
+        size_header[4] == expected_winner && size_header[8] == 1;
+    for (int slot = 0; slot < selected_count; ++slot) {
+        const int source = compact_candidates[slot];
+        const int created = expanded_next_no -
+            final_candidates.candidate_last[expected_winner] + slot;
+        mutation_tail_metadata_matches = mutation_tail_metadata_matches &&
+            expected_sizes[slot * 5] == slot &&
+            expected_sizes[slot * 5 + 1] == source &&
+            expected_sizes[slot * 5 + 2] == created &&
+            expected_sizes[slot * 5 + 3] == actual_sizes[source] &&
+            expected_sizes[slot * 5 + 4] == actual_sizes[created];
+    }
+    const bool mutation_tail_matches = mutation_tail_metadata_matches &&
+        actual_fragment_sequences == expected_fragment_sequences &&
+        actual_fragment_missing == expected_fragment_missing &&
+        actual_original_sequences == expected_original_sequences &&
+        actual_original_missing == expected_original_missing;
+    if (!mutation_tail_matches) {
+        std::cerr << "Mutation tail mismatch: metadata="
+                  << mutation_tail_metadata_matches << " new-sequence="
+                  << (actual_fragment_sequences == expected_fragment_sequences)
+                  << " new-missing="
+                  << (actual_fragment_missing == expected_fragment_missing)
+                  << " original-sequence="
+                  << (actual_original_sequences == expected_original_sequences)
+                  << " original-missing="
+                  << (actual_original_missing == expected_original_missing)
+                  << '\n';
+    }
+    std::vector<int> trace_sub(expanded_next_no + 1, 0);
+    for (int sequence = 0; sequence <= scan_state.next_no; ++sequence) {
+        trace_sub[sequence] = sequence;
+    }
+    for (int slot = 0; slot < selected_count; ++slot) {
+        const int created = expanded_next_no -
+            final_candidates.candidate_last[expected_winner] + slot;
+        trace_sub[created] = compact_candidates[slot];
+    }
+    std::vector<int> initial_actual_sizes(scan_state.next_no + 1, 0);
+    for (int sequence = 0; sequence <= scan_state.next_no; ++sequence) {
+        for (int position = 1; position <= scan_state.sequence_length;
+             ++position) {
+            if (scan_state.sequence_data[
+                    position + sequence * (scan_state.sequence_length + 1)] !=
+                46) {
+                ++initial_actual_sizes[sequence];
+            }
+        }
+    }
+    const auto redistributed = redistribute_rdp_events(
+        scan_state.next_no, expected_winner, h.lowest_probability,
+        final_candidates.candidate_last, final_candidates.candidate_list,
+        trace_sub, collection_event_list);
+    const auto native_addjust_pairs = load_first_addjust_pairs(
+        addjust_pairs_trace_path, scan_state.next_no);
+    const auto native_redistributed =
+        load_first_addjust_events(addjust_pairs_trace_path);
+    const bool redistribution_pairs_match =
+        redistributed.pairs_to_rescan == native_addjust_pairs;
+    bool redistribution_events_match =
+        redistributed.events.current_xover ==
+            native_redistributed.current_xover &&
+        redistributed.events.xover_list.size() ==
+            native_redistributed.xover_list.size();
+    std::size_t redistribution_event_mismatches = 0;
+    for (std::size_t row = 0;
+         row < redistributed.events.xover_list.size() &&
+         row < native_redistributed.xover_list.size(); ++row) {
+        const auto& actual_row = redistributed.events.xover_list[row];
+        const auto& expected_row = native_redistributed.xover_list[row];
+        if (actual_row.size() != expected_row.size()) {
+            redistribution_events_match = false;
+            redistribution_event_mismatches +=
+                actual_row.size() > expected_row.size()
+                ? actual_row.size() - expected_row.size()
+                : expected_row.size() - actual_row.size();
+        }
+        for (std::size_t slot = 0;
+             slot < actual_row.size() && slot < expected_row.size(); ++slot) {
+            if (!raw_event_equivalent(actual_row[slot], expected_row[slot])) {
+                redistribution_events_match = false;
+                ++redistribution_event_mismatches;
+            }
+        }
+    }
+    if (!redistribution_events_match) {
+        const auto count_events = [](const RdpRawEventState& state) {
+            std::size_t count = 0;
+            for (const auto& row : state.xover_list) count += row.size();
+            return count;
+        };
+        std::cerr << "AddjustCXO event mismatch: "
+                  << redistribution_event_mismatches << " records, counts="
+                  << (redistributed.events.current_xover ==
+                      native_redistributed.current_xover)
+                  << " input totals=" << count_events(events) << '+'
+                  << (count_events(events_after_rescan) - count_events(events))
+                  << '=' << count_events(collection_event_list)
+                  << " scan significant=" << rescan_events.significant_candidates
+                  << " threshold="
+                  << rescan_probability_settings.lowest_probability
+                  << " candidates=" << final_candidates.candidate_last[0] + 1
+                  << ',' << final_candidates.candidate_last[1] + 1
+                  << ',' << final_candidates.candidate_last[2] + 1
+                  << " first=" << downstream_candidates.candidate_last[0] + 1
+                  << ',' << downstream_candidates.candidate_last[1] + 1
+                  << ',' << downstream_candidates.candidate_last[2] + 1
+                  << " winner=" << expected_winner
+                  << " triplet=" << correlation_sequences[0] << ','
+                  << correlation_sequences[1] << ','
+                  << correlation_sequences[2]
+                  << '\n';
+        for (std::size_t row = 0;
+             row < redistributed.events.xover_list.size(); ++row) {
+            if (redistributed.events.xover_list[row].size() !=
+                native_redistributed.xover_list[row].size()) {
+                std::cerr << "  input row " << row
+                          << " initial=" << events.xover_list[row].size()
+                          << " rescanned="
+                          << (events_after_rescan.xover_list[row].size() -
+                              events.xover_list[row].size())
+                          << " collected="
+                          << collection_event_list.xover_list[row].size()
+                          << '\n';
+            }
+        }
+    }
+    auto propagated_pairs = native_addjust_pairs;
+    propagate_rdp_group_pairs(
+        scan_state.next_no, expected_winner,
+        final_candidates.candidate_last, final_candidates.candidate_list,
+        propagated_pairs);
+    const auto inner_triplets = make_rdp_inner_scan_triplets(
+        scan_state, events.triplets_with_events, expected_winner,
+        final_candidates.candidate_last,
+        final_candidates.candidate_list, trace_sub, initial_actual_sizes,
+        scan_state.next_no, 20, propagated_pairs);
+    const auto expanded_scan_state = rebuild_rdp_scan_state(
+        expanded_next_no, scan_state.sequence_length, expanded_sequences,
+        preprocess_api);
+    auto expanded_actual_sizes = initial_actual_sizes;
+    expanded_actual_sizes.resize(expanded_next_no + 1, 0);
+    for (int slot = 0; slot < selected_count; ++slot) {
+        const int source = compact_candidates[slot];
+        const int created = expanded_next_no -
+            final_candidates.candidate_last[expected_winner] + slot;
+        expanded_actual_sizes[source] = actual_sizes[source];
+        expanded_actual_sizes[created] = actual_sizes[created];
+    }
+    const auto expanded_distance_state = build_rdp_distance_state(
+        expanded_scan_state, 1, expanded_scan_state.sequence_length);
+    const auto outer_triplets = make_rdp_outer_scan_triplets(
+        scan_state, events.triplets_with_events, expanded_next_no,
+        scan_state.next_no,
+        expected_winner, final_candidates.candidate_last, trace_sub,
+        expanded_actual_sizes, scan_state.next_no, 20, propagated_pairs,
+        expanded_next_no, expanded_distance_state.valid_sites);
+    const auto alist_rdp3_calls =
+        load_alist_rdp3_trace(alist_rdp3_trace_path);
+    const bool inner_schedule_matches = !alist_rdp3_calls.empty() &&
+        alist_rdp3_calls[0].next_no == scan_state.next_no &&
+        alist_rdp3_calls[0].triplets == inner_triplets;
+    const bool outer_schedule_matches = alist_rdp3_calls.size() > 1 &&
+        alist_rdp3_calls[1].next_no == expanded_next_no &&
+        alist_rdp3_calls[1].triplets == outer_triplets;
+    const bool rescan_schedule_matches =
+        inner_schedule_matches && outer_schedule_matches;
+
+    auto rescan_fss_rdp = fss_rdp;
+    auto rescan_probability_estimate = probability_estimate;
+    auto rescan_fact_three = fact_three;
+    auto rescan_fact = fact;
+    const auto inner_scan_state = rebuild_rdp_scan_state(
+        scan_state.next_no, scan_state.sequence_length,
+        mutation_state.sequence_data, preprocess_api);
+    const auto inner_redo = screen_rdp_rescan_triplets(
+        inner_triplets, inner_scan_state, distance_state, tree_state, h,
+        rescan_fss_rdp, rescan_probability_estimate, rescan_fact_three,
+        rescan_fact);
+    auto inner_event_scan_state = inner_scan_state;
+    inner_event_scan_state.analysis_list = flatten_rdp_triplets(inner_triplets);
+    inner_event_scan_state.analysis_list_last =
+        static_cast<int>(inner_triplets.size()) - 1;
+    const auto inner_rescan_events = scan_rdp_redo_triplets(
+        inner_event_scan_state, distance_state, tree_state, inner_redo,
+        rescan_fss_rdp, store_lpv, h.store_lpv_ub, h.fss_rdp_ub,
+        h.xover_window, h.xover_window_x, xover_settings,
+        probability_settings, rescan_probability_estimate,
+        rescan_fact_three, rescan_fact, xover_api, 0, nullptr, nullptr, 1,
+        &mutation_state.missing_data);
+    auto combined_rescan_events = redistributed.events;
+    append_rdp_events(combined_rescan_events, inner_rescan_events);
+    combined_rescan_events.xover_list.resize(expanded_next_no + 1);
+    combined_rescan_events.current_xover.resize(expanded_next_no + 1, 0);
+    const auto expanded_tree_state = build_rdp_upgma_tree_state(
+        expanded_next_no, expanded_distance_state);
+    const auto outer_redo = screen_rdp_rescan_triplets(
+        outer_triplets, expanded_scan_state, expanded_distance_state,
+        expanded_tree_state, h, rescan_fss_rdp,
+        rescan_probability_estimate, rescan_fact_three, rescan_fact);
+    auto outer_event_scan_state = expanded_scan_state;
+    outer_event_scan_state.analysis_list = flatten_rdp_triplets(outer_triplets);
+    outer_event_scan_state.analysis_list_last =
+        static_cast<int>(outer_triplets.size()) - 1;
+    std::vector<double> expanded_store_lpv(
+        static_cast<std::size_t>(expanded_next_no + 1) *
+            (h.store_lpv_ub + 1),
+        1.0);
+    const auto outer_rescan_events = scan_rdp_redo_triplets(
+        outer_event_scan_state, expanded_distance_state, expanded_tree_state,
+        outer_redo, rescan_fss_rdp, expanded_store_lpv, h.store_lpv_ub,
+        h.fss_rdp_ub, h.xover_window, h.xover_window_x, xover_settings,
+        probability_settings, rescan_probability_estimate,
+        rescan_fact_three, rescan_fact, xover_api, 0, nullptr, nullptr, 1,
+        &expanded_missing);
+    const auto dropped_rescan_state = drop_rdp_unused_fragment_events(
+        scan_state.next_no, expanded_next_no, 20, trace_sub,
+        expanded_actual_sizes, combined_rescan_events, outer_rescan_events);
+    const auto& post_rescan_events = dropped_rescan_state.events;
+    const auto native_post_rescan =
+        load_findbetter_events(addjust_pairs_trace_path, 2);
+    const auto [post_rescan_events_match, post_rescan_mismatches] =
+        compare_rdp_event_states(post_rescan_events, native_post_rescan);
+    if (!post_rescan_events_match) {
+        std::cerr << "Post-rescan event mismatch: "
+                  << post_rescan_mismatches << " records, counts="
+                  << (post_rescan_events.current_xover ==
+                      native_post_rescan.current_xover)
+                  << " totals=";
+        const auto total_events = [](const RdpRawEventState& state) {
+            std::size_t total = 0;
+            for (const auto& row : state.xover_list) total += row.size();
+            return total;
+        };
+        std::cerr << total_events(post_rescan_events) << '/'
+                  << total_events(native_post_rescan)
+                  << " retained=" << total_events(redistributed.events)
+                  << " inner=" << total_events(inner_rescan_events)
+                  << " outer=" << total_events(outer_rescan_events)
+                  << " next=" << expanded_next_no << "->"
+                  << dropped_rescan_state.next_no << " refs=";
+        for (int sequence = scan_state.next_no + 1;
+             sequence <= dropped_rescan_state.next_no; ++sequence) {
+            std::cerr << sequence << ':'
+                      << dropped_rescan_state.reference_counts[sequence]
+                      << ',';
+        }
+        std::cerr << '\n';
+        for (std::size_t row = 0;
+             row < post_rescan_events.xover_list.size() &&
+             row < native_post_rescan.xover_list.size(); ++row) {
+            const auto actual_count = post_rescan_events.xover_list[row].size();
+            const auto expected_count = native_post_rescan.xover_list[row].size();
+            if (actual_count != expected_count) {
+                std::cerr << "  counts row " << row << " actual="
+                          << actual_count << " native=" << expected_count
+                          << " retained="
+                          << (row < redistributed.events.xover_list.size()
+                                  ? redistributed.events.xover_list[row].size()
+                                  : 0)
+                          << " inner="
+                          << (row < inner_rescan_events.xover_list.size()
+                                  ? inner_rescan_events.xover_list[row].size()
+                                  : 0)
+                          << " outer="
+                          << (row < outer_rescan_events.xover_list.size()
+                                  ? outer_rescan_events.xover_list[row].size()
+                                  : 0)
+                          << '\n';
+                const std::size_t retained_count =
+                    row < redistributed.events.xover_list.size()
+                    ? redistributed.events.xover_list[row].size() : 0;
+                std::cerr << "    actual-new";
+                for (std::size_t slot = retained_count;
+                     slot < post_rescan_events.xover_list[row].size(); ++slot) {
+                    const auto& event = post_rescan_events.xover_list[row][slot];
+                    std::cerr << " [" << event.major_parent << ','
+                              << event.minor_parent << ':' << event.beginning
+                              << '-' << event.ending << ':'
+                              << event.probability << ']';
+                }
+                std::cerr << "\n    native-new";
+                for (std::size_t slot = retained_count;
+                     slot < native_post_rescan.xover_list[row].size(); ++slot) {
+                    const auto& event = native_post_rescan.xover_list[row][slot];
+                    std::cerr << " [" << event.major_parent << ','
+                              << event.minor_parent << ':' << event.beginning
+                              << '-' << event.ending << ':'
+                              << event.probability << ']';
+                }
+                std::cerr << '\n';
+            }
+        }
+        int reports = 0;
+        for (std::size_t row = 0;
+             row < post_rescan_events.xover_list.size() &&
+             row < native_post_rescan.xover_list.size(); ++row) {
+            const auto& actual_row = post_rescan_events.xover_list[row];
+            const auto& expected_row = native_post_rescan.xover_list[row];
+            if (actual_row.size() != expected_row.size() && reports < 8) {
+                std::cerr << "  row " << row << " count "
+                          << actual_row.size() << '/' << expected_row.size()
+                          << '\n';
+                ++reports;
+            }
+            for (std::size_t slot = 0;
+                 slot < actual_row.size() && slot < expected_row.size() &&
+                 reports < 8; ++slot) {
+                if (raw_event_equivalent(actual_row[slot],
+                                         expected_row[slot])) {
+                    continue;
+                }
+                const auto& actual = actual_row[slot];
+                const auto& expected = expected_row[slot];
+                std::cerr << "  row " << row << " slot " << slot + 1
+                          << " roles " << actual.daughter << ','
+                          << actual.major_parent << ',' << actual.minor_parent
+                          << '/' << expected.daughter << ','
+                          << expected.major_parent << ','
+                          << expected.minor_parent << " bp "
+                          << actual.beginning << '-' << actual.ending << '/'
+                          << expected.beginning << '-' << expected.ending
+                          << " event " << actual.event_number << '/'
+                          << expected.event_number << " p "
+                          << actual.probability << '/'
+                          << expected.probability << " flags(out,mis,prog,sbp,acc) "
+                          << static_cast<int>(actual.outside_flag) << ','
+                          << static_cast<int>(actual.misidentify_flag) << ','
+                          << static_cast<int>(actual.program_flag) << ','
+                          << static_cast<int>(actual.sbp_flag) << ','
+                          << static_cast<int>(actual.accept) << '/'
+                          << static_cast<int>(expected.outside_flag) << ','
+                          << static_cast<int>(expected.misidentify_flag) << ','
+                          << static_cast<int>(expected.program_flag) << ','
+                          << static_cast<int>(expected.sbp_flag) << ','
+                          << static_cast<int>(expected.accept)
+                          << " holders(len,perm,bp,ep,dist) "
+                          << actual.length_holder << ','
+                          << actual.permutation_pvalue << ','
+                          << actual.begin_parent << ',' << actual.end_parent
+                          << ',' << actual.distance_holder << '/'
+                          << expected.length_holder << ','
+                          << expected.permutation_pvalue << ','
+                          << expected.begin_parent << ','
+                          << expected.end_parent << ','
+                          << expected.distance_holder << '\n';
+                ++reports;
+            }
+        }
+    }
+    const bool inner_screen_matches = !alist_rdp3_calls.empty() &&
+        inner_redo == alist_rdp3_calls[0].redo;
+    const bool outer_screen_matches = alist_rdp3_calls.size() > 1 &&
+        outer_redo == alist_rdp3_calls[1].redo;
+    const bool rescan_screen_matches =
+        inner_screen_matches && outer_screen_matches;
+    if (!rescan_schedule_matches) {
+        std::cerr << "RDP rescan schedule mismatch: pairs="
+                  << redistribution_pairs_match << " inner="
+                  << inner_triplets.size() << '/'
+                  << (alist_rdp3_calls.empty() ? 0 :
+                      alist_rdp3_calls[0].triplets.size())
+                  << " outer=" << outer_triplets.size() << '/'
+                  << (alist_rdp3_calls.size() < 2 ? 0 :
+                      alist_rdp3_calls[1].triplets.size());
+        const auto report_first = [&](const char* label, const auto& actual,
+                                      const auto& expected) {
+            std::size_t first = 0;
+            while (first < actual.size() && first < expected.size() &&
+                   actual[first] == expected[first]) {
+                ++first;
+            }
+            std::cerr << ' ' << label << "-first=" << first;
+            if (first < actual.size()) {
+                std::cerr << " actual=" << actual[first][0] << ','
+                          << actual[first][1] << ',' << actual[first][2];
+            }
+            if (first < expected.size()) {
+                std::cerr << " expected=" << expected[first][0] << ','
+                          << expected[first][1] << ',' << expected[first][2];
+            }
+        };
+        if (!alist_rdp3_calls.empty()) {
+            report_first("inner", inner_triplets,
+                         alist_rdp3_calls[0].triplets);
+        }
+        if (alist_rdp3_calls.size() > 1) {
+            report_first("outer", outer_triplets,
+                         alist_rdp3_calls[1].triplets);
+        }
+        std::cerr << '\n';
+    }
+    if (!rescan_screen_matches) {
+        const auto mismatch_count = [](const auto& actual,
+                                       const auto& expected) {
+            std::size_t count = actual.size() > expected.size()
+                ? actual.size() - expected.size()
+                : expected.size() - actual.size();
+            for (std::size_t index = 0;
+                 index < actual.size() && index < expected.size(); ++index) {
+                count += actual[index] != expected[index];
+            }
+            return count;
+        };
+        std::cerr << "AlistRDP3 rescan mismatch: inner="
+                  << mismatch_count(
+                         inner_redo, alist_rdp3_calls.empty()
+                             ? std::vector<unsigned char>{}
+                             : alist_rdp3_calls[0].redo)
+                  << " outer="
+                  << mismatch_count(
+                         outer_redo, alist_rdp3_calls.size() < 2
+                             ? std::vector<unsigned char>{}
+                             : alist_rdp3_calls[1].redo)
+                  << '\n';
+    }
     const bool consensus_matches = consensus_scores_match &&
         consensus_state.winning_role == expected_winner &&
         connected_metrics_match &&
@@ -3913,6 +4914,18 @@ int fasta_all_redo_events_fixture(
               << (second_final_trim_matches ? "PASS" : "FAIL")
               << ", MakeRelevant/MakeCollecteventsC "
               << (collect_events_matches ? "PASS" : "FAIL")
+              << ", ModSeqNumY "
+              << (modseqnumy_matches ? "PASS" : "FAIL")
+              << ", ModSN/ModSeqNumZ "
+              << (mutation_tail_matches ? "PASS" : "FAIL")
+              << ", AddjustCXO events "
+              << (redistribution_events_match ? "PASS" : "FAIL")
+              << ", rescan schedules "
+              << (rescan_schedule_matches ? "PASS" : "FAIL")
+              << ", AlistRDP3 rescans "
+              << (rescan_screen_matches ? "PASS" : "FAIL")
+              << ", post-rescan events "
+              << (post_rescan_events_match ? "PASS" : "FAIL")
               << "\n";
 
     return make_test_structure_matches && first_selection_matches &&
@@ -3924,6 +4937,12 @@ int fasta_all_redo_events_fixture(
              score_support_matches && check_pattern_matches &&
              final_trim_prefix_matches && cmaxd_matches && consensus_matches &&
              second_final_trim_matches && collect_events_matches
+             && modseqnumy_matches
+             && mutation_tail_matches
+             && redistribution_events_match
+             && rescan_schedule_matches
+             && rescan_screen_matches
+             && post_rescan_events_match
              ? 0 : 1) : 1;
 }
 
@@ -4109,13 +5128,14 @@ int main(int argc, char** argv) {
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
             argv[9], argv[10], argv[11]);
     }
-    if (argc == 26 &&
+    if (argc == 30 &&
         std::string_view(argv[1]) == "fasta-all-redo-events-fixture") {
         return fasta_all_redo_events_fixture(
             argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8],
             argv[9], argv[10], argv[11], {argv[12], argv[13], argv[14]},
             argv[15], argv[16], argv[17], argv[18], argv[19], argv[20],
-            argv[21], argv[22], argv[23], argv[24], argv[25]);
+            argv[21], argv[22], argv[23], argv[24], argv[25], argv[26],
+            argv[27], argv[28], argv[29]);
     }
     if (argc == 3 && std::string_view(argv[1]) == "alist-rdp4-fixture") {
         return alist_rdp4_fixture(argv[2]);

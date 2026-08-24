@@ -37,3 +37,7 @@ struct RdpScanState {
 RdpScanState build_rdp_scan_state_from_fasta(
     const std::string& fasta_path, const Dna5ScanPreprocessApi& api);
 
+RdpScanState rebuild_rdp_scan_state(
+    int next_no, int sequence_length,
+    const std::vector<short>& sequence_data,
+    const Dna5ScanPreprocessApi& api);

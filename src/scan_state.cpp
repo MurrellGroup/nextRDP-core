@@ -86,21 +86,20 @@ std::vector<unsigned char> make_compressor() {
 
 }  // namespace
 
-RdpScanState build_rdp_scan_state_from_fasta(
-    const std::string& fasta_path, const Dna5ScanPreprocessApi& api) {
-    const auto fasta = read_fasta_sequences(fasta_path);
+RdpScanState rebuild_rdp_scan_state(
+    const int next_no, const int sequence_length,
+    const std::vector<short>& sequence_data,
+    const Dna5ScanPreprocessApi& api) {
     RdpScanState state;
-    state.next_no = static_cast<int>(fasta.size()) - 1;
-    state.sequence_length = static_cast<int>(fasta.front().size());
-    const int sequence_stride = state.sequence_length + 1;
-    state.sequence_data.assign(
-        static_cast<std::size_t>(sequence_stride) * (fasta.size() + 1), 0);
-    for (int sequence = 0; sequence <= state.next_no; ++sequence) {
-        for (int site = 1; site <= state.sequence_length; ++site) {
-            state.sequence_data[site + sequence * sequence_stride] =
-                rdp_sequence_character(fasta[sequence][site - 1]);
-        }
+    state.next_no = next_no;
+    state.sequence_length = sequence_length;
+    const auto required = static_cast<std::size_t>(next_no + 1) *
+        (sequence_length + 1);
+    if (next_no < 0 || sequence_length < 1 || sequence_data.size() < required) {
+        throw std::runtime_error("RDP scan-state dimensions differ");
     }
+    state.sequence_data.assign(sequence_data.begin(), sequence_data.begin() +
+        static_cast<std::ptrdiff_t>(required));
 
     std::array<unsigned char, 256> nucleotide_map{};
     nucleotide_map[66] = 1;
@@ -126,7 +125,7 @@ RdpScanState build_rdp_scan_state_from_fasta(
 
     const int recoded_ub = state.sequence_length + 3;
     std::vector<unsigned char> recoded(
-        static_cast<std::size_t>(recoded_ub + 1) * fasta.size(), 0);
+        static_cast<std::size_t>(recoded_ub + 1) * (state.next_no + 1), 0);
     if (api.apply_recoding(
             state.next_no, state.sequence_length, state.sequence_length,
             state.sequence_data.data(), recoded_ub, recoded.data(),
@@ -139,7 +138,7 @@ RdpScanState build_rdp_scan_state_from_fasta(
         static_cast<double>(recoded_ub) / 3.0 + 1.0));
     state.compressed_sequence.assign(
         static_cast<std::size_t>(state.compressed_sequence_ub + 1) *
-            fasta.size(),
+            (state.next_no + 1),
         0);
     auto compressor = make_compressor();
     if (api.compress_sequences(
@@ -149,14 +148,14 @@ RdpScanState build_rdp_scan_state_from_fasta(
         throw std::runtime_error("MakeCompressSeqP failed");
     }
 
-    const auto sequence_count = static_cast<std::uint64_t>(fasta.size());
+    const auto sequence_count = static_cast<std::uint64_t>(state.next_no + 1);
     const auto triplet_count =
         sequence_count * (sequence_count - 1) * (sequence_count - 2) / 6;
     if (triplet_count >
         static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
         throw std::runtime_error("too many sequence triplets");
     }
-    std::vector<short> mask(fasta.size(), 0);
+    std::vector<short> mask(state.next_no + 1, 0);
     state.analysis_list.assign(
         static_cast<std::size_t>(triplet_count) * 3, 0);
     state.analysis_list_last = api.make_analysis_list(
@@ -165,4 +164,22 @@ RdpScanState build_rdp_scan_state_from_fasta(
         throw std::runtime_error("MakeAListP2 returned an incomplete list");
     }
     return state;
+}
+
+RdpScanState build_rdp_scan_state_from_fasta(
+    const std::string& fasta_path, const Dna5ScanPreprocessApi& api) {
+    const auto fasta = read_fasta_sequences(fasta_path);
+    const int next_no = static_cast<int>(fasta.size()) - 1;
+    const int sequence_length = static_cast<int>(fasta.front().size());
+    const int sequence_stride = sequence_length + 1;
+    std::vector<short> sequence_data(
+        static_cast<std::size_t>(sequence_stride) * fasta.size(), 0);
+    for (int sequence = 0; sequence <= next_no; ++sequence) {
+        for (int site = 1; site <= sequence_length; ++site) {
+            sequence_data[site + sequence * sequence_stride] =
+                rdp_sequence_character(fasta[sequence][site - 1]);
+        }
+    }
+    return rebuild_rdp_scan_state(
+        next_no, sequence_length, sequence_data, api);
 }

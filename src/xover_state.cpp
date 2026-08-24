@@ -54,17 +54,24 @@ int vb_clng(const double value) {
     return static_cast<int>(std::nearbyint(value));
 }
 
-void map_and_centre_breakpoints(
+struct MappedBreakpoints {
+    int beginning = 0;
+    int ending = 0;
+    int original_beginning = 0;
+    int original_ending = 0;
+};
+
+MappedBreakpoints map_breakpoints(
     RdpFirstXoverState& state, const RdpScanState& scan_state,
-    const int xover_window, const RdpXoverSettings& settings,
-    int& beginning, int& ending, int& beginning_warning,
-    int& ending_warning) {
-    const int original_beginning = beginning;
-    int original_ending = ending;
+    const RdpXoverSettings& settings, int beginning, int ending) {
+    MappedBreakpoints mapped;
+    mapped.original_beginning = beginning;
+    mapped.original_ending = ending;
     if (settings.circular == 0) {
         if (beginning == 1) {
             if (state.xdiffpos[beginning] < settings.target) {
                 beginning = 1;
+                mapped.original_beginning = 1;
             } else {
                 beginning = state.xdiffpos[beginning];
             }
@@ -82,7 +89,7 @@ void map_and_centre_breakpoints(
         } else {
             ending = state.xdiffpos[state.homology_length];
         }
-        original_ending = state.homology_length;
+        mapped.original_ending = state.homology_length;
     } else {
         if (ending >= state.homology_length) {
             if (settings.long_winded == 0) {
@@ -93,7 +100,7 @@ void map_and_centre_breakpoints(
         } else if (ending < 1) {
             ending = state.homology_length + 1;
         }
-        original_ending = ending;
+        mapped.original_ending = ending;
         ending = state.xdiffpos[ending];
     }
     if (ending == 0) {
@@ -103,14 +110,23 @@ void map_and_centre_breakpoints(
         } else {
             ending = state.xdiffpos[state.homology_length];
         }
-        original_ending = state.homology_length;
+        mapped.original_ending = state.homology_length;
     }
+    mapped.beginning = beginning;
+    mapped.ending = ending;
+    return mapped;
+}
 
+void centre_mapped_breakpoints(
+    RdpFirstXoverState& state, const RdpScanState& scan_state,
+    const int xover_window, const RdpXoverSettings& settings,
+    int& beginning, int& ending, int& beginning_warning,
+    int& ending_warning, const int sequence_event_number,
+    const std::vector<unsigned char>* missing_data) {
     // The compressed PB3 path sets XPDDone before the scan. Consequently the
     // source calls CentreBP with OBE=oEN=0, not the saved variable-site
     // coordinates. SEventNumber is zero during this initial scan, so the
     // missing-data branches are intentionally absent here.
-    const int mapped_beginning = beginning;
     if (state.xposdiff[beginning] - 1 > 0) {
         beginning -= vb_clng(
             ((beginning - state.xdiffpos[state.xposdiff[beginning] - 1]) /
@@ -128,6 +144,29 @@ void map_and_centre_breakpoints(
     } else if (beginning < 1) {
         beginning = settings.circular == 0 ?
             1 : scan_state.sequence_length + beginning;
+    }
+    const auto has_missing = [&](const int position) {
+        if (missing_data == nullptr || sequence_event_number <= 0) return false;
+        const int stride = scan_state.sequence_length + 1;
+        for (const int sequence : state.sequences) {
+            const auto index = static_cast<std::size_t>(position) +
+                static_cast<std::size_t>(sequence) * stride;
+            if (index < missing_data->size() && (*missing_data)[index] == 1) {
+                return true;
+            }
+        }
+        return false;
+    };
+    if (has_missing(beginning)) {
+        beginning_warning = 1;
+        for (int step = 1; step <= scan_state.sequence_length; ++step) {
+            ++beginning;
+            if (beginning > scan_state.sequence_length) {
+                beginning = 1;
+                if (settings.circular == 0) break;
+            }
+            if (!has_missing(beginning)) break;
+        }
     }
     if (settings.circular == 0 &&
         state.xposdiff[beginning] < xover_window) {
@@ -150,14 +189,298 @@ void map_and_centre_breakpoints(
         ending = settings.circular == 0 ?
             scan_state.sequence_length : ending - scan_state.sequence_length;
     }
+    if (has_missing(ending)) {
+        ending_warning = 1;
+        for (int step = 1; step <= scan_state.sequence_length; ++step) {
+            --ending;
+            if (ending < 1) {
+                ending = scan_state.sequence_length;
+                if (settings.circular == 0) break;
+            }
+            if (!has_missing(ending)) break;
+        }
+    }
     if (settings.circular == 0 &&
         state.xposdiff[ending] > state.homology_length - xover_window) {
         ending_warning = 1;
     }
 
-    (void)original_beginning;
-    (void)original_ending;
-    (void)mapped_beginning;
+}
+
+void map_and_centre_breakpoints(
+    RdpFirstXoverState& state, const RdpScanState& scan_state,
+    const int xover_window, const RdpXoverSettings& settings,
+    int& beginning, int& ending, int& beginning_warning,
+    int& ending_warning, const int sequence_event_number,
+    const std::vector<unsigned char>* missing_data) {
+    const auto mapped = map_breakpoints(
+        state, scan_state, settings, beginning, ending);
+    beginning = mapped.beginning;
+    ending = mapped.ending;
+    centre_mapped_breakpoints(
+        state, scan_state, xover_window, settings, beginning, ending,
+        beginning_warning, ending_warning, sequence_event_number,
+        missing_data);
+}
+
+int check_split(
+    const int step, const int sequence_length, const int beginning,
+    const int ending, const std::array<int, 3>& sequences, int& split,
+    const std::vector<unsigned char>& missing_data) {
+    const int stride = sequence_length + 1;
+    const auto missing = [&](const int position) {
+        for (const int sequence : sequences) {
+            if (missing_data[position + sequence * stride] == 1) return true;
+        }
+        return false;
+    };
+    int position = beginning;
+    if (beginning < ending) {
+        for (position = beginning; position <= ending; position += step) {
+            if (missing(position)) {
+                split = 1;
+                break;
+            }
+        }
+    } else {
+        for (position = beginning; position <= sequence_length;
+             position += step) {
+            if (missing(position)) {
+                split = 1;
+                break;
+            }
+        }
+        if (split == 0) {
+            for (position = 1; position <= ending; position += step) {
+                if (missing(position)) {
+                    split = 1;
+                    break;
+                }
+            }
+        }
+    }
+    return position;
+}
+
+int find_missing(
+    const int sequence_length, const std::array<int, 3>& sequences,
+    const int split_position, const int ending,
+    const std::vector<unsigned char>& missing_data) {
+    const int stride = sequence_length + 1;
+    const auto missing = [&](const int position) {
+        for (const int sequence : sequences) {
+            if (missing_data[position + sequence * stride] == 1) return true;
+        }
+        return false;
+    };
+    int position = ending;
+    if (split_position < ending) {
+        for (position = ending; position >= split_position; --position) {
+            if (missing(position)) break;
+        }
+    } else {
+        bool found = false;
+        for (position = ending; position >= 1; --position) {
+            if (missing(position)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            for (position = sequence_length; position >= split_position;
+                 --position) {
+                if (missing(position)) break;
+            }
+        }
+    }
+    return position;
+}
+
+int split_event(
+    const int xover_window, const int sequence_length,
+    const int informative_length, const int sequence_daughter,
+    const int sequence_minor, const int beginning, const int ending,
+    int& event_length, int& number_in_common,
+    const std::vector<int>& xposdiff,
+    const std::vector<char>& xover_sequence) {
+    int comparison = 0;
+    if ((sequence_daughter == 0 && sequence_minor == 2) ||
+        (sequence_daughter == 2 && sequence_minor == 0)) {
+        comparison = 1;
+    } else if ((sequence_daughter == 2 && sequence_minor == 1) ||
+               (sequence_daughter == 1 && sequence_minor == 2)) {
+        comparison = 2;
+    }
+    const int offset = xover_window +
+        comparison * (sequence_length + 1 + xover_window * 2);
+    number_in_common = 0;
+    if (ending >= beginning) {
+        for (int position = xposdiff[beginning];
+             position <= xposdiff[ending]; ++position) {
+            if (xover_sequence[position + offset] != 0) ++number_in_common;
+        }
+        event_length = xposdiff[ending] - xposdiff[beginning] + 1;
+    } else {
+        for (int position = xposdiff[beginning];
+             position <= informative_length; ++position) {
+            if (xover_sequence[position + offset] != 0) ++number_in_common;
+        }
+        for (int position = 1; position <= xposdiff[ending]; ++position) {
+            if (xover_sequence[position + offset] != 0) ++number_in_common;
+        }
+        event_length = informative_length - xposdiff[beginning] + 1 +
+            xposdiff[ending];
+    }
+    return event_length - number_in_common;
+}
+
+int check_ends(
+    const RdpFirstXoverState& state, const RdpScanState& scan_state,
+    const int xover_window, const RdpXoverSettings& settings,
+    const int check_ending, const int original_beginning,
+    const int original_ending,
+    const std::vector<unsigned char>& missing_data) {
+    int beginning = original_beginning;
+    int ending = original_ending;
+    int cycle = 0;
+    if (state.xposdiff[ending] == 0) {
+        while (state.xposdiff[ending] == 0) {
+            --ending;
+            if (ending < 1) {
+                ending = scan_state.sequence_length;
+                if (cycle == 1) return 1;
+                cycle = 1;
+            }
+        }
+    }
+    if (state.xposdiff[beginning] == 0) {
+        while (state.xposdiff[beginning] == 0) {
+            ++beginning;
+            if (beginning > scan_state.sequence_length) beginning = 1;
+        }
+    }
+
+    const int stride = scan_state.sequence_length + 1;
+    const auto missing = [&](const int position) {
+        for (const int sequence : state.sequences) {
+            if (missing_data[position + sequence * stride] == 1) return true;
+        }
+        return false;
+    };
+    int warning = 0;
+    if (check_ending == 0) {
+        int target = 1;
+        if (state.xposdiff[beginning] - xover_window > 0) {
+            target = state.xdiffpos[
+                state.xposdiff[beginning] - xover_window];
+        } else if (settings.circular == 1 &&
+                   state.xposdiff[beginning] - xover_window +
+                           state.homology_length >=
+                       0) {
+            target = state.xdiffpos[
+                state.xposdiff[beginning] - xover_window +
+                state.homology_length];
+        }
+        if (target < beginning) {
+            for (int position = target; position <= beginning; ++position) {
+                if (missing(position)) {
+                    warning = 1;
+                    break;
+                }
+            }
+        } else {
+            for (int position = target;
+                 position < scan_state.sequence_length; ++position) {
+                if (missing(position)) {
+                    warning = 1;
+                    break;
+                }
+            }
+            if (warning == 0 && settings.circular == 0 &&
+                (missing(scan_state.sequence_length) || missing(1))) {
+                warning = 1;
+            }
+            if (warning == 0) {
+                for (int position = 2; position <= beginning; ++position) {
+                    if (missing(position)) {
+                        warning = 1;
+                        break;
+                    }
+                }
+            }
+        }
+    } else {
+        int target = scan_state.sequence_length;
+        if (state.xposdiff[ending] + xover_window <
+            state.homology_length) {
+            target = state.xdiffpos[
+                state.xposdiff[ending] + xover_window];
+        } else if (settings.circular == 1) {
+            target = state.xdiffpos[
+                state.xposdiff[ending] + xover_window -
+                state.homology_length];
+        }
+        if (state.xposdiff[ending] - xover_window > 0) {
+            ending = state.xdiffpos[
+                state.xposdiff[ending] - xover_window];
+        } else if (settings.circular == 1) {
+            if (state.xposdiff[ending] - xover_window +
+                    state.homology_length >=
+                0) {
+                ending = state.xdiffpos[
+                    state.xposdiff[ending] - xover_window +
+                    state.homology_length];
+            } else {
+                ending = 1;
+            }
+        } else {
+            ending = 1;
+        }
+        if (ending < 1) {
+            ending = settings.circular == 1
+                ? ending + scan_state.sequence_length
+                : scan_state.sequence_length;
+        }
+        if (target > ending) {
+            for (int position = ending; position <= target; ++position) {
+                if (missing(position)) {
+                    warning = 1;
+                    break;
+                }
+            }
+        } else {
+            for (int position = ending;
+                 position <= scan_state.sequence_length - 1; ++position) {
+                if (missing(position)) {
+                    warning = 1;
+                    break;
+                }
+            }
+            if (warning == 0 && settings.circular == 0 &&
+                (missing(scan_state.sequence_length) || missing(1))) {
+                warning = 1;
+            }
+            if (warning == 0) {
+                for (int position = 2; position <= target; ++position) {
+                    if (missing(position)) {
+                        warning = 1;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (settings.circular == 0) {
+        if (check_ending == 0) {
+            if (state.xposdiff[original_beginning] < xover_window) {
+                warning = 1;
+            }
+        } else if (state.xposdiff[original_ending] + xover_window >
+                   state.homology_length) {
+            warning = 1;
+        }
+    }
+    return warning;
 }
 
 std::array<int, 3> choose_storage_roles(
@@ -611,10 +934,14 @@ void build_rdp_first_position_maps(
     const int fss_ub, const int xover_window,
     std::vector<unsigned char>& fss_rdp, const Dna5XoverApi& api) {
     if (!state.significant_event) return;
-    state.xdiffpos.assign(
-        static_cast<std::size_t>(scan_state.sequence_length + 201), 0);
-    state.xposdiff.assign(
-        static_cast<std::size_t>(scan_state.sequence_length + 201), 0);
+    const auto map_size =
+        static_cast<std::size_t>(scan_state.sequence_length + 201);
+    if (state.xdiffpos.size() != map_size) {
+        state.xdiffpos.assign(map_size, 0);
+    }
+    if (state.xposdiff.size() != map_size) {
+        state.xposdiff.assign(map_size, 0);
+    }
     state.position_map_result = api.find_subsequence_with_positions(
         state.agreement_counts.data(), fss_ub, xover_window,
         scan_state.compressed_sequence_ub, scan_state.sequence_length,
@@ -720,13 +1047,21 @@ RdpRawEventState scan_rdp_redo_triplets(
     std::vector<double>& fact_three, std::vector<double>& fact,
     const Dna5XoverApi& api, const int do_all,
     const RdpRawEventState* initial_events,
-    const std::array<int, 3>* explicit_sequences) {
+    const std::array<int, 3>* explicit_sequences,
+    const int sequence_event_number,
+    const std::vector<unsigned char>* missing_data) {
     RdpRawEventState events = initial_events == nullptr
         ? RdpRawEventState{} : *initial_events;
     if (initial_events == nullptr) {
         events.current_xover.assign(scan_state.next_no + 1, 0);
         events.xover_list.resize(scan_state.next_no + 1);
     }
+    events.triplets_with_events.assign(
+        static_cast<std::size_t>(scan_state.analysis_list_last + 1), 0);
+    std::vector<int> persistent_xdiffpos(
+        static_cast<std::size_t>(scan_state.sequence_length + 201), 0);
+    std::vector<int> persistent_xposdiff(
+        static_cast<std::size_t>(scan_state.sequence_length + 201), 0);
     for (int triplet = 0; triplet <= scan_state.analysis_list_last;
          ++triplet) {
         if (static_cast<std::size_t>(triplet) >= redo.size() ||
@@ -792,43 +1127,338 @@ RdpRawEventState scan_rdp_redo_triplets(
                             state, probability_settings)) {
                         ++events.significant_candidates;
                         if (!position_maps_built) {
+                            state.xdiffpos = persistent_xdiffpos;
+                            state.xposdiff = persistent_xposdiff;
                             build_rdp_first_position_maps(
                                 state, scan_state, fss_ub, xover_window,
                                 fss_rdp, api);
+                            // MCXoverDORDP normalizes the shared XDiffPos(0)
+                            // slot before the later-event rescan. FindSubSeqPB4
+                            // deliberately leaves that slot untouched.
+                            if (sequence_event_number > 0 &&
+                                state.xdiffpos[0] == 0) {
+                                state.xdiffpos[0] = state.xdiffpos[1];
+                            }
+                            persistent_xdiffpos = state.xdiffpos;
+                            persistent_xposdiff = state.xposdiff;
                             position_maps_built = true;
                         }
-                        int beginning = state.event_begin;
-                        int ending = state.event_end;
+                        const auto store_event = [&] (
+                            const int beginning, const int ending,
+                            const double probability,
+                            const int beginning_warning,
+                            const int ending_warning) {
+                            const auto storage = choose_storage_roles(
+                                state, events, store_lpv, store_lpv_ub);
+                            RdpRawEvent event;
+                            event.beginning = beginning;
+                            event.ending = ending;
+                            event.major_parent =
+                                static_cast<std::int16_t>(storage[1]);
+                            event.minor_parent =
+                                static_cast<std::int16_t>(storage[2]);
+                            event.daughter =
+                                static_cast<std::int16_t>(storage[0]);
+                            event.program_flag = 0;
+                            event.probability = probability;
+                            if (beginning_warning == 1 &&
+                                ending_warning == 1) {
+                                event.sbp_flag = 3;
+                            } else if (beginning_warning == 1) {
+                                event.sbp_flag = 1;
+                            } else if (ending_warning == 1) {
+                                event.sbp_flag = 2;
+                            }
+                            events.xover_list[storage[0]].push_back(event);
+                            events.triplets_with_events[triplet] = 1;
+                            events.current_xover[storage[0]] =
+                                static_cast<std::int16_t>(
+                                    events.xover_list[storage[0]].size());
+                        };
+
+                        const auto mapped = map_breakpoints(
+                            state, scan_state, xover_settings,
+                            state.event_begin, state.event_end);
                         int beginning_warning = 0;
                         int ending_warning = 0;
-                        map_and_centre_breakpoints(
-                            state, scan_state, xover_window, xover_settings,
-                            beginning, ending, beginning_warning,
-                            ending_warning);
-                        const auto storage = choose_storage_roles(
-                            state, events, store_lpv, store_lpv_ub);
-                        RdpRawEvent event;
-                        event.beginning = beginning;
-                        event.ending = ending;
-                        event.major_parent =
-                            static_cast<std::int16_t>(storage[1]);
-                        event.minor_parent =
-                            static_cast<std::int16_t>(storage[2]);
-                        event.daughter =
-                            static_cast<std::int16_t>(storage[0]);
-                        event.program_flag = 0;
-                        event.probability = state.adjusted_event_probability;
-                        if (beginning_warning == 1 && ending_warning == 1) {
-                            event.sbp_flag = 3;
-                        } else if (beginning_warning == 1) {
-                            event.sbp_flag = 1;
-                        } else if (ending_warning == 1) {
-                            event.sbp_flag = 2;
+                        int split = 0;
+                        int split_position = 0;
+                        if (xover_settings.long_winded == 1 &&
+                            sequence_event_number > 0 &&
+                            missing_data != nullptr) {
+                            int prior_beginning = mapped.beginning;
+                            if (state.xdiffpos[mapped.beginning] > 0) {
+                                prior_beginning = state.xdiffpos[
+                                    mapped.original_beginning - 1];
+                            }
+                            int next_ending = mapped.ending;
+                            if (state.xdiffpos[mapped.ending] <
+                                scan_state.sequence_length) {
+                                next_ending = state.xdiffpos[
+                                    mapped.original_ending + 1];
+                            }
+                            if (next_ending < mapped.ending) {
+                                next_ending = mapped.ending;
+                            }
+                            if (prior_beginning < 1) {
+                                prior_beginning = scan_state.sequence_length;
+                            }
+                            if (next_ending > scan_state.sequence_length) {
+                                next_ending = 1;
+                            }
+                            if (prior_beginning != mapped.beginning) {
+                                int warning_split = 0;
+                                check_split(
+                                    2, scan_state.sequence_length,
+                                    prior_beginning, mapped.beginning,
+                                    state.sequences, warning_split,
+                                    *missing_data);
+                                if (warning_split == 1) {
+                                    beginning_warning = 1;
+                                }
+                            }
+                            if (mapped.ending != next_ending) {
+                                int warning_split = 0;
+                                check_split(
+                                    2, scan_state.sequence_length,
+                                    mapped.ending, next_ending,
+                                    state.sequences, warning_split,
+                                    *missing_data);
+                                if (warning_split == 1) ending_warning = 1;
+                            }
+                            split_position = check_split(
+                                10, scan_state.sequence_length,
+                                mapped.beginning, mapped.ending,
+                                state.sequences, split, *missing_data);
                         }
-                        events.xover_list[storage[0]].push_back(event);
-                        events.current_xover[storage[0]] =
-                            static_cast<std::int16_t>(
-                                events.xover_list[storage[0]].size());
+
+                        if (split == 1) {
+                            for (int fragment = 0; fragment <= 1;
+                                 ++fragment) {
+                                int fragment_beginning = 0;
+                                int fragment_ending = 0;
+                                if (fragment == 0) {
+                                    fragment_beginning = mapped.beginning;
+                                    if (mapped.beginning == split_position) {
+                                        ++split_position;
+                                    }
+                                    if (state.xposdiff[split_position] > 0) {
+                                        fragment_ending = state.xdiffpos[
+                                            state.xposdiff[split_position] - 1];
+                                    } else {
+                                        fragment_ending =
+                                            scan_state.sequence_length;
+                                    }
+                                } else {
+                                    int missing_position = find_missing(
+                                        scan_state.sequence_length,
+                                        state.sequences, split_position,
+                                        mapped.ending, *missing_data);
+                                    if (mapped.ending == missing_position) {
+                                        fragment_beginning =
+                                            mapped.ending - 1;
+                                        fragment_ending = mapped.ending;
+                                    } else {
+                                        const int position_index =
+                                            state.xposdiff[missing_position];
+                                        if (position_index + 1 <
+                                                state.homology_length &&
+                                            (state.xdiffpos[
+                                                position_index + 1] >
+                                                    missing_position ||
+                                             state.xdiffpos[
+                                                position_index + 1] <
+                                                    mapped.ending)) {
+                                            fragment_beginning =
+                                                state.xdiffpos[
+                                                    position_index + 1];
+                                        } else {
+                                            const int stride =
+                                                scan_state.sequence_length + 1;
+                                            while (true) {
+                                                const short first =
+                                                    scan_state.sequence_data[
+                                                        missing_position +
+                                                        state.sequences[0] *
+                                                            stride];
+                                                const short second =
+                                                    scan_state.sequence_data[
+                                                        missing_position +
+                                                        state.sequences[1] *
+                                                            stride];
+                                                const short third =
+                                                    scan_state.sequence_data[
+                                                        missing_position +
+                                                        state.sequences[2] *
+                                                            stride];
+                                                if (first != 46 &&
+                                                    second != 46 &&
+                                                    third != 46 &&
+                                                    (first != second ||
+                                                     first != third)) {
+                                                    break;
+                                                }
+                                                ++missing_position;
+                                                if (missing_position ==
+                                                    mapped.ending) {
+                                                    ++missing_position;
+                                                    break;
+                                                }
+                                                if (missing_position >
+                                                    scan_state.sequence_length) {
+                                                    missing_position = 1;
+                                                }
+                                            }
+                                            if (missing_position >
+                                                scan_state.sequence_length) {
+                                                missing_position = 1;
+                                            }
+                                            fragment_beginning =
+                                                missing_position;
+                                        }
+                                        fragment_ending = mapped.ending;
+                                    }
+                                }
+
+                                int event_length = 0;
+                                int number_in_common = 0;
+                                const int number_different = split_event(
+                                    xover_window, scan_state.sequence_length,
+                                    state.homology_length,
+                                    state.sequence_daughter,
+                                    state.sequence_minor,
+                                    fragment_beginning, fragment_ending,
+                                    event_length, number_in_common,
+                                    state.xposdiff, state.xover_sequence);
+                                position =
+                                    state.xposdiff[fragment_ending] + 1;
+                                double fragment_probability = 1.0;
+                                if (event_length > 2) {
+                                    int probability_length = event_length;
+                                    int probability_different =
+                                        number_different;
+                                    if (event_length >= 170) {
+                                        probability_different = vb_clng(
+                                            static_cast<double>(
+                                                number_different) * 169.0 /
+                                            static_cast<double>(event_length));
+                                        probability_length = 169;
+                                    }
+                                    const int probability_same =
+                                        probability_length -
+                                        probability_different;
+                                    if (event_length <=
+                                        probability_settings.fact_three_ub) {
+                                        fragment_probability =
+                                            api.probability_p2(
+                                                fact_three.data(),
+                                                probability_settings.
+                                                    fact_three_ub,
+                                                probability_length,
+                                                probability_same,
+                                                state.individual_probability,
+                                                state.homology_length);
+                                    } else {
+                                        fragment_probability =
+                                            api.probability_p(
+                                                fact.data(),
+                                                probability_length,
+                                                probability_same,
+                                                state.individual_probability,
+                                                state.homology_length);
+                                    }
+                                    if (fragment_probability > 1.0) {
+                                        fragment_probability = 1.0;
+                                    }
+                                }
+                                const double minimum_probability =
+                                    std::pow(10.0, -300.0);
+                                if (fragment_probability <
+                                    minimum_probability) {
+                                    fragment_probability =
+                                        minimum_probability;
+                                }
+                                if (probability_settings.mc_flag == 0) {
+                                    fragment_probability *=
+                                        probability_settings.mc_correction;
+                                }
+                                if (fragment_probability <
+                                        probability_settings.
+                                            lowest_probability &&
+                                    fragment_probability > 0.0) {
+                                    int centred_beginning =
+                                        fragment_beginning;
+                                    int centred_ending = fragment_ending;
+                                    int fragment_beginning_warning =
+                                        beginning_warning;
+                                    int fragment_ending_warning =
+                                        ending_warning;
+                                    centre_mapped_breakpoints(
+                                        state, scan_state, xover_window,
+                                        xover_settings, centred_beginning,
+                                        centred_ending,
+                                        fragment_beginning_warning,
+                                        fragment_ending_warning,
+                                        sequence_event_number,
+                                        missing_data);
+                                    if (sequence_event_number > 0 &&
+                                        missing_data != nullptr) {
+                                        if (fragment_ending_warning == 0) {
+                                            fragment_ending_warning =
+                                                check_ends(
+                                                    state, scan_state,
+                                                    xover_window,
+                                                    xover_settings, 1,
+                                                    centred_beginning,
+                                                    centred_ending,
+                                                    *missing_data);
+                                        }
+                                        if (fragment_beginning_warning == 0) {
+                                            fragment_beginning_warning =
+                                                check_ends(
+                                                    state, scan_state,
+                                                    xover_window,
+                                                    xover_settings, 0,
+                                                    centred_beginning,
+                                                    centred_ending,
+                                                    *missing_data);
+                                        }
+                                    }
+                                    store_event(
+                                        centred_beginning, centred_ending,
+                                        fragment_probability,
+                                        fragment_beginning_warning,
+                                        fragment_ending_warning);
+                                }
+                            }
+                        } else {
+                            int beginning = mapped.beginning;
+                            int ending = mapped.ending;
+                            centre_mapped_breakpoints(
+                                state, scan_state, xover_window,
+                                xover_settings, beginning, ending,
+                                beginning_warning, ending_warning,
+                                sequence_event_number, missing_data);
+                            if (sequence_event_number > 0 &&
+                                missing_data != nullptr) {
+                                if (ending_warning == 0) {
+                                    ending_warning = check_ends(
+                                        state, scan_state, xover_window,
+                                        xover_settings, 1, beginning, ending,
+                                        *missing_data);
+                                }
+                                if (beginning_warning == 0) {
+                                    beginning_warning = check_ends(
+                                        state, scan_state, xover_window,
+                                        xover_settings, 0, beginning, ending,
+                                        *missing_data);
+                                }
+                            }
+                            store_event(
+                                beginning, ending,
+                                state.adjusted_event_probability,
+                                beginning_warning, ending_warning);
+                        }
                     }
                 }
                 if (state.end_flag == 1) {

@@ -128,6 +128,7 @@ struct RdpRawEventState {
     std::vector<std::vector<RdpRawEvent>> xover_list;
     int scanned_triplets = 0;
     int significant_candidates = 0;
+    std::vector<unsigned char> triplets_with_events;
 };
 
 RdpFirstXoverState build_rdp_first_xover_state(
@@ -185,4 +186,6 @@ RdpRawEventState scan_rdp_redo_triplets(
     std::vector<double>& fact_three, std::vector<double>& fact,
     const Dna5XoverApi& api, int do_all = 0,
     const RdpRawEventState* initial_events = nullptr,
-    const std::array<int, 3>* explicit_sequences = nullptr);
+    const std::array<int, 3>* explicit_sequences = nullptr,
+    int sequence_event_number = 0,
+    const std::vector<unsigned char>* missing_data = nullptr);

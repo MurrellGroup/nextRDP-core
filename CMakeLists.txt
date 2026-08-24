@@ -23,6 +23,8 @@ add_executable(rdp-core
     src/distance_state.cpp
     src/identification_state.cpp
     src/main.cpp
+    src/mutation_state.cpp
+    src/rescan_schedule.cpp
     src/scan_state.cpp
     src/tree_state.cpp
     src/xover_state.cpp
