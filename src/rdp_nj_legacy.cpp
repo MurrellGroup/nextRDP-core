@@ -2,7 +2,6 @@
 
 #include <cmath>
 #include <cstdlib>
-#include <cstdint>
 
 // This is the literal Clearcut/NJ execution path used by RDP's MakeNJTreesP2.
 // It is kept in its own translation unit so its floating-point evaluation can
@@ -85,10 +84,10 @@ NJ_parse_distance_matrix(float *dists,int nextno) {
 void
 NJ_init_r(DMAT *dmat) {
 
-	std::int32_t i, j, size;
-	std::int32_t index;
+	long int i, j, size;
+	long int index;
 	float *r, *r2, *val;
-	std::int32_t size1;
+	long int size1;
 	float size2;
 
 	r = dmat->r;
@@ -116,7 +115,7 @@ NJ_init_r(DMAT *dmat) {
 NJ_VERTEX *
 NJ_init_vertex(DMAT *dmat) {
 
-	std::int32_t i;
+	long int i;
 	NJ_VERTEX *vertex;
 
 	/* allocate the vertex here */
@@ -146,12 +145,12 @@ NJ_init_vertex(DMAT *dmat) {
 
 float
 NJ_min_transform(DMAT *dmat,
-	std::int32_t *ret_i,
-	std::int32_t *ret_j) {
+	long int *ret_i,
+	long int *ret_j) {
 
-	std::int32_t i, j;   /* indices used for looping        */
-	std::int32_t tmp_i = 0;/* to limit pointer dereferencing  */
-	std::int32_t tmp_j = 0;/* to limit pointer dereferencing  */
+	long int i, j;   /* indices used for looping        */
+	long int tmp_i = 0;/* to limit pointer dereferencing  */
+	long int tmp_j = 0;/* to limit pointer dereferencing  */
 	float smallest;  /* track the smallest trans. dist  */
 	float curval;    /* the current trans. dist in loop */
 
@@ -193,8 +192,8 @@ NJ_min_transform(DMAT *dmat,
 NJ_TREE *
 NJ_decompose(DMAT *dmat,
 	NJ_VERTEX *vertex,
-	std::int32_t x,
-	std::int32_t y,
+	long int x,
+	long int y,
 	int last_flag) {
 
 	NJ_TREE *new_node;
@@ -249,14 +248,14 @@ NJ_decompose(DMAT *dmat,
 static inline
 void
 NJ_compute_r(DMAT *dmat,
-	std::int32_t a,
-	std::int32_t b) {
+	long int a,
+	long int b) {
 
-	std::int32_t i;         /* a variable used in indexing */
+	long int i;         /* a variable used in indexing */
 	float *ptrx, *ptry; /* pointers into the distance matrix */
 
 						/* some variables to limit pointer dereferencing in loop */
-	std::int32_t size;
+	long int size;
 	float *r, *val;
 
 	/* to limit pointer dereferencing */
@@ -307,12 +306,12 @@ static inline
 void
 NJ_collapse(DMAT *dmat,
 	NJ_VERTEX *vertex,
-	std::int32_t a,
-	std::int32_t b) {
+	long int a,
+	long int b) {
 
 
-	std::int32_t i;     /* index used for looping */
-	std::int32_t size;  /* size of dmat --> reduce pointer dereferencing */
+	long int i;     /* index used for looping */
+	long int size;  /* size of dmat --> reduce pointer dereferencing */
 	float a2clade;  /* distance from a to the new node that joins a and b */
 	float b2clade;  /* distance from b to the new node that joins a and b */
 	float cval;     /* stores distance information during loop */
@@ -459,7 +458,7 @@ NJ_TREE *NJ_neighbor_joining(DMAT *dmat, int outlyer) {
 	NJ_TREE   *tree = NULL;
 	NJ_VERTEX *vertex = NULL;
 
-	std::int32_t a, b;
+	long int a, b;
 	float min;
 
 
@@ -503,12 +502,12 @@ NJ_TREE *NJ_neighbor_joining(DMAT *dmat, int outlyer) {
 
 static inline
 void
-NJ_permute(std::int32_t *perm,
-	std::int32_t size) {
+NJ_permute(long int *perm,
+	long int size) {
 
-	std::int32_t i;     /* index used for looping */
-	std::int32_t swap;  /* we swap values to generate permutation */
-	std::int32_t tmp;   /* used for swapping values */
+	long int i;     /* index used for looping */
+	long int swap;  /* we swap values to generate permutation */
+	long int tmp;   /* used for swapping values */
 	double K;
 
 					/* check to see if vector of long ints is valid */
@@ -547,11 +546,11 @@ NJ_permute(std::int32_t *perm,
 static inline
 float
 NJ_find_hmin(DMAT *dmat,
-	std::int32_t a,
-	std::int32_t *min,
-	std::int32_t *hmincount) {
+	long int a,
+	long int *min,
+	long int *hmincount) {
 
-	std::int32_t i;     /* index variable for looping                    */
+	long int i;     /* index variable for looping                    */
 	int size;       /* current size of distance matrix               */
 	int mindex = 0; /* holds the current index to the chosen minimum */
 	float curval;   /* used to hold current transformed values       */
@@ -561,7 +560,7 @@ NJ_find_hmin(DMAT *dmat,
 
 							/* values used for stochastic selection among multiple minima */
 	float p, x;
-	std::int32_t smallcnt;
+	long int smallcnt;
 
 	/* initialize the min to something large */
 	hmin = (float)HUGE_VAL;
@@ -618,13 +617,13 @@ NJ_find_hmin(DMAT *dmat,
 static inline
 float
 NJ_find_vmin(DMAT *dmat,
-	std::int32_t a,
-	std::int32_t *min,
-	std::int32_t *vmincount) {
+	long int a,
+	long int *min,
+	long int *vmincount) {
 
-	std::int32_t i;         /* index variable used for looping */
-	std::int32_t size;      /* track the size of the matrix    */
-	std::int32_t mindex = 0;/* track the index to the minimum  */
+	long int i;         /* index variable used for looping */
+	long int size;      /* track the size of the matrix    */
+	long int mindex = 0;/* track the index to the minimum  */
 	float curval;       /* track value of current transformed distance  */
 	float vmin;         /* the index to the smallest "vertical" minimum */
 
@@ -633,7 +632,7 @@ NJ_find_vmin(DMAT *dmat,
 
 	/* values used in stochastically breaking ties */
 	float p, x;
-	std::int32_t smallcnt;
+	long int smallcnt;
 
 	/* initialize the vertical min to something really big */
 	vmin = (float)HUGE_VAL;
@@ -690,12 +689,12 @@ NJ_find_vmin(DMAT *dmat,
 static inline
 int
 NJ_check_additivity(DMAT *dmat,
-	std::int32_t a,
-	std::int32_t b) {
+	long int a,
+	long int b) {
 
 	float a2clade, b2clade;
 	float clade_dist;
-	std::int32_t target;
+	long int target;
 
 
 	/* determine target taxon here */
@@ -773,13 +772,13 @@ NJ_check_additivity(DMAT *dmat,
 static inline
 int
 NJ_check(int RJ, DMAT *dmat,
-	std::int32_t a,
-	std::int32_t b,
+	long int a,
+	long int b,
 	float min,
 	int additivity) {
 
 
-	std::int32_t i, size;
+	long int i, size;
 	float *ptr, *val, *r2;
 
 
@@ -848,13 +847,13 @@ NJ_relaxed_nj(int RJ, DMAT *dmat) {
 
 	NJ_TREE *tree;
 	NJ_VERTEX *vertex;
-	std::int32_t a, b, t, bh, bv, i;
+	long int a, b, t, bh, bv, i;
 	float hmin, vmin, hvmin;
 	float p, q, x;
 	int join_flag;
 	int additivity_mode;
-	std::int32_t hmincount, vmincount;
-	std::int32_t *permutation = NULL;
+	long int hmincount, vmincount;
+	long int *permutation = NULL;
 
 
 
@@ -1221,7 +1220,7 @@ NJ_search_tree(int nlen, int *tpos, char *otreex,
 int
 NJ_output_tree(int nlen, int *tpos, NJ_TREE *tree,
 	DMAT *dmat,
-	std::int32_t count, char *outtree,int outlyer) {
+	long int count, char *outtree,int outlyer) {
 	//find the outlyer node
 	NJ_TREE *target;
 
@@ -1265,7 +1264,7 @@ NJ_free_tree(NJ_TREE *node) {
 void
 NJ_free_dmat(DMAT *dmat) {
 
-	std::int32_t i;
+	long int i;
 
 	if (dmat) {
 
@@ -1358,7 +1357,7 @@ float Clearcut(int outlyer, int NextNo, int treetype, int nlen2, int nseed, int 
 	//DMAT *dmat_backup = NULL;/* A backup distance matrix    */
 	NJ_TREE *tree;      /* The phylogenetic tree       */
 	
-	std::int32_t i;
+	long int i;
 	tpos = 0;
 	/* some variables for tracking time */
 	//struct timeval tv;

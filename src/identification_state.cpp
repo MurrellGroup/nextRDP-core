@@ -2599,13 +2599,11 @@ RdpFinalTrimState run_rdp_final_trim_candidate_maintenance(
                     }
                 }
                 auto mark_from_panel_pair = [&](const int sequence,
-                                                const int evidence_region,
                                                 const int first_panel,
                                                 const int second_panel) {
                     int go_on = 0;
-                    if (correlation_warnings[evidence_region] == 0) {
-                        if (trimmed_correlations[rc(role, evidence_region,
-                                                    sequence)] > 0.95F) {
+                    if (correlation_warnings[0] == 0) {
+                        if (trimmed_correlations[rc(role, 0, sequence)] > 0.95F) {
                             for (const int panel : {first_panel, second_panel}) {
                                 if (local_distance_panels[dm(panel, role, sequence)] >
                                         local_distance_panels[dm(
@@ -2685,7 +2683,7 @@ RdpFinalTrimState run_rdp_final_trim_candidate_maintenance(
                             continue;
                         }
                         go_on = mark_from_panel_pair(
-                            sequence, evidence_region, first_panel, second_panel);
+                            sequence, first_panel, second_panel);
                         if (go_on > 0 && correlation_warnings[evidence_region] == 0) {
                             go_on = 0;
                             if (trimmed_correlations[
@@ -2721,11 +2719,7 @@ RdpFinalTrimState run_rdp_final_trim_candidate_maintenance(
                         ++slot;
                     }
                 };
-                // FinalTrim's first pass uses FCMat/FAMat plus DMatS regions
-                // 0/1; the second pass uses SCMat/SAMat plus DMatS regions
-                // 2/3.  These are separate source branches, not interchangeable
-                // panel arguments.
-                prune_pass(first_prune, 0, 0, 1, 0, nearest_distances[0]);
+                prune_pass(first_prune, 1, 2, 3, 0, nearest_distances[0]);
 
                 nearest_distances[1] = 1000000.0;
                 for (int slot = 0; slot <= output.nonrecombinant_last[role]; ++slot) {
@@ -4271,22 +4265,6 @@ RdpConsensusState make_rdp_consensus(RdpConsensusInputs inputs) {
             }
         }
     }
-    // Module3b applies the same TBreak tie resolution when the selected
-    // consensus is tied with either one of its parents (not only when all
-    // three scores are equal).  Leaving out this pairwise branch changes
-    // WinPP for cases such as Dataset8's second event: the oracle switches
-    // from raw role 2 to role 1 before FinalTrim/AddjustCXO.
-    const auto tbreak = [&](const int role) {
-        return v.phylpro[role] - v.triplet_score[role] +
-            v.compatibility[role] + v.region_compatibility[role];
-    };
-    const int parent0 = parent(winner, 0);
-    const int parent1 = parent(winner, 1);
-    if (state.consensus[winner] == state.consensus[parent0]) {
-        if (tbreak(winner) > tbreak(parent0)) winner = parent0;
-    } else if (state.consensus[winner] == state.consensus[parent1]) {
-        if (tbreak(winner) > tbreak(parent1)) winner = parent1;
-    }
     state.winning_role = winner;
     state.rounded_inputs = std::move(inputs);
     return state;
@@ -5053,25 +5031,6 @@ RdpFinalTrimState apply_rdp_strict_group_constraints(
         for (int sequence = 0; sequence <= next_no; ++sequence) {
             state.strict_removed[row(role, sequence)] = remove[sequence];
         }
-        if (std::getenv("RDP_TRACE_STRICT_DETAIL") != nullptr) {
-            std::cerr << "strict-remove role=" << role << " flags=";
-            for (int sequence = 0; sequence <= next_no; ++sequence) {
-                if (remove[sequence] != 0) std::cerr << sequence << ',';
-            }
-            std::cerr << " ilp=" << ilp[0] << ':' << ilp[1]
-                      << " seqs=" << seq1 << ':' << seq2 << ':' << seq3;
-            for (int sequence = 0; sequence <= next_no; ++sequence) {
-                if (remove[sequence] != 0 || sequence == seq1 ||
-                    sequence == seq2 || sequence == seq3) {
-                    std::cerr << " " << sequence << "="
-                              << f[row(role, sequence)] << "/"
-                              << s[row(role, sequence)] << "/"
-                              << fa[row(role, sequence)] << "/"
-                              << sa[row(role, sequence)];
-                }
-            }
-            std::cerr << '\n';
-        }
         int slot = 0;
         while (slot <= state.candidate_last[role]) {
             const int sequence = state.candidate_list[row(role, slot)];
@@ -5147,15 +5106,6 @@ RdpFinalTrimState apply_rdp_strict_group_constraints(
             if (go_on == 1) {
                 state.synthetic_event_roles.push_back({role, sequence});
             }
-        }
-        if (std::getenv("RDP_TRACE_STRICT_DETAIL") != nullptr) {
-            std::cerr << "strict-readd role=" << role << " flags=";
-            for (int sequence = 0; sequence <= next_no; ++sequence) {
-                if (state.strict_readded[row(role, sequence)] != 0) {
-                    std::cerr << sequence << ',';
-                }
-            }
-            std::cerr << '\n';
         }
 
         (void)ilp;
@@ -5254,6 +5204,7 @@ RdpCollectedEventsState make_rdp_parent_collect_events(
     const int count = next_no + 1;
     RdpCollectedEventsState state;
     state.events.resize(static_cast<std::size_t>(count) * (add_num + 1));
+    if (candidate_last[role] == -1) return state;
     if (role < 0 || role > 2 || overlap_sequence.size() !=
             static_cast<std::size_t>(sequence_length + 1) ||
         candidate_list.size() != static_cast<std::size_t>(3) * count ||
@@ -5261,113 +5212,111 @@ RdpCollectedEventsState make_rdp_parent_collect_events(
         source_events.xover_list.size() != static_cast<std::size_t>(count)) {
         throw std::runtime_error("MakeCollecteventsC dimensions differ");
     }
-    if (next_no < 0 || sequence_length < 0 || add_num < 0 ||
-        candidate_last[role] < 0 || trace[0] < 0 || trace[0] > next_no ||
-        trace[1] < 1 ||
-        static_cast<std::size_t>(trace[1]) >
-            source_events.xover_list[trace[0]].size()) {
-        return state;
-    }
-
-    // Call the exact native routine from the pinned DNA5 source.  The C++
-    // implementation is the oracle for this step; this wrapper only packs
-    // the portable state into its original VB-compatible flat arrays.
-    // RList's first VB dimension is the three parent roles; its slot
-    // dimension is the second one.  Consequently the native flattening
-    // stride is three (UBRL == 2), matching candidate_list's layout.
-    const int ub_rl = 2;
-    const int ub_cm = 2;
-    const int ub_s_m = next_no;
-    const int ub_ce = next_no;
-    int r_size[2] = {region_sizes[0], region_sizes[1]};
-    std::vector<int> ol_seq = overlap_sequence;
-    int comp_mat[6];
-    std::copy(comparison_matrix.begin(), comparison_matrix.end(), comp_mat);
-    std::vector<int> r_list = candidate_list;
-    int r_num[3] = {candidate_last[0], candidate_last[1], candidate_last[2]};
-    int i_seqs[3] = {sequences[0], sequences[1], sequences[2]};
-    int source_trace[2] = {trace[0], trace[1]};
-    // PXOList is dimensioned (sequence row, event slot) in VB.  Its first
-    // (flattening) bound is NextNo; the second bound is the largest event
-    // count in any row.
-    int max_pxo_slot = 0;
-    for (const auto& row : source_events.xover_list) {
-        max_pxo_slot = std::max(max_pxo_slot, static_cast<int>(row.size()));
-    }
-    const int ub_pxo = next_no;
-    std::vector<short int> current_xover(count, 0);
-    const std::size_t pxo_stride = static_cast<std::size_t>(ub_pxo + 1);
-    std::vector<XOVERDEFINE> pxo_list(
-        static_cast<std::size_t>(max_pxo_slot + 1) * pxo_stride);
-    for (int row = 0; row <= next_no; ++row) {
-        current_xover[row] = static_cast<short int>(
-            source_events.xover_list[row].size());
-        for (std::size_t slot = 0;
-             slot < source_events.xover_list[row].size(); ++slot) {
-            pxo_list[static_cast<std::size_t>(row) +
-                     (slot + 1) * pxo_stride] =
-                [&] {
-                    const auto& source = source_events.xover_list[row][slot];
-                    XOVERDEFINE event{};
-                    event.OutsideFlag = source.outside_flag;
-                    event.MissIdentifyFlag = source.misidentify_flag;
-                    event.ProgramFlag = source.program_flag;
-                    event.SBPFlag = source.sbp_flag;
-                    event.Accept = source.accept;
-                    event.MajorP = source.major_parent;
-                    event.MinorP = source.minor_parent;
-                    event.Daughter = source.daughter;
-                    event.Beginning = source.beginning;
-                    event.Ending = source.ending;
-                    event.LHolder = source.length_holder;
-                    event.Eventnumber = source.event_number;
-                    event.PermPVal = source.permutation_pvalue;
-                    event.BeginP = source.begin_parent;
-                    event.EndP = source.end_parent;
-                    event.Probability = source.probability;
-                    event.DHolder = source.distance_holder;
-                    return event;
-                }();
+    const int role_count = candidate_last[role] + 1;
+    std::vector<double> best_probability(
+        static_cast<std::size_t>(role_count) * (add_num * 2 + 1), 0.0);
+    for (int slot = 0; slot < role_count; ++slot) {
+        for (int method = 0; method <= add_num; ++method) {
+            best_probability[slot + method * role_count] = 1.0;
         }
     }
-    std::vector<float> s_mat_small(
-        static_cast<std::size_t>(ub_s_m + 1) * (ub_s_m + 1), 0.0F);
-    std::vector<XOVERDEFINE> collect_events(
-        static_cast<std::size_t>(count) * (add_num + 1));
-    const int result = MathFuncs::MyMathFuncs::MakeCollecteventsC(
-        next_no, sequence_length, role, r_size, ol_seq.data(), ub_cm,
-        comp_mat, ub_rl, r_list.data(), r_num, add_num, ub_s_m,
-        s_mat_small.data(), i_seqs, source_trace, current_xover.data(),
-        ub_pxo, pxo_list.data(), ub_ce, collect_events.data());
-    state.result = result;
-    for (int method = 0; method <= add_num; ++method) {
-        for (int slot = 0; slot <= next_no; ++slot) {
-            const auto& event = collect_events[slot + method * count];
-            if (event.Probability != 0.0 || event.Eventnumber != 0 ||
-                event.Daughter != 0 || event.MajorP != 0 ||
-                event.MinorP != 0) {
-                RdpRawEvent converted;
-                converted.outside_flag = event.OutsideFlag;
-                converted.misidentify_flag = event.MissIdentifyFlag;
-                converted.program_flag = event.ProgramFlag;
-                converted.sbp_flag = event.SBPFlag;
-                converted.accept = event.Accept;
-                converted.major_parent = event.MajorP;
-                converted.minor_parent = event.MinorP;
-                converted.daughter = event.Daughter;
-                converted.beginning = event.Beginning;
-                converted.ending = event.Ending;
-                converted.length_holder = event.LHolder;
-                converted.event_number = event.Eventnumber;
-                converted.permutation_pvalue = event.PermPVal;
-                converted.begin_parent = event.BeginP;
-                converted.end_parent = event.EndP;
-                converted.probability = event.Probability;
-                converted.distance_holder = event.DHolder;
-                state.events[slot + method * count] = converted;
+    std::vector<unsigned char> role_membership(
+        static_cast<std::size_t>(3) * count, 0);
+    const int comparison0 = comparison_matrix[role];
+    const int comparison1 = comparison_matrix[role + 3];
+    for (const int member_role : {role, comparison0, comparison1}) {
+        for (int slot = 0; slot <= candidate_last[member_role]; ++slot) {
+            const int sequence = candidate_list[member_role + slot * 3];
+            role_membership[member_role + sequence * 3] = 1;
+        }
+    }
+    const auto in_any_role = [&](const int sequence) {
+        return role_membership[role + sequence * 3] == 1 ||
+            role_membership[comparison0 + sequence * 3] == 1 ||
+            role_membership[comparison1 + sequence * 3] == 1;
+    };
+    const auto role_has_event_member = [&](const int member_role,
+                                           const RdpRawEvent& event) {
+        return role_membership[member_role + event.daughter * 3] == 1 ||
+            role_membership[member_role + event.major_parent * 3] == 1 ||
+            role_membership[member_role + event.minor_parent * 3] == 1;
+    };
+    for (int row = 0; row <= next_no; ++row) {
+        for (const auto& event : source_events.xover_list[row]) {
+            if (!in_any_role(event.daughter) || event.major_parent > next_no ||
+                !in_any_role(event.major_parent) ||
+                event.minor_parent > next_no ||
+                !in_any_role(event.minor_parent)) {
+                continue;
+            }
+            const bool bad_match = !role_has_event_member(role, event) ||
+                !role_has_event_member(comparison0, event) ||
+                !role_has_event_member(comparison1, event);
+            int overlap_size = 0;
+            if (event.beginning < event.ending) {
+                region_sizes[1] = event.ending - event.beginning + 1;
+                for (int position = event.beginning;
+                     position <= event.ending; ++position) {
+                    overlap_size += overlap_sequence[position];
+                }
+            } else {
+                region_sizes[1] = event.ending + sequence_length -
+                    event.beginning + 1;
+                for (int position = 1; position <= event.ending; ++position) {
+                    overlap_size += overlap_sequence[position];
+                }
+                for (int position = event.beginning;
+                     position <= sequence_length; ++position) {
+                    overlap_size += overlap_sequence[position];
+                }
+            }
+            float match = 0.0F;
+            if (overlap_size > 0) {
+                const float denominator = static_cast<float>(
+                    region_sizes[0] + region_sizes[1]);
+                match = (static_cast<float>(overlap_size) * 2.0F) /
+                    denominator;
+            }
+            const double rounded_match =
+                std::round(static_cast<double>(match) * 100000.0) / 100000.0;
+            if (!((rounded_match > 0.1 && !bad_match) ||
+                  (rounded_match > 0.5 && bad_match))) {
+                continue;
+            }
+            int collection_slot = -1;
+            for (int slot = 0; slot < role_count; ++slot) {
+                const int candidate = candidate_list[role + slot * 3];
+                if (candidate == event.daughter ||
+                    candidate == event.major_parent ||
+                    candidate == event.minor_parent) {
+                    collection_slot = slot;
+                    break;
+                }
+            }
+            const int method = event.program_flag;
+            if (collection_slot >= 0 && method >= 0 && method <= add_num &&
+                (best_probability[collection_slot + method * role_count] >
+                     event.probability ||
+                 best_probability[collection_slot + method * role_count] ==
+                     0.0)) {
+                best_probability[collection_slot + method * role_count] =
+                    event.probability;
+                state.events[collection_slot + method * count] = event;
             }
         }
     }
+    int selected_slot = 0;
+    for (int slot = 0; slot < role_count; ++slot) {
+        const int candidate = candidate_list[role + slot * 3];
+        if (candidate == sequences[0] || candidate == sequences[1] ||
+            candidate == sequences[2]) {
+            selected_slot = slot;
+            break;
+        }
+    }
+    const auto& selected = source_events.xover_list[trace[0]][trace[1] - 1];
+    state.events[selected_slot + selected.program_flag * count] = selected;
+    state.result = 1;
     return state;
 }
 

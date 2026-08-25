@@ -4,8 +4,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
-#include <iostream>
 #include <string>
 
 namespace {
@@ -173,25 +171,6 @@ RdpRoundPrefixState identify_rdp_round_prefix(
         scan_state, selected.beginning, selected.ending, false);
     state.matrices = finish_rdp_event_distances(
         next_no, full_distance, state.region_distance);
-    if (std::getenv("RDP_TRACE_MINPAIR") != nullptr) {
-        std::cerr << "minpair-input next=" << next_no << " seqs="
-                  << state.sequences[0] << ':' << state.sequences[1] << ':'
-                  << state.sequences[2] << " bt=";
-        for (int first = 0; first < 2; ++first) {
-            for (int second = first + 1; second < 3; ++second) {
-                std::cerr << state.breakpoint_distance[first + second - 1]
-                          << ',';
-            }
-        }
-        std::cerr << " rt=";
-        for (int first = 0; first < 2; ++first) {
-            for (int second = first + 1; second < 3; ++second) {
-                std::cerr << state.remainder_distance[first + second - 1]
-                          << ',';
-            }
-        }
-        std::cerr << '\n';
-    }
     std::vector<unsigned char> minimum_pair{3, 3, 0};
     std::vector<unsigned char> sequence_pair(3, 0);
     constexpr std::array<int, 3> role_outlier{2, 1, 0};
@@ -258,68 +237,6 @@ RdpRoundPrefixState identify_rdp_round_prefix(
             }
         }
     }
-    if (std::getenv("RDP_TRACE_NJ") != nullptr) {
-        const auto hash_bytes = [](const void* data, const std::size_t bytes) {
-            const auto* p = static_cast<const unsigned char*>(data);
-            std::uint64_t hash = 1469598103934665603ULL;
-            for (std::size_t i = 0; i < bytes; ++i) {
-                hash ^= p[i];
-                hash *= 1099511628211ULL;
-            }
-            return hash;
-        };
-        std::cerr << "pre-check next=" << next_no << " crc=" << std::hex
-                  << hash_bytes(state.matrices.background.data(),
-                                 state.matrices.background.size() * sizeof(float))
-                  << ':' << hash_bytes(state.matrices.event_region.data(),
-                                       state.matrices.event_region.size() * sizeof(float))
-                  << std::dec << " size=" << state.matrices.background.size()
-                  << '\n';
-        if (state.sequences[0] == 12 && state.sequences[1] == 4 &&
-            state.sequences[2] == 10 && next_no == 26) {
-            std::cerr << "pre-check-row26=";
-            for (int x = 0; x <= next_no; ++x)
-                std::cerr << state.matrices.background[26 + x * stride]
-                          << (x == next_no ? '\n' : ',');
-            std::cerr << "pre-check-diag26="
-                      << state.matrices.background[26 + 26 * stride] << '\n';
-            std::cerr << "pre-check-valid26=";
-            for (const int selected_sequence : state.sequences) {
-                const auto off = static_cast<std::size_t>(
-                    selected_sequence + 26 * stride);
-                std::cerr << selected_sequence << ':'
-                          << full_distance.valid_sites[off] << '-'
-                          << state.region_distance.valid_sites[off] << ':'
-                          << state.region_distance.valid_sites[off] << ',';
-            }
-            std::cerr << " min=" << minimum_sequence_size
-                      << " half=" << region_half << '\n';
-        }
-        if (state.sequences[0] == 1 && state.sequences[1] == 13 &&
-            state.sequences[2] == 4 && next_no == 25) {
-            std::cerr << "first-nj-row4=";
-            for (int x = 0; x <= next_no; ++x)
-                std::cerr << state.matrices.background[4 + x * stride]
-                          << (x == next_no ? '\n' : ',');
-            std::cerr << "first-nj-row13=";
-            for (int x = 0; x <= next_no; ++x)
-                std::cerr << state.matrices.background[13 + x * stride]
-                          << (x == next_no ? '\n' : ',');
-            std::cerr << "first-nj-row-hashes=";
-            for (int y = 0; y <= next_no; ++y) {
-                std::uint64_t hash = 1469598103934665603ULL;
-                for (int x = 0; x <= next_no; ++x) {
-                    const auto* bytes = reinterpret_cast<const unsigned char*>(
-                        &state.matrices.background[x + y * stride]);
-                    for (int byte = 0; byte < 4; ++byte) {
-                        hash ^= bytes[byte];
-                        hash *= 1099511628211ULL;
-                    }
-                }
-                std::cerr << hash << (y == next_no ? '\n' : ',');
-            }
-        }
-    }
     std::vector<int> minimums(stride, 0);
     std::vector<unsigned char> missing_pair(
         static_cast<std::size_t>(stride) * stride, 0);
@@ -332,48 +249,6 @@ RdpRoundPrefixState identify_rdp_round_prefix(
         state.region_distance.valid_sites.data(), next_no,
         state.matrices.background.data(), state.matrices.event_region.data(),
         background_total.data(), region_total.data());
-    if (std::getenv("RDP_TRACE_NJ") != nullptr) {
-        const auto hash_bytes = [](const void* data, const std::size_t bytes) {
-            const auto* p = static_cast<const unsigned char*>(data);
-            std::uint64_t hash = 1469598103934665603ULL;
-            for (std::size_t i = 0; i < bytes; ++i) {
-                hash ^= p[i];
-                hash *= 1099511628211ULL;
-            }
-            return hash;
-        };
-        std::cerr << "post-check next=" << next_no << " crc=" << std::hex
-                  << hash_bytes(state.matrices.background.data(),
-                                 state.matrices.background.size() * sizeof(float))
-                  << ':' << hash_bytes(state.matrices.event_region.data(),
-                                       state.matrices.event_region.size() * sizeof(float))
-                  << std::dec << "\n";
-        if (state.sequences[0] == 12 && state.sequences[1] == 4 &&
-            state.sequences[2] == 10 && next_no == 26) {
-            std::cerr << "post-check-row26=";
-            for (int x = 0; x <= next_no; ++x)
-                std::cerr << state.matrices.background[26 + x * stride]
-                          << (x == next_no ? '\n' : ',');
-            std::cerr << "post-check-diag26="
-                      << state.matrices.background[26 + 26 * stride] << '\n';
-        }
-        if (state.sequences[0] == 1 && state.sequences[1] == 13 &&
-            state.sequences[2] == 4 && next_no == 25) {
-            std::cerr << "post-first-nj-row-hashes=";
-            for (int y = 0; y <= next_no; ++y) {
-                std::uint64_t hash = 1469598103934665603ULL;
-                for (int x = 0; x <= next_no; ++x) {
-                    const auto* bytes = reinterpret_cast<const unsigned char*>(
-                        &state.matrices.background[x + y * stride]);
-                    for (int byte = 0; byte < 4; ++byte) {
-                        hash ^= bytes[byte];
-                        hash *= 1099511628211ULL;
-                    }
-                }
-                std::cerr << hash << (y == next_no ? '\n' : ',');
-            }
-        }
-    }
 
     std::vector<int> outlier{2, 1, 0};
     std::vector<int> redo(stride, 0);
@@ -406,47 +281,6 @@ RdpRoundPrefixState identify_rdp_round_prefix(
         static_cast<std::size_t>(local_stride) * local_stride, 0.0F);
     const int name_length = std::max(
         2, static_cast<int>(std::to_string(local_last).size()));
-    const auto minimum_pair_before_nj = minimum_pair;
-    if (std::getenv("RDP_TRACE_NJ_DETAIL") != nullptr &&
-        state.sequences[0] == 12 && state.sequences[1] == 4 &&
-        state.sequences[2] == 10 && next_no == 26) {
-        std::cerr << "nj-detail pre-frow=";
-        for (int x = 0; x <= next_no; ++x)
-            std::cerr << state.matrices.background[4 + x * stride]
-                      << (x == next_no ? '\n' : ',');
-        std::cerr << "nj-detail pre-row26=";
-        for (int x = 0; x <= next_no; ++x)
-            std::cerr << state.matrices.background[26 + x * stride]
-                      << (x == next_no ? '\n' : ',');
-    }
-    if (std::getenv("RDP_TRACE_NJ") != nullptr) {
-        const auto hash_bytes = [](const void* data, const std::size_t bytes) {
-            const auto* p = static_cast<const unsigned char*>(data);
-            std::uint64_t hash = 1469598103934665603ULL;
-            for (std::size_t i = 0; i < bytes; ++i) {
-                hash ^= p[i];
-                hash *= 1099511628211ULL;
-            }
-            return hash;
-        };
-        std::cerr << "nj-state next=" << next_no << " seqs="
-                  << state.sequences[0] << ':' << state.sequences[1] << ':'
-                  << state.sequences[2] << " min="
-                  << static_cast<int>(minimum_pair[0]) << ':'
-                  << static_cast<int>(minimum_pair[1]) << ':'
-                  << static_cast<int>(minimum_pair[2]) << " crc="
-                  << std::hex << hash_bytes(state.matrices.background.data(),
-                                             state.matrices.background.size() * sizeof(float))
-                  << ':' << hash_bytes(state.matrices.event_region.data(),
-                                       state.matrices.event_region.size() * sizeof(float))
-                  << ':' << hash_bytes(state.background_adjusted.data(),
-                                       state.background_adjusted.size() * sizeof(float))
-                  << ':' << hash_bytes(state.region_adjusted.data(),
-                                       state.region_adjusted.size() * sizeof(float))
-                  << std::dec << " redo=";
-        for (int i = 0; i <= next_no; ++i) std::cerr << redo[i];
-        std::cerr << "\n";
-    }
     MathFuncs::MyMathFuncs::MakeNJTreesP2(
         1, local_last, next_no, mutable_sequences.data(), minimum_pair.data(),
         sequence_pair.data(), 3, name_length, sequence_length, 1,
@@ -457,69 +291,6 @@ RdpRoundPrefixState identify_rdp_round_prefix(
         state.region_adjusted.data(), redo.data(), background_holder.data(),
         region_holder.data(), temporary_background.data(),
         temporary_region.data());
-    if (std::getenv("RDP_TRACE_NJ_DETAIL") != nullptr &&
-        state.sequences[0] == 12 && state.sequences[1] == 4 &&
-        state.sequences[2] == 10 && next_no == 26) {
-        std::cerr << "nj-detail next=" << next_no << " local=" << local_last
-                  << " holderF=" << (background_holder.data() + 1) << "\n"
-                  << "nj-detail holderS=" << (region_holder.data() + 1)
-                  << "\n";
-        std::cerr << "nj-detail redo=";
-        for (int x = 0; x <= next_no; ++x)
-            std::cerr << redo[x] << (x == next_no ? '\n' : ',');
-        std::cerr << "nj-detail trace=";
-        for (int x = 0; x <= next_no; ++x)
-            std::cerr << trace[2 * x] << ',' << trace[1 + 2 * x]
-                      << (x == next_no ? '\n' : ';');
-        std::cerr << "nj-detail frow=";
-        for (int x = 0; x <= next_no; ++x)
-            std::cerr << state.matrices.background[4 + x * stride]
-                      << (x == next_no ? '\n' : ',');
-        for (int y = 0; y <= next_no; ++y) {
-            std::cerr << "nj-detail f=" << y << ':';
-            for (int x = 0; x <= next_no; ++x)
-                std::cerr << state.matrices.background[x + y * stride]
-                          << (x == next_no ? '\n' : ',');
-        }
-        for (int x = 0; x <= local_last; ++x) {
-            std::cerr << "nj-detail tf=" << x << ':';
-            for (int y = 0; y <= local_last; ++y) {
-                std::cerr << temporary_background[x + y * local_stride]
-                          << (y == local_last ? '\n' : ',');
-            }
-        }
-    }
-    if (std::getenv("RDP_TRACE_NJ_ROWS") != nullptr) {
-        std::cerr << "nj-rows next=" << next_no << " seqs="
-                  << state.sequences[0] << ':' << state.sequences[1] << ':'
-                  << state.sequences[2] << '\n';
-        for (int role = 0; role < 3; ++role) {
-            const int selected_sequence = state.sequences[role];
-            std::cerr << "nj-row role=" << role << " selected="
-                      << selected_sequence;
-            for (int sequence = 0; sequence <= next_no; ++sequence) {
-                const auto cell = static_cast<std::size_t>(
-                    selected_sequence + sequence * stride);
-                std::cerr << ' ' << sequence << '='
-                          << state.matrices.background[cell] << ':'
-                          << state.matrices.event_region[cell] << '/'
-                          << state.background_adjusted[cell] << '/'
-                          << state.region_adjusted[cell];
-            }
-            std::cerr << '\n';
-        }
-    }
-    if (std::getenv("RDP_TRACE_NJ") != nullptr) {
-        std::cerr << "nj-output min=" << static_cast<int>(minimum_pair[0])
-                  << ':' << static_cast<int>(minimum_pair[1]) << ':'
-                  << static_cast<int>(minimum_pair[2]) << "\n";
-    }
-    // TestMoveInTreeAlt has already committed MinPair from the direct FMat /
-    // SMat pass. The legacy NJ export receives it as an input; the source
-    // build leaves that pair selection unchanged for this path. Keep the
-    // orchestration state on that source boundary even when the compact NJ
-    // helper rewrites its pointer while constructing the output matrices.
-    minimum_pair = minimum_pair_before_nj;
     state.background_adjusted_before_collapse = state.background_adjusted;
     state.region_adjusted_before_collapse = state.region_adjusted;
     state.matrix_redo = redo;
@@ -749,23 +520,6 @@ RdpCompleteRoundState identify_rdp_complete_round(
     state.consensus_candidates.acceptable_sequences =
         state.pattern.acceptable_sequences;
 
-    const auto trace_candidate_stage = [&](const char* label,
-                                           const RdpFinalTrimState& value) {
-        if (std::getenv("RDP_TRACE_STAGE") == nullptr) return;
-        std::cerr << "candidate-stage round-next=" << next_no << ' '
-                  << label;
-        for (int role = 0; role < 3; ++role) {
-            std::cerr << " role" << role << '[';
-            for (int slot = 0; slot <= value.candidate_last[role]; ++slot) {
-                if (slot) std::cerr << ',';
-                std::cerr << value.candidate_list[role + slot * 3];
-            }
-            std::cerr << ']';
-        }
-        std::cerr << '\n';
-    };
-    trace_candidate_stage("prefix", state.consensus_candidates);
-
     // Module3 tests the first FAMat/SAMat MakeRCompat families here. The
     // later fallback/set families feed MakeConsensusC but do not control
     // RetrimFlag.
@@ -791,7 +545,6 @@ RdpCompleteRoundState identify_rdp_complete_round(
             prefix.actual_resolution.candidates.last,
             prefix.actual_resolution.candidates.list,
             state.pattern.acceptable_sequences);
-        trace_candidate_stage("after-finaltrim", trimmed);
         trimmed.acceptable_sequences = calculate_rdp_match_evidence(
             scan_state.sequence_length, next_no, selected.beginning,
             selected.ending, sequences, comparison, scan_state.sequence_data,
@@ -807,7 +560,6 @@ RdpCompleteRoundState identify_rdp_complete_round(
             prefix.first_adjusted_small, prefix.region_adjusted_small,
             prefix.first_collapsed_small, prefix.region_collapsed_small,
             std::move(trimmed), false);
-        trace_candidate_stage("after-consensus-candidates", state.consensus_candidates);
     };
 
     // FinalTrim's RFF=0 body runs exactly once on both source paths.  With
@@ -844,30 +596,6 @@ RdpCompleteRoundState identify_rdp_complete_round(
             prefix.actual_resolution.correlations.correlations
                 .tested_correlation,
             prefix.first_adjusted_small, prefix.region_adjusted_small);
-    }
-    if (std::getenv("RDP_TRACE_LIST") != nullptr) {
-        std::cerr << "list-state next=" << next_no << " seqs="
-                  << sequences[0] << ':' << sequences[1] << ':' << sequences[2]
-                  << " min=" << static_cast<int>(prefix.minimum_pair[0]) << ':'
-                  << static_cast<int>(prefix.minimum_pair[1]) << " warn="
-                  << static_cast<int>(prefix.correlation_decisions.warnings[0])
-                  << ':' << static_cast<int>(prefix.correlation_decisions.warnings[1])
-                  << ':' << static_cast<int>(prefix.correlation_decisions.warnings[2])
-                  << " before=";
-        for (int role = 0; role < 3; ++role) {
-            std::cerr << '['
-                      << prefix.actual_resolution.calls[0].candidate_last_before[role]
-                      << ':';
-            for (int slot = 0; slot <= prefix.actual_resolution.calls[0].candidate_last_before[role]; ++slot) {
-                if (slot) std::cerr << ',';
-                std::cerr << prefix.actual_resolution.calls[0].candidate_list_before[
-                    role + slot * 3];
-            }
-            std::cerr << ']';
-        }
-        std::cerr << " out=" << state.list_correlations.mismatches[0] << ':'
-                  << state.list_correlations.mismatches[1] << ':'
-                  << state.list_correlations.mismatches[2] << "\n";
     }
     state.bad_distances = calculate_rdp_bad_distances(
         next_no, sequences, comparison,
@@ -953,33 +681,6 @@ RdpCompleteRoundState identify_rdp_complete_round(
         state.maximum_distance.maximum_distances;
     consensus_inputs.ranks = state.simple_distances.ranks;
     state.consensus = make_rdp_consensus(std::move(consensus_inputs));
-    if (std::getenv("RDP_TRACE_CONSENSUS_CSV") != nullptr) {
-        const auto& ci = state.consensus.rounded_inputs;
-        const auto print3 = [](const auto& values) {
-            for (int role = 0; role < 3; ++role) std::cerr << values[role] << ',';
-        };
-        std::cerr << "consensus-csv next=" << next_no << " seq="
-                  << sequences[0] << ':' << sequences[1] << ':' << sequences[2] << ' ';
-        print3(ci.list_correlation); print3(ci.simple_distance_strength); print3(ci.simple_distance_score);
-        print3(ci.phylpro); print3(ci.phylpro_secondary); print3(ci.phylpro_collapsed);
-        print3(ci.subtree_score); print3(ci.split_distance); print3(ci.outlier_index);
-        print3(ci.subtree_phylpro); print3(ci.subtree_score_secondary); print3(ci.subtree_phylpro_secondary);
-        std::cerr << "0,0,0,0,0,0,";
-        print3(ci.compatibility); print3(ci.compatibility_secondary);
-        print3(ci.compatibility_tertiary); print3(ci.compatibility_quaternary);
-        print3(ci.region_compatibility); print3(ci.region_compatibility_secondary);
-        print3(ci.region_compatibility_tertiary); print3(ci.region_compatibility_quaternary);
-        std::cerr << "0,0,0,0,0,0,";
-        print3(ci.post_trim_compatibility); print3(ci.post_trim_region_compatibility);
-        print3(ci.triplet_score); print3(ci.bad_distances); print3(ci.outside_list);
-        print3(ci.list_correlation_secondary); print3(ci.list_correlation_tertiary);
-        std::cerr << "0,0,0,0,0,0,0,0,0,";
-        print3(ci.outlier_check); std::cerr << "0,0,0,0,0,0,";
-        for (int role = 0; role < 3; ++role) std::cerr << ci.ranks[role][0] << ',';
-        for (int role = 0; role < 3; ++role) std::cerr << ci.ranks[role][1] << ',';
-        print3(ci.maximum_distance);
-        std::cerr << "\n";
-    }
     if (!state.consensus_retrimmed) {
         run_full_candidate_maintenance(state.consensus.winning_role);
     }
@@ -988,6 +689,5 @@ RdpCompleteRoundState identify_rdp_complete_round(
         prefix.matrices.event_region, prefix.first_direct_small,
         prefix.region_direct_small, prefix.first_adjusted_small,
         prefix.region_adjusted_small, state.consensus_candidates);
-    trace_candidate_stage("after-strict", state.final_candidates);
     return state;
 }

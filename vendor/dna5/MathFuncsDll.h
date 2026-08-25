@@ -9,7 +9,6 @@
 
 #include <float.h>
 #include <math.h>
-#include <cstdint>
 #include <string>
 #include <comutil.h>
 //#include "dna.h"
@@ -97,8 +96,8 @@ typedef struct treeX {
 
 typedef struct DMAT {
 
-	std::int32_t ntaxa;   /* the original 32-bit Windows long */
-	std::int32_t size;    /* the current/effective 32-bit Windows long */
+	long int ntaxa;   /* the original size of the distance matrix */
+	long int size;    /* the current/effective size of the distance matrix */
 
 	char **taxaname;  /* a pointer to an array of taxa name strings */
 
@@ -117,7 +116,7 @@ typedef struct NJ_TREE {
 
 	float dist;  /* branch length.  i.e. dist from node to parent */
 
-	std::int32_t taxa_index; /* the original 32-bit Windows long */
+	long int taxa_index; /* for terminal nodes, track the taxon index */
 
 } NJ_TREE;
 
@@ -125,8 +124,8 @@ typedef struct _STRUCT_NJ_VERTEX {
 
 	NJ_TREE **nodes;
 	NJ_TREE **nodes_handle;  /* original memory handle for freeing */
-	std::int32_t nactive;  /* the original 32-bit Windows long */
-	std::int32_t size;     /* the original 32-bit Windows long */
+	long int nactive;  /* number of active nodes in the list */
+	long int size;     /* the total size of the vertex */
 
 } NJ_VERTEX;
 
@@ -139,10 +138,10 @@ typedef struct _STRUCT_NJ_VERTEX {
 *
 */
 static inline
-std::int32_t
-NJ_MAP(std::int32_t i,
-	std::int32_t j,
-	std::int32_t ntaxa) {
+long int
+NJ_MAP(long int i,
+	long int j,
+	long int ntaxa) {
 
 	return((i*(2 * ntaxa - i - 1)) / 2 + j);
 }

@@ -6,9 +6,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
-#include <cstring>
-#include <iostream>
 #include <stdexcept>
 #include <vector>
 
@@ -316,34 +313,6 @@ RdpDistanceState build_rdp_distance_state(
     pack_category(c11, next_no, tables.c11);
     pack_category(c02, next_no, tables.c02);
 
-    if (std::getenv("RDP_TRACE_DISTANCE") != nullptr) {
-        const auto hash_bytes = [](const void* data, const std::size_t bytes) {
-            const auto* p = static_cast<const unsigned char*>(data);
-            std::uint64_t hash = 1469598103934665603ULL;
-            for (std::size_t i = 0; i < bytes; ++i) {
-                hash ^= p[i];
-                hash *= 1099511628211ULL;
-            }
-            return hash;
-        };
-        std::cerr << "distance-input interval=" << start_position << '-'
-                  << end_position << " next=" << next_no << " counts=";
-        for (const int value : counts) std::cerr << value << ',';
-        std::cerr << " crc=" << std::hex
-                  << hash_bytes(c14.words.data(), c14.words.size() * sizeof(short))
-                  << ':' << hash_bytes(c04.words.data(), c04.words.size() * sizeof(short))
-                  << ':' << hash_bytes(c13.words.data(), c13.words.size() * sizeof(short))
-                  << ':' << hash_bytes(c03.words.data(), c03.words.size() * sizeof(short))
-                  << ':' << hash_bytes(c12.words.data(), c12.words.size() * sizeof(short))
-                  << ':' << hash_bytes(c02.words.data(), c02.words.size() * sizeof(short))
-                  << ':' << hash_bytes(c11.words.data(), c11.words.size() * sizeof(short))
-                  << std::dec << " first14=";
-        for (std::size_t i = 0; i < c14.words.size(); ++i) {
-            std::cerr << c14.words[i] << ',';
-        }
-        std::cerr << "\n";
-    }
-
     RdpDistanceState result;
     const auto matrix_size =
         static_cast<std::size_t>(sequence_count) * sequence_count;
@@ -368,59 +337,7 @@ RdpDistanceState build_rdp_distance_state(
             tables.c11.valid.data(), tables.c11.differences.data(),
             tables.c04.differences.data(), tables.c03.differences.data(),
             tables.c02.differences.data());
-        if (std::getenv("RDP_TRACE_DISTANCE") != nullptr) {
-            const auto hash_bytes = [](const void* data, const std::size_t bytes) {
-                const auto* p = static_cast<const unsigned char*>(data);
-                std::uint64_t hash = 1469598103934665603ULL;
-                for (std::size_t i = 0; i < bytes; ++i) {
-                    hash ^= p[i];
-                    hash *= 1099511628211ULL;
-                }
-                return hash;
-            };
-            std::uint64_t row_hash = 1469598103934665603ULL;
-            for (int y = 0; y <= next_no; ++y) {
-                const auto value = result.differences[
-                    sequence + y * sequence_count];
-                const auto* bytes = reinterpret_cast<const unsigned char*>(&value);
-                for (std::size_t byte = 0; byte < sizeof(value); ++byte) {
-                    row_hash ^= bytes[byte];
-                    row_hash *= 1099511628211ULL;
-                }
-            }
-            std::cerr << "distance-call x=" << sequence << " crc=" << std::hex
-                      << hash_bytes(result.differences.data(), result.differences.size() * sizeof(float))
-                      << ':' << hash_bytes(result.valid_sites.data(), result.valid_sites.size() * sizeof(float))
-                      << ':' << hash_bytes(result.distance.data(), result.distance.size() * sizeof(float))
-                      << std::dec << " pair12="
-                      << result.differences[1 + 2 * sequence_count] << ','
-                      << result.valid_sites[1 + 2 * sequence_count] << ','
-                      << result.distance[1 + 2 * sequence_count] << " row="
-                      << row_hash << " vals=";
-            for (int y = 0; y <= std::min(next_no, 10); ++y) {
-                std::cerr << result.differences[
-                    sequence + y * sequence_count] << ',';
-            }
-            std::cerr << "\n";
-        }
         if (result.upper_distance < upper) result.upper_distance = upper;
-    }
-    if (std::getenv("RDP_TRACE_DISTANCE") != nullptr) {
-        const auto hash_bytes = [](const void* data, const std::size_t bytes) {
-            const auto* p = static_cast<const unsigned char*>(data);
-            std::uint64_t hash = 1469598103934665603ULL;
-            for (std::size_t i = 0; i < bytes; ++i) {
-                hash ^= p[i];
-                hash *= 1099511628211ULL;
-            }
-            return hash;
-        };
-        std::cerr << "distance-output interval=" << start_position << '-'
-                  << end_position << " crc=" << std::hex
-                  << hash_bytes(result.differences.data(), result.differences.size() * sizeof(float))
-                  << ':' << hash_bytes(result.valid_sites.data(), result.valid_sites.size() * sizeof(float))
-                  << ':' << hash_bytes(result.distance.data(), result.distance.size() * sizeof(float))
-                  << std::dec << "\n";
     }
 
     // CalcDistances performs this immediately after the initial
