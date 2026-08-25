@@ -8,6 +8,8 @@
  * can be built as a small, locally loadable 32-bit DLL.
  */
 
+#include <string.h>
+
 typedef void *HANDLE;
 typedef void *HMODULE;
 typedef void *FARPROC;
@@ -672,7 +674,6 @@ int STDCALL XOHomologyPCapture(
       CloseHandle(file);
     }
   }
-
   {
     const int result = original(
         inlyer, sequence_length, xover_length, xover_window, xover_sequence,
@@ -1502,11 +1503,101 @@ double STDCALL SuperDistPCapture(
     }
   }
   {
+    {
+      HANDLE trace_file = CreateFileA(
+          "super-dist-p-inputs.bin", GENERIC_WRITE,
+          FILE_SHARE_READ | FILE_SHARE_WRITE, (void *)0, OPEN_ALWAYS,
+          FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
+      if (trace_file != INVALID_HANDLE_VALUE) {
+        struct {
+          int invocation;
+          int x;
+          u64 average_bits;
+          u64 pair_diff_hash;
+          u64 pair_valid_hash;
+          u64 distance_hash;
+          u64 redo_hash;
+          u64 category_hash;
+          u64 iseq14_hash;
+        } record;
+        record.invocation = invocation;
+        record.x = x;
+        memcpy(&record.average_bits, average, sizeof(record.average_bits));
+        record.pair_diff_hash = fnv1a64(pair_diff, matrix_bytes);
+        record.pair_valid_hash = fnv1a64(pair_valid, matrix_bytes);
+        record.distance_hash = fnv1a64(distance, matrix_bytes);
+        record.redo_hash = fnv1a64(
+            redo, (u32)((next_no + 1) * (int)sizeof(short)));
+        record.category_hash = fnv1a64(
+            category_count, (u32)(9 * (int)sizeof(int)));
+        record.iseq14_hash = fnv1a64(
+            iseq14, (u32)((ub14 + 1) * (next_no + 1) * (int)sizeof(short)));
+        SetFilePointer(trace_file, 0, (long *)0, FILE_END);
+        write_bytes(trace_file, &record, (DWORD)sizeof(record));
+        CloseHandle(trace_file);
+      }
+    }
     const double result = original(
         x, next_no, ub14, ub04, ub13, ub03, ub12, ub02, ub11, average,
         pair_diff, pair_valid, distance, redo, category_count, iseq14, iseq04,
         iseq13, iseq03, iseq12, iseq02, iseq11, valid14, diff14, valid13,
         diff13, valid12, diff12, valid11, diff11, diff04, diff03, diff02);
+    {
+      HANDLE trace_file = CreateFileA(
+          "super-dist-p-calls.bin", GENERIC_WRITE,
+          FILE_SHARE_READ | FILE_SHARE_WRITE, (void *)0, OPEN_ALWAYS,
+          FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
+      if (trace_file != INVALID_HANDLE_VALUE) {
+        struct {
+          int invocation;
+          int x;
+          u64 average_bits;
+          u64 pair_diff_hash;
+          u64 pair_valid_hash;
+          u64 distance_hash;
+          u64 redo_hash;
+          float pair_diff_1_2;
+          float pair_valid_1_2;
+          float distance_1_2;
+          u64 row_diff_hash;
+        } record;
+        record.invocation = invocation;
+        record.x = x;
+        memcpy(&record.average_bits, average, sizeof(record.average_bits));
+        record.pair_diff_hash = fnv1a64(pair_diff, matrix_bytes);
+        record.pair_valid_hash = fnv1a64(pair_valid, matrix_bytes);
+        record.distance_hash = fnv1a64(distance, matrix_bytes);
+        record.redo_hash = fnv1a64(
+            redo, (u32)((next_no + 1) * (int)sizeof(short)));
+        record.pair_diff_1_2 = pair_diff[1 + 2 * (next_no + 1)];
+        record.pair_valid_1_2 = pair_valid[1 + 2 * (next_no + 1)];
+        record.distance_1_2 = distance[1 + 2 * (next_no + 1)];
+        {
+          float row[(next_no + 1)];
+          int y;
+          for (y = 0; y <= next_no; ++y)
+            row[y] = pair_diff[x + y * (next_no + 1)];
+        record.row_diff_hash = fnv1a64(
+              row, (u32)((next_no + 1) * (int)sizeof(float)));
+        {
+          HANDLE row_file = CreateFileA(
+              "super-dist-p-rows.bin", GENERIC_WRITE,
+              FILE_SHARE_READ | FILE_SHARE_WRITE, (void *)0, OPEN_ALWAYS,
+              FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
+          if (row_file != INVALID_HANDLE_VALUE) {
+            SetFilePointer(row_file, 0, (long *)0, FILE_END);
+            write_bytes(row_file, &record.invocation, (DWORD)sizeof(int));
+            write_bytes(row_file, row,
+                        (DWORD)((next_no + 1) * (int)sizeof(float)));
+            CloseHandle(row_file);
+          }
+        }
+        }
+        SetFilePointer(trace_file, 0, (long *)0, FILE_END);
+        write_bytes(trace_file, &record, (DWORD)sizeof(record));
+        CloseHandle(trace_file);
+      }
+    }
     if (invocation == 1) {
       file = CreateFileA(
           "super-dist-p-v1.bin", GENERIC_WRITE,
@@ -1724,6 +1815,20 @@ int STDCALL MakeNJTreesP2Capture(
   }
   if (!original) return 0;
   ++invocation;
+  /* Keep a compact call-order record for cyclic execution diagnostics. */
+  {
+    HANDLE trace_file = CreateFileA(
+        "make-nj-trees-p2-calls.bin", GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, (void *)0, OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
+    if (trace_file != INVALID_HANDLE_VALUE) {
+      int record[8] = {invocation, next_no, sequences[0], sequences[1],
+                       sequences[2], min_pair[0], min_pair[1], min_pair[2]};
+      SetFilePointer(trace_file, 0, (long *)0, FILE_END);
+      write_bytes(trace_file, record, (DWORD)sizeof(record));
+      CloseHandle(trace_file);
+    }
+  }
 #define WRITE_MNJ_STATE(suffix) \
   write_section(file, MNJ_SEQUENCES_##suffix, sequences, (u32)(3 * (int)sizeof(int))); \
   write_section(file, MNJ_MIN_PAIR_##suffix, min_pair, 3U); \
@@ -1766,6 +1871,33 @@ int STDCALL MakeNJTreesP2Capture(
       CloseHandle(file);
     }
   }
+  if (invocation == 2) {
+    struct MakeNJTreesP2Header header;
+    const char magic[8] = {'M', 'A', 'K', 'E', 'N', 'J', 'P', '2'};
+    int i;
+    for (i = 0; i < 8; ++i) header.magic[i] = magic[i];
+    header.version = 1;
+    header.resolve_root = resolve_root;
+    header.nseqs = nseqs;
+    header.next_no = next_no;
+    header.seed = seed;
+    header.name_length = name_length;
+    header.sequence_length = sequence_length;
+    header.trace_sequences_ub = trace_sequences_ub;
+    header.first_matrix_ub = first_matrix_ub;
+    header.second_matrix_ub = second_matrix_ub;
+    header.first_adjusted_matrix_ub = first_adjusted_matrix_ub;
+    header.second_adjusted_matrix_ub = second_adjusted_matrix_ub;
+    file = CreateFileA(
+        "make-nj-trees-p2-v2.bin", GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, (void *)0, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
+    if (file != INVALID_HANDLE_VALUE) {
+      write_bytes(file, &header, (DWORD)sizeof(header));
+      WRITE_MNJ_STATE(IN);
+      CloseHandle(file);
+    }
+  }
   {
     const int result = original(
         resolve_root, nseqs, next_no, sequences, min_pair, sequence_pair, seed,
@@ -1786,6 +1918,32 @@ int STDCALL MakeNJTreesP2Capture(
         write_section(file, MNJ_RESULT_OUT, &result, (u32)sizeof(result));
         write_bytes(file, &end_marker, (DWORD)sizeof(end_marker));
         CloseHandle(file);
+      }
+    }
+    if (invocation == 2) {
+      file = CreateFileA(
+          "make-nj-trees-p2-v2.bin", GENERIC_WRITE,
+          FILE_SHARE_READ | FILE_SHARE_WRITE, (void *)0, OPEN_EXISTING,
+          FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
+      if (file != INVALID_HANDLE_VALUE) {
+        const struct SectionHeader end_marker = {END_MARKER, 0};
+        SetFilePointer(file, 0, (long *)0, FILE_END);
+        WRITE_MNJ_STATE(OUT);
+        write_section(file, MNJ_RESULT_OUT, &result, (u32)sizeof(result));
+        write_bytes(file, &end_marker, (DWORD)sizeof(end_marker));
+        CloseHandle(file);
+      }
+    }
+    {
+      HANDLE trace_file = CreateFileA(
+          "make-nj-trees-p2-outputs.bin", GENERIC_WRITE,
+          FILE_SHARE_READ | FILE_SHARE_WRITE, (void *)0, OPEN_ALWAYS,
+          FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
+      if (trace_file != INVALID_HANDLE_VALUE) {
+        int record[4] = {invocation, min_pair[0], min_pair[1], min_pair[2]};
+        SetFilePointer(trace_file, 0, (long *)0, FILE_END);
+        write_bytes(trace_file, record, (DWORD)sizeof(record));
+        CloseHandle(trace_file);
       }
     }
 #undef WRITE_MNJ_STATE

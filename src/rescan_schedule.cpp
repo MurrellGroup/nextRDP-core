@@ -4,6 +4,8 @@
 
 #include <stdexcept>
 #include <cmath>
+#include <cstdlib>
+#include <iostream>
 
 namespace {
 
@@ -233,6 +235,31 @@ std::vector<std::array<int, 3>> make_rdp_outer_scan_triplets(
                 actual_sequence_sizes[sequences[1]] <= minimum_sequence_size ||
                 actual_sequence_sizes[sequences[2]] <= minimum_sequence_size) {
                 continue;
+            }
+            if (std::getenv("RDP_TRACE_OUTER_DETAIL") != nullptr &&
+                member == current_next_no &&
+                ((sequences[0] == 10 && sequences[1] == 22) ||
+                 (sequences[0] == 22 && sequences[1] == 10) ||
+                 (sequences[0] == 10 && sequences[2] == 22) ||
+                 (sequences[0] == 22 && sequences[2] == 10) ||
+                 (sequences[1] == 10 && sequences[2] == 22) ||
+                 (sequences[1] == 22 && sequences[2] == 10))) {
+                std::cerr << "outer-detail member=" << member
+                          << " original=" << original_scan_state.analysis_list[triplet * 3]
+                          << ':' << original_scan_state.analysis_list[triplet * 3 + 1]
+                          << ':' << original_scan_state.analysis_list[triplet * 3 + 2]
+                          << " seq=" << sequences[0] << ':' << sequences[1]
+                          << ':' << sequences[2]
+                          << " base=" << bases[0] << ':' << bases[1] << ':' << bases[2]
+                          << " sizes=" << actual_sequence_sizes[sequences[0]] << ':'
+                          << actual_sequence_sizes[sequences[1]] << ':'
+                          << actual_sequence_sizes[sequences[2]]
+                          << " pairs="
+                          << static_cast<int>(pairs_to_rescan[bases[0] + bases[2] * pair_stride])
+                          << ':' << static_cast<int>(pairs_to_rescan[bases[0] + bases[1] * pair_stride])
+                          << " sub=" << subvalid[bases[0] + bases[2] * valid_stride]
+                          << ':' << subvalid[bases[0] + bases[1] * valid_stride]
+                          << '\n';
             }
             // Native MakeAListOSP checks only pairs 0-2 and 0-1 here.
             if (subvalid[bases[0] + bases[2] * valid_stride] > 20.0F &&

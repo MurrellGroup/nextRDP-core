@@ -524,6 +524,11 @@ RdpFullAnalysisResult run_rdp_full_analysis(
 
     const int permanent_next_no = initial.alignment.next_no;
     const auto permanent_analysis_scan = initial.alignment;
+    // RDP derives MinSeqSize from the alignment length (VB CLng rounds the
+    // one-percent threshold).  The old port used a fixed 20 here, which
+    // allowed short, poorly comparable sequence pairs into the NJ pass.
+    const int minimum_sequence_size = static_cast<int>(std::nearbyint(
+        static_cast<double>(initial.alignment.sequence_length) / 100.0));
     const auto initially_screened_triplets =
         initial.events.triplets_with_events;
     auto scan_state = initial.alignment;
@@ -598,11 +603,61 @@ RdpFullAnalysisResult run_rdp_full_analysis(
         }
         auto round = identify_rdp_complete_round(
             scan_state, distance_state, events, selected, missing_data,
-            permanent_next_no, 20);
+            permanent_next_no, minimum_sequence_size);
+        if (std::getenv("RDP_TRACE_RLIST") != nullptr) {
+            std::cerr << "rlist round=" << round_number << " winner="
+                      << round.consensus.winning_role << " actual=";
+            for (int role = 0; role < 3; ++role) {
+                std::cerr << '[';
+                for (int slot = 0;
+                     slot <= round.prefix.actual_resolution.candidates.last[role];
+                     ++slot) {
+                    if (slot) std::cerr << ',';
+                    std::cerr << round.prefix.actual_resolution.candidates.list[
+                        role + slot * 3];
+                }
+                std::cerr << ']';
+            }
+            std::cerr << " final=";
+            for (int role = 0; role < 3; ++role) {
+                std::cerr << '[';
+                for (int slot = 0;
+                     slot <= round.final_candidates.candidate_last[role];
+                     ++slot) {
+                    if (slot) std::cerr << ',';
+                    std::cerr << round.final_candidates.candidate_list[
+                        role + slot * 3];
+                }
+                std::cerr << ']';
+            }
+            std::cerr << '\n';
+        }
+        if (std::getenv("RDP_TRACE_MUTATION_HEADERS") != nullptr) {
+            std::cerr << "mutation-header round=" << round_number
+                      << " next=" << scan_state.next_no
+                      << " begin=" << selected.beginning
+                      << " end=" << selected.ending
+                      << " winner=" << round.consensus.winning_role
+                      << " last=" << round.final_candidates.candidate_last[0]
+                      << ':' << round.final_candidates.candidate_last[1]
+                      << ':' << round.final_candidates.candidate_last[2]
+                      << " list=";
+            for (int role = 0; role < 3; ++role) {
+                std::cerr << '[';
+                for (int slot = 0;
+                     slot <= round.final_candidates.candidate_last[role]; ++slot) {
+                    if (slot) std::cerr << ',';
+                    std::cerr << round.final_candidates.candidate_list[
+                        role + slot * 3];
+                }
+                std::cerr << ']';
+            }
+            std::cerr << '\n';
+        }
         if (options.polish_breakpoints_with_burt) {
             const auto burt = run_rdp_burt(
                 scan_state, round.prefix.sequences, selected.beginning,
-                selected.ending, options.circular, 20, 0);
+                selected.ending, options.circular, minimum_sequence_size, 0);
             if (burt.trained) {
                 selected.beginning = static_cast<std::int16_t>(
                     burt.polished_beginning);
@@ -620,6 +675,28 @@ RdpFullAnalysisResult run_rdp_full_analysis(
         }
         missing_data = round.prefix.missing_data;
         const int winner = round.consensus.winning_role;
+        if (std::getenv("RDP_TRACE_WINNER") != nullptr) {
+            std::cerr << "winner-state next=" << scan_state.next_no
+                      << " winner=" << winner << " consensus="
+                      << round.consensus.consensus[0] << ':'
+                      << round.consensus.consensus[1] << ':'
+                      << round.consensus.consensus[2] << " tbreak="
+                      << round.consensus.rounded_inputs.phylpro[0] -
+                          round.consensus.rounded_inputs.triplet_score[0] +
+                          round.consensus.rounded_inputs.compatibility[0] +
+                          round.consensus.rounded_inputs.region_compatibility[0]
+                      << ':'
+                      << round.consensus.rounded_inputs.phylpro[1] -
+                          round.consensus.rounded_inputs.triplet_score[1] +
+                          round.consensus.rounded_inputs.compatibility[1] +
+                          round.consensus.rounded_inputs.region_compatibility[1]
+                      << ':'
+                      << round.consensus.rounded_inputs.phylpro[2] -
+                          round.consensus.rounded_inputs.triplet_score[2] +
+                          round.consensus.rounded_inputs.compatibility[2] +
+                          round.consensus.rounded_inputs.region_compatibility[2]
+                      << '\n';
+        }
         if (std::getenv("RDP_TRACE_CONSENSUS") != nullptr) {
             const auto& ci = round.consensus.rounded_inputs;
             std::cerr << "cons-input next=" << scan_state.next_no
@@ -752,6 +829,121 @@ RdpFullAnalysisResult run_rdp_full_analysis(
         }
         trace_legacy_method_state("after-rdp-rescans", temporary_events);
         trace_legacy_method_state("after-rdp-winning-rescan", temporary_events);
+        // Module2.FinalTrim has two distinct passes.  Its first pass visits
+        // every RList role but calls only the method that produced the
+        // selected event.  Its second pass visits the winner list and calls
+        // every other method.  Keeping those passes separate matters: the
+        // second pass is intentionally run even when RDP.ini disables the
+        // method (a long-standing RDP quirk).
+        const auto& final_trim_three_seq_table = active_three_seq_table();
+        RdpLegacyEventAllocator final_trim_legacy_events(temporary_events, 1);
+        // First pass: all roles, selected method only.  The selected RDP
+        // method is already represented by the source-faithful RDP rescan
+        // above; the optional methods need their direct FinalTrim call.
+        for (int final_trim_role = 0; final_trim_role < 3;
+             ++final_trim_role) {
+            for (int slot = 0;
+                 slot <= round.final_candidates.candidate_last[final_trim_role];
+                 ++slot) {
+                const int sequence = round.final_candidates.candidate_list[
+                    final_trim_role + slot * 3];
+                if (sequence == round.prefix.sequences[final_trim_role]) {
+                    continue;
+                }
+                std::array<int, 3> triplet{
+                    sequence,
+                    round.prefix.sequences[comparison[final_trim_role]],
+                    round.prefix.sequences[comparison[final_trim_role + 3]]};
+                if (selected_collection_event.program_flag == 1) {
+                    run_rdp_geneconv_recheck(
+                        scan_state, triplet, initial.store_lpv,
+                        initial.store_lpv_upper_bound, probability_settings,
+                        final_trim_legacy_events);
+                }
+                if (selected_collection_event.program_flag == 3) {
+                    run_rdp_maxchi_recheck(
+                        scan_state, triplet, initial.store_lpv,
+                        initial.store_lpv_upper_bound, probability_settings,
+                        final_trim_legacy_events, selected.beginning,
+                        selected.ending);
+                }
+                if (selected_collection_event.program_flag == 4) {
+                    auto rotated = triplet;
+                    for (int rotation = 0; rotation < 3; ++rotation) {
+                        run_rdp_chimaera_recheck(
+                            scan_state, rotated, initial.store_lpv,
+                            initial.store_lpv_upper_bound, probability_settings,
+                            final_trim_legacy_events, selected.beginning,
+                            selected.ending, false,
+                            rotation < 2 ? &shared_xdiffpos0 : nullptr);
+                        rotated = {rotated[1], rotated[2], rotated[0]};
+                    }
+                }
+                if (selected_collection_event.program_flag == 8 &&
+                    !final_trim_three_seq_table.empty()) {
+                    auto rotated = triplet;
+                    for (int rotation = 0; rotation < 3; ++rotation) {
+                        run_rdp_three_seq_recheck(
+                            scan_state, rotated, initial.store_lpv,
+                            initial.store_lpv_upper_bound, probability_settings,
+                            final_trim_three_seq_table,
+                            configured_three_seq_table != nullptr
+                                ? configured_three_seq_table_bound : 45,
+                            final_trim_legacy_events);
+                        rotated = {rotated[1], rotated[2], rotated[0]};
+                    }
+                }
+            }
+        }
+        // Second pass: winner list, every method except the selected one.
+        for (int slot = 0; slot <= round.final_candidates.candidate_last[winner];
+             ++slot) {
+            const int sequence = round.final_candidates.candidate_list[
+                winner + slot * 3];
+            std::array<int, 3> triplet{
+                sequence,
+                round.prefix.sequences[comparison[winner]],
+                round.prefix.sequences[comparison[winner + 3]]};
+            if (selected_collection_event.program_flag != 1) {
+                run_rdp_geneconv_recheck(
+                    scan_state, triplet, initial.store_lpv,
+                    initial.store_lpv_upper_bound, probability_settings,
+                    final_trim_legacy_events);
+            }
+            if (selected_collection_event.program_flag != 3) {
+                run_rdp_maxchi_recheck(
+                    scan_state, triplet, initial.store_lpv,
+                    initial.store_lpv_upper_bound, probability_settings,
+                    final_trim_legacy_events, selected.beginning,
+                    selected.ending);
+            }
+            if (selected_collection_event.program_flag != 4) {
+                auto rotated = triplet;
+                for (int rotation = 0; rotation < 3; ++rotation) {
+                    run_rdp_chimaera_recheck(
+                        scan_state, rotated, initial.store_lpv,
+                        initial.store_lpv_upper_bound, probability_settings,
+                        final_trim_legacy_events, selected.beginning,
+                        selected.ending, false,
+                        rotation < 2 ? &shared_xdiffpos0 : nullptr);
+                    rotated = {rotated[1], rotated[2], rotated[0]};
+                }
+            }
+            if (selected_collection_event.program_flag != 8 &&
+                !final_trim_three_seq_table.empty()) {
+                auto rotated = triplet;
+                for (int rotation = 0; rotation < 3; ++rotation) {
+                    run_rdp_three_seq_recheck(
+                        scan_state, rotated, initial.store_lpv,
+                        initial.store_lpv_upper_bound, probability_settings,
+                        final_trim_three_seq_table,
+                        configured_three_seq_table != nullptr
+                            ? configured_three_seq_table_bound : 45,
+                        final_trim_legacy_events);
+                    rotated = {rotated[1], rotated[2], rotated[0]};
+                }
+            }
+        }
         if (std::getenv("RDP_TRACE_TEMP") != nullptr && winner == 1 &&
             round.final_candidates.candidate_last[winner] >= 1) {
             const auto lpv = [&](int program, int sequence) {
@@ -818,7 +1010,7 @@ RdpFullAnalysisResult run_rdp_full_analysis(
             return make_rdp_inner_method_triplets(
                 scan_state, method_rlist.last, method_rlist.list, winner,
                 trace_sub, actual_sequence_sizes, method_pairs,
-                permanent_next_no, 20, program, method_bits);
+                permanent_next_no, minimum_sequence_size, program, method_bits);
         };
         const auto run_method_scan = [&](const int program,
                                          const bool screen_geneconv,
@@ -995,18 +1187,47 @@ RdpFullAnalysisResult run_rdp_full_analysis(
         }
         */
         append_rdp_events(events_after_final_trim, temporary_events);
+        trace_legacy_method_state("final-trim-merged", events_after_final_trim);
         // FinalTrim's rescans above use the original selected probability.
         // MakeCollecteventsX also receives that original PXOList record.  The
         // source marks the persistent selected signal as consumed only after
         // collection, before MakeBestXOList/AddjustCXO.
         const std::array<int, 2> trace{
             selection.trace[0], selection.trace[1]};
+        // FinalTrim adds a probability-1 copy of the selected PXO record for
+        // each accepted member of the winning RList before MakeCollecteventsC
+        // is called.  `prepare_rdp_collection_event_list` is the source-order
+        // representation of that persistent PXOList mutation; using the raw
+        // pre-copy list here silently loses those records and makes every
+        // later WinnerPos/StripUnfound decision wrong.
         auto collection_events = prepare_rdp_collection_event_list(
             scan_state.next_no, winner, round.prefix.sequences, trace,
             round.final_candidates.candidate_last,
             round.final_candidates.candidate_list,
             round.final_candidates.acceptable_sequences,
             events_after_final_trim);
+        if (std::getenv("RDP_TRACE_STRIP") != nullptr) {
+            const auto collected = make_rdp_parent_collect_events(
+                scan_state.sequence_length, scan_state.next_no, winner,
+                round.prefix.actual_resolution.region_sizes,
+                round.prefix.actual_resolution.event_overlap_mask,
+                comparison,
+                round.final_candidates.candidate_last,
+                round.final_candidates.candidate_list, 0,
+                round.prefix.sequences, selection.trace,
+                collection_events);
+            std::cerr << "strip-candidates round=" << round_number
+                      << " winner=" << winner << " source=";
+            for (int slot = 0; slot <= round.final_candidates.candidate_last[winner]; ++slot) {
+                const auto sequence = round.final_candidates.candidate_list[winner + slot * 3];
+                const auto& event = collected.events[slot];
+                const auto ok_index = static_cast<std::size_t>(winner) +
+                    18U * 3U + static_cast<std::size_t>(sequence) * 57U;
+                std::cerr << sequence << ':' << event.probability << ":ok="
+                          << round.final_candidates.acceptable_sequences[ok_index] << ',';
+            }
+            std::cerr << '\n';
+        }
         events_after_final_trim.xover_list[selection.trace[0]][
             selection.trace[1] - 1].probability = 1.0;
         if (analysis_trace != nullptr) {
@@ -1099,7 +1320,8 @@ RdpFullAnalysisResult run_rdp_full_analysis(
             permanent_analysis_scan, initially_screened_triplets, winner,
             round.final_candidates.candidate_last,
             round.final_candidates.candidate_list, expanded_trace_sub,
-            actual_sequence_sizes, permanent_next_no, 20, propagated_pairs);
+            actual_sequence_sizes, permanent_next_no, minimum_sequence_size,
+            propagated_pairs);
         const auto expanded_scan_state = rebuild_rdp_scan_state(
             expanded_next_no, scan_state.sequence_length,
             expanded_sequences, preprocessing_api());
@@ -1114,18 +1336,18 @@ RdpFullAnalysisResult run_rdp_full_analysis(
         }
         const auto expanded_distance = build_rdp_distance_state(
             expanded_scan_state, 1, expanded_scan_state.sequence_length);
-        const auto outer_triplets = make_rdp_outer_scan_triplets(
-            permanent_analysis_scan, initially_screened_triplets,
-            expanded_next_no,
-            scan_state.next_no, winner,
-            round.final_candidates.candidate_last, expanded_trace_sub,
-            next_actual_sizes, permanent_next_no, 20, propagated_pairs,
-            expanded_next_no, expanded_distance.valid_sites);
-        if (analysis_trace != nullptr) {
-            analysis_trace->inner_triplets.push_back(inner_triplets);
-            analysis_trace->outer_triplets.push_back(outer_triplets);
+        // OuterScan4 re-dimensions SubValid for the post-mutation sequence
+        // set and initializes every off-diagonal pair to 100.  It does not
+        // reuse FastDistanceCalcZ's raw valid-site matrix here.
+        std::vector<float> outer_subvalid(
+            static_cast<std::size_t>(expanded_next_no + 1) *
+                (expanded_next_no + 1), 0.0F);
+        for (int first = 0; first < expanded_next_no; ++first) {
+            for (int second = first + 1; second <= expanded_next_no; ++second) {
+                outer_subvalid[first + second * (expanded_next_no + 1)] = 100.0F;
+                outer_subvalid[second + first * (expanded_next_no + 1)] = 100.0F;
+            }
         }
-
         const auto inner_scan_state = rebuild_rdp_scan_state(
             scan_state.next_no, scan_state.sequence_length,
             mutation.sequence_data, preprocessing_api());
@@ -1144,6 +1366,109 @@ RdpFullAnalysisResult run_rdp_full_analysis(
             probability_estimate, factorials.three_way,
             factorials.factorial, xover_api(), 0, nullptr, nullptr, 1,
             &mutation.missing_data, true, &shared_xdiffpos0);
+
+        // FindActualEventsVB calls MakeBestXOList, then InnerScan2, then
+        // StripUnfound2.  WinnerPos is populated from MakeCollecteventsC;
+        // it is not inferred from InnerScan2's emitted events.  Preserve the
+        // pre-strip RList for all preceding work and use this source-order
+        // copy only when constructing OuterScan4's AList.
+        auto outer_candidate_last = round.final_candidates.candidate_last;
+        auto outer_candidate_list = round.final_candidates.candidate_list;
+        constexpr int source_method_upper_bound = 9;
+        const auto collected_for_winner = make_rdp_parent_collect_events(
+            scan_state.sequence_length, scan_state.next_no, winner,
+            round.prefix.actual_resolution.region_sizes,
+            round.prefix.actual_resolution.event_overlap_mask,
+            comparison,
+            round.final_candidates.candidate_last,
+            round.final_candidates.candidate_list,
+            source_method_upper_bound, round.prefix.sequences, selection.trace,
+            collection_events);
+        const int winner_count =
+            round.final_candidates.candidate_last[winner] + 1;
+        const int winner_method_count = source_method_upper_bound + 1;
+        std::vector<unsigned char> winner_pos(
+            static_cast<std::size_t>(std::max(0, winner_count)) *
+                static_cast<std::size_t>(winner_method_count), 0);
+        for (int slot = 0; slot < winner_count; ++slot) {
+            for (int method = 0; method <= source_method_upper_bound; ++method) {
+                const auto& event = collected_for_winner.events[
+                    static_cast<std::size_t>(slot) +
+                    static_cast<std::size_t>(method) *
+                        static_cast<std::size_t>(scan_state.next_no + 1)];
+                if (event.probability > 0.0) {
+                    winner_pos[static_cast<std::size_t>(slot) *
+                                   static_cast<std::size_t>(winner_method_count) +
+                               static_cast<std::size_t>(method)] = 1;
+                }
+            }
+        }
+        int strip_slot = 0;
+        while (strip_slot <= outer_candidate_last[winner]) {
+            bool found = false;
+            for (int method = 0; method <= source_method_upper_bound; ++method) {
+                if (winner_pos[static_cast<std::size_t>(strip_slot) *
+                                   static_cast<std::size_t>(winner_method_count) +
+                               static_cast<std::size_t>(method)] != 0) {
+                    found = true;
+                    break;
+                }
+            }
+            if (found) {
+                ++strip_slot;
+                continue;
+            }
+            const int last_slot = outer_candidate_last[winner];
+            if (strip_slot < last_slot) {
+                outer_candidate_list[winner + strip_slot * 3] =
+                    outer_candidate_list[winner + last_slot * 3];
+                for (int method = 0; method <= source_method_upper_bound; ++method) {
+                    winner_pos[static_cast<std::size_t>(strip_slot) *
+                                   static_cast<std::size_t>(winner_method_count) +
+                               static_cast<std::size_t>(method)] =
+                        winner_pos[static_cast<std::size_t>(last_slot) *
+                                       static_cast<std::size_t>(winner_method_count) +
+                                   static_cast<std::size_t>(method)];
+                }
+            }
+            --outer_candidate_last[winner];
+        }
+        if (std::getenv("RDP_TRACE_STRIP") != nullptr) {
+            std::cerr << "strip-output round=" << round_number << " role="
+                      << winner << " last=" << outer_candidate_last[winner]
+                      << " list=";
+            for (int slot = 0; slot <= outer_candidate_last[winner]; ++slot) {
+                std::cerr << outer_candidate_list[winner + slot * 3] << ',';
+            }
+            std::cerr << '\n';
+        }
+        const auto outer_triplets = make_rdp_outer_scan_triplets(
+            permanent_analysis_scan, initially_screened_triplets,
+            expanded_next_no,
+            scan_state.next_no, winner,
+            outer_candidate_last, expanded_trace_sub,
+            next_actual_sizes, permanent_next_no, minimum_sequence_size,
+            propagated_pairs,
+            expanded_next_no, outer_subvalid);
+        if (analysis_trace != nullptr) {
+            analysis_trace->inner_triplets.push_back(inner_triplets);
+            analysis_trace->outer_triplets.push_back(outer_triplets);
+        }
+        if (std::getenv("RDP_TRACE_WINNERPOS") != nullptr) {
+            std::cerr << "winnerpos round=" << round_number << " role="
+                      << winner << " candidates=";
+            for (int slot = 0;
+                 slot <= round.final_candidates.candidate_last[winner];
+                 ++slot) {
+                const int sequence = round.final_candidates.candidate_list[
+                    winner + slot * 3];
+                const int count = sequence < static_cast<int>(
+                    inner_events.xover_list.size())
+                    ? static_cast<int>(inner_events.xover_list[sequence].size()) : 0;
+                std::cerr << sequence << ':' << count << ',';
+            }
+            std::cerr << '\n';
+        }
         auto combined_events = adjusted.events;
         append_rdp_events(combined_events, inner_events);
         combined_events.xover_list.resize(expanded_next_no + 1);
@@ -1174,7 +1499,8 @@ RdpFullAnalysisResult run_rdp_full_analysis(
             &expanded_missing, true, &shared_xdiffpos0);
         auto dropped = drop_rdp_unused_fragment_events(
             permanent_next_no, scan_state.next_no, expanded_next_no,
-            scan_state.sequence_length, 20, expanded_trace_sub,
+            scan_state.sequence_length, minimum_sequence_size,
+            expanded_trace_sub,
             next_actual_sizes, expanded_scan_state.sequence_data,
             expanded_missing, combined_events, outer_events);
         if (analysis_trace != nullptr) {

@@ -20,11 +20,12 @@ target_compile_options(rdp_dna5_exact PRIVATE
     -Wno-deprecated-volatile
 )
 
-# The original RDP tree path was built through the 32-bit x87 evaluation
-# model.  Keep this isolated to the literal Clearcut/NJ translation unit;
-# applying it to the complete DNA5 DLL changes upstream matrix generation.
+# The original RDP tree path was built by the 32-bit MinGW source build with
+# optimized x87 evaluation. Keep this isolated to the literal Clearcut/NJ
+# translation unit; applying it to the complete DNA5 DLL changes upstream
+# matrix generation.
 set_source_files_properties(src/rdp_nj_legacy.cpp PROPERTIES
-    COMPILE_OPTIONS "-O0"
+    COMPILE_OPTIONS "-O2"
 )
 if(NOT EMSCRIPTEN)
     set_property(SOURCE src/rdp_nj_legacy.cpp APPEND PROPERTY COMPILE_OPTIONS

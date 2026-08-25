@@ -25,6 +25,7 @@ trace_names=(
   addjust-dopairs.bin
   alist-rdp3-calls.bin
   findbetter-pxolist.bin
+  consensus-winpp.bin
   update-done-pvco.bin
 )
 for trace_name in "${trace_names[@]}"; do

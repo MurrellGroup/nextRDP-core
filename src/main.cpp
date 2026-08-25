@@ -5156,12 +5156,21 @@ int fasta_all_redo_events_fixture(
     }
     const auto expanded_distance_state = build_rdp_distance_state(
         expanded_scan_state, 1, expanded_scan_state.sequence_length);
+    std::vector<float> outer_subvalid(
+        static_cast<std::size_t>(expanded_next_no + 1) *
+            (expanded_next_no + 1), 0.0F);
+    for (int first = 0; first < expanded_next_no; ++first) {
+        for (int second = first + 1; second <= expanded_next_no; ++second) {
+            outer_subvalid[first + second * (expanded_next_no + 1)] = 100.0F;
+            outer_subvalid[second + first * (expanded_next_no + 1)] = 100.0F;
+        }
+    }
     const auto outer_triplets = make_rdp_outer_scan_triplets(
         scan_state, events.triplets_with_events, expanded_next_no,
         scan_state.next_no,
         expected_winner, final_candidates.candidate_last, trace_sub,
         expanded_actual_sizes, scan_state.next_no, 20, propagated_pairs,
-        expanded_next_no, expanded_distance_state.valid_sites);
+        expanded_next_no, outer_subvalid);
     const auto alist_rdp3_calls =
         load_alist_rdp3_trace(alist_rdp3_trace_path);
     const bool inner_schedule_matches = !alist_rdp3_calls.empty() &&
