@@ -339,7 +339,14 @@ RdpInitialAnalysisResult run_rdp_initial_analysis(
         static_cast<int>(options.enable_maxchi) +
         static_cast<int>(options.enable_chimaera) +
         static_cast<int>(options.enable_three_seq);
-    if (selected_method_count > 1) {
+    // InnerScan2 schedules the optional methods only after the RDP event
+    // selection has entered the full event loop.  Do not inject their
+    // recheck records into the initial RDP event state: that state is fed
+    // directly to Identify/MakeNJTrees and method records can make the
+    // source tree pass invalid (notably MaxChi on Dataset2).  The retained
+    // implementation below is kept as a fixture-only reference for the
+    // earlier call-order experiments; the live path is the scheduler below.
+    if (false && selected_method_count > 1) {
         const bool has_geneconv_order =
             !options.geneconv_call_order_path.empty() &&
             !options.geneconv_call_count_path.empty();
@@ -349,64 +356,119 @@ RdpInitialAnalysisResult run_rdp_initial_analysis(
         const bool has_chimaera_order =
             !options.chimaera_call_order_path.empty() &&
             !options.chimaera_call_count_path.empty();
-        if ((options.enable_geneconv && !has_geneconv_order) ||
-            (options.enable_maxchi && !has_maxchi_order) ||
-            (options.enable_chimaera && !has_chimaera_order) ||
-            options.enable_three_seq) {
-            throw std::runtime_error(
-                "selectable legacy method runs require source call-order "
-                "captures (3SEQ capture support is not ported yet)");
-        }
+        // 3SEQ is a post-RDP InnerScan2 method (the source calls TSXover
+        // from its shared method loop rather than from the initial AlistRDP4
+        // pass), so it is intentionally not added to this initial event
+        // state.  Its source-order recheck is run below in the full event
+        // loop alongside the other selectable methods.
         RdpLegacyEventAllocator allocator(events, selected_method_count);
         if (options.enable_geneconv) {
-            std::ifstream count_input(options.geneconv_call_count_path,
-                                       std::ios::binary);
-            int call_count = 0;
-            count_input.read(reinterpret_cast<char*>(&call_count), sizeof(call_count));
-            std::ifstream order_input(options.geneconv_call_order_path,
-                                      std::ios::binary);
-            for (int call = 0; call < call_count; ++call) {
-                std::array<int, 9> record{};
-                order_input.read(reinterpret_cast<char*>(record.data()), sizeof(record));
-                if (!order_input) throw std::runtime_error("truncated GENECONV call-order fixture");
-                std::array<int, 3> input{record[5], record[6], record[7]};
-                run_rdp_geneconv_recheck(
-                    scan_state, input, store_lpv, store_lpv_upper_bound,
-                    probability_settings, allocator);
+            if (has_geneconv_order) {
+                std::ifstream count_input(options.geneconv_call_count_path,
+                                           std::ios::binary);
+                int call_count = 0;
+                count_input.read(reinterpret_cast<char*>(&call_count),
+                                 sizeof(call_count));
+                std::ifstream order_input(options.geneconv_call_order_path,
+                                          std::ios::binary);
+                for (int call = 0; call < call_count; ++call) {
+                    std::array<int, 9> record{};
+                    order_input.read(reinterpret_cast<char*>(record.data()),
+                                     sizeof(record));
+                    if (!order_input) throw std::runtime_error(
+                        "truncated GENECONV call-order fixture");
+                    std::array<int, 3> input{record[5], record[6], record[7]};
+                    run_rdp_geneconv_recheck(
+                        scan_state, input, store_lpv, store_lpv_upper_bound,
+                        probability_settings, allocator);
+                }
+            } else {
+                const auto screened = screen_rdp_geneconv_candidates(
+                    scan_state, store_lpv, store_lpv_upper_bound,
+                    correction_tests, options.p_value_cutoff,
+                    options.circular ? 1 : 0, 0, target);
+                for (const auto& candidate : screened.candidates) {
+                    auto input = candidate;
+                    run_rdp_geneconv_recheck(
+                        scan_state, input,
+                        store_lpv, store_lpv_upper_bound, probability_settings,
+                        allocator);
+                }
             }
         }
         if (options.enable_maxchi) {
-            std::ifstream count_input(options.maxchi_call_count_path,
-                                       std::ios::binary);
-            int call_count = 0;
-            count_input.read(reinterpret_cast<char*>(&call_count), sizeof(call_count));
-            std::ifstream order_input(options.maxchi_call_order_path,
-                                      std::ios::binary);
-            for (int call = 0; call < call_count; ++call) {
-                std::array<int, 8> record{};
-                order_input.read(reinterpret_cast<char*>(record.data()), sizeof(record));
-                if (!order_input) throw std::runtime_error("truncated MaxChi call-order fixture");
-                std::array<int, 3> input{record[4], record[5], record[6]};
-                run_rdp_maxchi_recheck(
-                    scan_state, input, store_lpv, store_lpv_upper_bound,
-                    probability_settings, allocator, 0, 0, true);
+            if (has_maxchi_order) {
+                std::ifstream count_input(options.maxchi_call_count_path,
+                                           std::ios::binary);
+                int call_count = 0;
+                count_input.read(reinterpret_cast<char*>(&call_count), sizeof(call_count));
+                std::ifstream order_input(options.maxchi_call_order_path,
+                                          std::ios::binary);
+                for (int call = 0; call < call_count; ++call) {
+                    std::array<int, 8> record{};
+                    order_input.read(reinterpret_cast<char*>(record.data()), sizeof(record));
+                    if (!order_input) throw std::runtime_error("truncated MaxChi call-order fixture");
+                    std::array<int, 3> input{record[4], record[5], record[6]};
+                    run_rdp_maxchi_recheck(
+                        scan_state, input, store_lpv, store_lpv_upper_bound,
+                        probability_settings, allocator, 0, 0, true);
+                }
+            } else {
+                const auto screened = screen_rdp_maxchi_candidates(
+                    scan_state, store_lpv, store_lpv_upper_bound,
+                    correction_tests, options.p_value_cutoff,
+                    options.circular ? 1 : 0, 0);
+                for (const auto& input : screened.candidates) {
+                    run_rdp_maxchi_recheck(
+                        scan_state, input, store_lpv, store_lpv_upper_bound,
+                        probability_settings, allocator, 0, 0, true);
+                }
             }
         }
         if (options.enable_chimaera) {
-            std::ifstream count_input(options.chimaera_call_count_path,
-                                       std::ios::binary);
-            int call_count = 0;
-            count_input.read(reinterpret_cast<char*>(&call_count), sizeof(call_count));
-            std::ifstream order_input(options.chimaera_call_order_path,
-                                      std::ios::binary);
-            for (int call = 0; call < call_count; ++call) {
-                std::array<int, 8> record{};
-                order_input.read(reinterpret_cast<char*>(record.data()), sizeof(record));
-                if (!order_input) throw std::runtime_error("truncated Chimaera call-order fixture");
-                run_rdp_chimaera_recheck(
-                    scan_state, {record[3], record[4], record[5]}, store_lpv,
-                    store_lpv_upper_bound, probability_settings, allocator,
-                    0, 0, true);
+            if (has_chimaera_order) {
+                std::ifstream count_input(options.chimaera_call_count_path,
+                                           std::ios::binary);
+                int call_count = 0;
+                count_input.read(reinterpret_cast<char*>(&call_count), sizeof(call_count));
+                std::ifstream order_input(options.chimaera_call_order_path,
+                                          std::ios::binary);
+                for (int call = 0; call < call_count; ++call) {
+                    std::array<int, 8> record{};
+                    order_input.read(reinterpret_cast<char*>(record.data()), sizeof(record));
+                    if (!order_input) throw std::runtime_error("truncated Chimaera call-order fixture");
+                    run_rdp_chimaera_recheck(
+                        scan_state, {record[3], record[4], record[5]}, store_lpv,
+                        store_lpv_upper_bound, probability_settings, allocator,
+                        0, 0, true);
+                }
+            } else {
+                const auto screened = screen_rdp_chimaera_candidates(
+                    scan_state, store_lpv, store_lpv_upper_bound,
+                    correction_tests, options.p_value_cutoff,
+                    options.circular ? 1 : 0, 0);
+                for (int index = 0; index <= scan_state.analysis_list_last;
+                     ++index) {
+                    const unsigned char redo_flags = screened.redo[index];
+                    const std::array<int, 3> candidate{
+                        scan_state.analysis_list[index * 3],
+                        scan_state.analysis_list[index * 3 + 1],
+                        scan_state.analysis_list[index * 3 + 2]};
+                    const std::array<std::array<int, 3>, 3> orientations{{
+                        candidate,
+                        {candidate[1], candidate[2], candidate[0]},
+                        {candidate[2], candidate[0], candidate[1]}}};
+                    const std::array<unsigned char, 3> orientation_bits{
+                        1, 4, 16};
+                    for (int rotation = 0; rotation < 3; ++rotation) {
+                        if ((redo_flags & orientation_bits[rotation]) == 0)
+                            continue;
+                        run_rdp_chimaera_recheck(
+                            scan_state, orientations[rotation], store_lpv,
+                            store_lpv_upper_bound, probability_settings,
+                            allocator, 0, 0, true);
+                    }
+                }
             }
         }
     }
@@ -716,6 +778,141 @@ RdpFullAnalysisResult run_rdp_full_analysis(
         RdpLegacyEventAllocator legacy_events(
             temporary_events, selected_method_count);
         const auto& three_seq_table = active_three_seq_table();
+        // InnerScan2 does not feed the legacy methods only the final winner
+        // list.  It expands the permanent AnalysisList through the selected
+        // WinPP RList using MakeAListISP3, then runs each method's Alist* and
+        // Xover routine in source order.  Keep the scheduler shared by all
+        // methods so random method combinations exercise the same list.
+        const int method_bits = 1 |
+            (options.enable_geneconv ? 2 : 0) |
+            (options.enable_maxchi ? 8 : 0) |
+            (options.enable_chimaera ? 16 : 0) |
+            (options.enable_three_seq ? 64 : 0);
+        // AddjustCXO is the source boundary immediately before InnerScan2.
+        // Its DoPairs matrix is not an all-ones matrix: it is derived from
+        // the collected PXOList records and then propagated through the
+        // selected RList.  Compute that matrix before constructing any
+        // method AList so a method combination sees the same pair gates as
+        // the VB implementation.  The full adjustment below is still run
+        // after method emissions have been appended, as in the existing
+        // event-state pipeline.
+        const auto method_collection_events = prepare_rdp_collection_event_list(
+            scan_state.next_no, winner, round.prefix.sequences, selection.trace,
+            round.final_candidates.candidate_last,
+            round.final_candidates.candidate_list,
+            round.final_candidates.acceptable_sequences,
+            events_after_final_trim);
+        auto method_adjusted = adjust_rdp_events_exact(
+            scan_state.next_no, winner, options.p_value_cutoff,
+            round.final_candidates.candidate_last,
+            round.final_candidates.candidate_list, trace_sub,
+            method_collection_events, selection.done_sequence,
+            scan_state.next_no, selection.slot_upper_bound);
+        auto method_pairs = method_adjusted.pairs_to_rescan;
+        propagate_rdp_group_pairs(
+            scan_state.next_no, winner,
+            round.final_candidates.candidate_last,
+            round.final_candidates.candidate_list, method_pairs);
+        const auto& method_rlist = round.prefix.actual_resolution.candidates;
+        const auto method_triplets = [&](const int program) {
+            return make_rdp_inner_method_triplets(
+                scan_state, method_rlist.last, method_rlist.list, winner,
+                trace_sub, actual_sequence_sizes, method_pairs,
+                permanent_next_no, 20, program, method_bits);
+        };
+        const auto run_method_scan = [&](const int program,
+                                         const bool screen_geneconv,
+                                         const bool screen_maxchi) {
+            auto triplets = method_triplets(program);
+            RdpScanState method_scan = scan_state;
+            method_scan.analysis_list = flatten_rdp_triplets(triplets);
+            method_scan.analysis_list_last =
+                static_cast<int>(triplets.size()) - 1;
+            if (method_scan.analysis_list_last < 0) return;
+            if (screen_geneconv) {
+                const auto screened = screen_rdp_geneconv_candidates(
+                    method_scan, initial.store_lpv,
+                    initial.store_lpv_upper_bound, correction_tests,
+                    options.p_value_cutoff, options.circular ? 1 : 0, 0,
+                    target);
+                for (const auto& candidate : screened.candidates) {
+                    auto input = candidate;
+                    run_rdp_geneconv_recheck(
+                        scan_state, input, initial.store_lpv,
+                        initial.store_lpv_upper_bound, probability_settings,
+                        legacy_events);
+                }
+            } else if (screen_maxchi) {
+                const auto screened = screen_rdp_maxchi_candidates(
+                    method_scan, initial.store_lpv,
+                    initial.store_lpv_upper_bound, correction_tests,
+                    options.p_value_cutoff, options.circular ? 1 : 0, 0);
+                for (const auto& candidate : screened.candidates) {
+                    run_rdp_maxchi_recheck(
+                        scan_state, candidate, initial.store_lpv,
+                        initial.store_lpv_upper_bound, probability_settings,
+                        legacy_events, selected.beginning, selected.ending);
+                }
+            } else if (program == 4) {
+                // CXoverA is entered only for AlistChi redo==1 rows.  The
+                // source then gates its three role orientations through
+                // ProgBinRead; until that per-redo orientation table is
+                // threaded through this API, keep the source rotation order
+                // but do not recheck every raw MakeAList row.
+                const auto screened = screen_rdp_chimaera_candidates(
+                    method_scan, initial.store_lpv,
+                    initial.store_lpv_upper_bound, correction_tests,
+                    options.p_value_cutoff, options.circular ? 1 : 0, 0);
+                for (int index = 0; index <= method_scan.analysis_list_last;
+                     ++index) {
+                    const unsigned char redo_flags = screened.redo[index];
+                    if ((redo_flags & 1U) == 0 &&
+                        (redo_flags & 4U) == 0 &&
+                        (redo_flags & 16U) == 0) {
+                        continue;
+                    }
+                    const std::array<int, 3> candidate{
+                        method_scan.analysis_list[index * 3],
+                        method_scan.analysis_list[index * 3 + 1],
+                        method_scan.analysis_list[index * 3 + 2]};
+                    const std::array<std::array<int, 3>, 3> orientations{{
+                        candidate,
+                        {candidate[1], candidate[2], candidate[0]},
+                        {candidate[2], candidate[0], candidate[1]}}};
+                    const std::array<unsigned char, 3> orientation_bits{
+                        1, 4, 16};
+                    for (int rotation = 0; rotation < 3; ++rotation) {
+                        if ((redo_flags & orientation_bits[rotation]) == 0)
+                            continue;
+                        const auto& rotated = orientations[rotation];
+                        run_rdp_chimaera_recheck(
+                            scan_state, rotated, initial.store_lpv,
+                            initial.store_lpv_upper_bound, probability_settings,
+                            legacy_events, selected.beginning, selected.ending,
+                            false, rotation < 2 ? &shared_xdiffpos0 : nullptr);
+                    }
+                }
+            } else if (program == 6) {
+                for (const auto& candidate : triplets) {
+                    auto rotated = candidate;
+                    for (int rotation = 0; rotation < 3; ++rotation) {
+                        run_rdp_three_seq_recheck(
+                            scan_state, rotated, initial.store_lpv,
+                            initial.store_lpv_upper_bound, probability_settings,
+                            three_seq_table,
+                            configured_three_seq_table != nullptr
+                                ? configured_three_seq_table_bound : 45,
+                            legacy_events);
+                        rotated = {rotated[1], rotated[2], rotated[0]};
+                    }
+                }
+            }
+        };
+        if (options.enable_geneconv) run_method_scan(1, true, false);
+        if (options.enable_maxchi) run_method_scan(3, false, true);
+        if (options.enable_chimaera) run_method_scan(4, false, false);
+        if (options.enable_three_seq) run_method_scan(6, false, false);
+        /*
         for (int slot = 0;
              slot <= round.final_candidates.candidate_last[winner]; ++slot) {
             const int sequence = round.final_candidates.candidate_list[
@@ -796,6 +993,7 @@ RdpFullAnalysisResult run_rdp_full_analysis(
                 }
             }
         }
+        */
         append_rdp_events(events_after_final_trim, temporary_events);
         // FinalTrim's rescans above use the original selected probability.
         // MakeCollecteventsX also receives that original PXOList record.  The

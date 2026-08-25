@@ -18,10 +18,9 @@ struct RdpInitialAnalysisOptions {
     bool enable_three_seq = false;
     bool polish_breakpoints_with_burt = false;
 
-    // Optional source call-order captures.  The primary legacy scanners are
-    // still being lifted in source order; until that work is complete these
-    // captures are required for a selectable method run instead of silently
-    // substituting an all-triplet approximation.
+    // Optional source call-order captures.  GENECONV now has a direct
+    // AlistGC2 scheduler and does not need a capture; these remain useful for
+    // the methods whose list schedulers are still being lifted.
     std::string geneconv_call_order_path;
     std::string geneconv_call_count_path;
     std::string maxchi_call_order_path;

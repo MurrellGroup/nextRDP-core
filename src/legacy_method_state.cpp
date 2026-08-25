@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <vector>
 
@@ -380,9 +381,139 @@ std::vector<unsigned char>& geneconv_fss_table() {
     return table;
 }
 
+void initialize_geneconv_fss_table(std::vector<unsigned char>& table) {
+    constexpr int width = 126;
+    const auto decode = [](const int code) {
+        return std::array<int, 3>{code / 25, (code / 5) % 5, code % 5};
+    };
+    // FillFSSRDP's VB layout is (site, first packed symbol, second packed
+    // symbol, third packed symbol), with the first dimension contiguous.
+    // DNA5 receives the same flat layout through the DLL ABI.
+    for (int first_code = 0; first_code < 125; ++first_code) {
+        for (int second_code = 0; second_code < 125; ++second_code) {
+            for (int third_code = 0; third_code < 125; ++third_code) {
+                const auto first = decode(first_code);
+                const auto second = decode(second_code);
+                const auto third = decode(third_code);
+                const std::size_t offset =
+                    static_cast<std::size_t>(first_code) * 4 +
+                    static_cast<std::size_t>(second_code) * 4 * width +
+                    static_cast<std::size_t>(third_code) * 4 * width * width;
+                int total = 0;
+                for (int site = 0; site < 3; ++site) {
+                    int action = 0;
+                    if (first[site] != 0 && second[site] != 0 &&
+                        third[site] != 0 &&
+                        (first[site] != third[site] ||
+                         first[site] != second[site])) {
+                        if (first[site] == second[site]) action = 1;
+                        else if (first[site] == third[site]) action = 2;
+                        else if (third[site] == second[site]) action = 3;
+                        else action = 7;
+                    }
+                    table[offset + site] =
+                        static_cast<unsigned char>(action);
+                    total += action;
+                }
+                table[offset + 3] = static_cast<unsigned char>(total);
+            }
+        }
+    }
+}
+
+void ensure_geneconv_fss_table() {
+    static std::once_flag initialized;
+    std::call_once(initialized, [] {
+        initialize_geneconv_fss_table(geneconv_fss_table());
+    });
+}
+
+std::vector<unsigned char>& maxchi_fss_table() {
+    constexpr int width = 126;
+    static std::vector<unsigned char> table(
+        static_cast<std::size_t>(3) * width * width * width, 0);
+    static std::once_flag initialized;
+    std::call_once(initialized, [] {
+        const auto decode = [](const int code) {
+            return std::array<int, 3>{code / 25, (code / 5) % 5,
+                                      code % 5};
+        };
+        for (int first_code = 0; first_code < 125; ++first_code) {
+            for (int second_code = 0; second_code < 125; ++second_code) {
+                for (int third_code = 0; third_code < 125; ++third_code) {
+                    const auto first = decode(first_code);
+                    const auto second = decode(second_code);
+                    const auto third = decode(third_code);
+                    for (int site = 0; site < 3; ++site) {
+                        const std::size_t offset =
+                            static_cast<std::size_t>(site) +
+                            3 * static_cast<std::size_t>(first_code) +
+                            3 * static_cast<std::size_t>(second_code) * width +
+                            3 * static_cast<std::size_t>(third_code) * width * width;
+                        table[offset] =
+                            first[site] != 0 && second[site] != 0 &&
+                            third[site] != 0 &&
+                            (first[site] != third[site] ||
+                             first[site] != second[site]) ? 1 : 0;
+                    }
+                }
+            }
+        }
+    });
+    return table;
+}
+
+std::vector<unsigned char>& chimaera_fss_table() {
+    constexpr int width = 126;
+    static std::vector<unsigned char> table(
+        static_cast<std::size_t>(4) * width * width * width, 0);
+    static std::once_flag initialized;
+    std::call_once(initialized, [] {
+        const auto decode = [](const int code) {
+            return std::array<int, 3>{code / 25, (code / 5) % 5,
+                                      code % 5};
+        };
+        for (int first_code = 0; first_code < 125; ++first_code) {
+            for (int second_code = 0; second_code < 125; ++second_code) {
+                for (int third_code = 0; third_code < 125; ++third_code) {
+                    const auto first = decode(first_code);
+                    const auto second = decode(second_code);
+                    const auto third = decode(third_code);
+                    int total = 0;
+                    for (int site = 0; site < 3; ++site) {
+                        unsigned char action = 0;
+                        if (first[site] != 0 && second[site] != 0 &&
+                            third[site] != 0 &&
+                            (first[site] != third[site] ||
+                             first[site] != second[site])) {
+                            if (first[site] == second[site]) action = 1;
+                            else if (first[site] == third[site]) action = 2;
+                            else if (third[site] == second[site]) action = 3;
+                        }
+                        const std::size_t offset =
+                            static_cast<std::size_t>(site) +
+                            4 * static_cast<std::size_t>(first_code) +
+                            4 * static_cast<std::size_t>(second_code) * width +
+                            4 * static_cast<std::size_t>(third_code) * width * width;
+                        table[offset] = action;
+                        total += action;
+                    }
+                    const std::size_t total_offset =
+                        3 + 4 * static_cast<std::size_t>(first_code) +
+                        4 * static_cast<std::size_t>(second_code) * width +
+                        4 * static_cast<std::size_t>(third_code) * width * width;
+                    table[total_offset] = static_cast<unsigned char>(total);
+                }
+            }
+        }
+    });
+    return table;
+}
+
 void populate_geneconv_fss_triplet(
     const RdpScanState& scan_state, const std::array<int, 3>& sequences,
     std::vector<unsigned char>& table) {
+    ensure_geneconv_fss_table();
     constexpr int width = 126;
     const int stride = scan_state.compressed_sequence_ub + 1;
     const auto decode = [](const int code) {
@@ -425,6 +556,166 @@ void populate_geneconv_fss_triplet(
     }
 }
 
+RdpMethodScreenResult screen_rdp_geneconv_candidates_impl(
+    const RdpScanState& scan_state, const std::vector<double>& store_lpv,
+    const int store_lpv_ub, const int correction_tests,
+    const double lowest_probability, const int circular, const int mc_flag,
+    const int target) {
+    RdpMethodScreenResult result;
+    const int triplet_count = scan_state.analysis_list_last + 1;
+    if (triplet_count <= 0) return result;
+    if (scan_state.analysis_list.size() <
+        static_cast<std::size_t>(triplet_count) * 3) {
+        throw std::runtime_error("GENECONV analysis list is truncated");
+    }
+    if (store_lpv_ub < 1 || store_lpv.size() <
+        static_cast<std::size_t>(store_lpv_ub + 1) *
+            static_cast<std::size_t>(scan_state.next_no + 1)) {
+        throw std::runtime_error("GENECONV StoreLPV is truncated");
+    }
+    ensure_geneconv_fss_table();
+    std::vector<unsigned char> redo(static_cast<std::size_t>(triplet_count), 0);
+    const int correction = std::max(1, correction_tests);
+    const double sub_threshold = mc_flag != 0
+        ? lowest_probability
+        : lowest_probability / static_cast<double>(correction);
+    constexpr int gc_dimension = 2999;
+    (void)MathFuncs::MyMathFuncs::AlistGC2(
+        store_lpv_ub, const_cast<double*>(store_lpv.data()), 0, 1,
+        gc_dimension, const_cast<short*>(scan_state.analysis_list.data()),
+        scan_state.analysis_list_last, 0, scan_state.analysis_list_last,
+        scan_state.next_no, sub_threshold, redo.data(), circular, correction,
+        mc_flag, lowest_probability,
+        target != 0 ? target : static_cast<int>(std::nearbyint(
+            static_cast<double>(scan_state.sequence_length) / 10.0)),
+        scan_state.sequence_length, 171, 125,
+        scan_state.compressed_sequence_ub,
+        const_cast<unsigned char*>(scan_state.compressed_sequence.data()),
+        geneconv_fss_table().data());
+    result.redo = redo;
+    result.candidates.reserve(static_cast<std::size_t>(triplet_count));
+    for (int index = 0; index < triplet_count; ++index) {
+        // Module8 calls GCXoverD only for RedoL3==1.  A value of 2 is a
+        // deferred AddToRedoList entry and must not become an immediate call.
+        if (redo[index] != 1) continue;
+        result.candidates.push_back({
+            scan_state.analysis_list[index * 3],
+            scan_state.analysis_list[index * 3 + 1],
+            scan_state.analysis_list[index * 3 + 2]});
+    }
+    return result;
+}
+
+RdpMethodScreenResult screen_rdp_maxchi_candidates_impl(
+    const RdpScanState& scan_state, const std::vector<double>& store_lpv,
+    const int store_lpv_ub, const int correction_tests,
+    const double lowest_probability, const int circular, const int mc_flag) {
+    RdpMethodScreenResult result;
+    const int triplet_count = scan_state.analysis_list_last + 1;
+    if (triplet_count <= 0) return result;
+    if (scan_state.analysis_list.size() <
+        static_cast<std::size_t>(triplet_count) * 3) {
+        throw std::runtime_error("MAXCHI analysis list is truncated");
+    }
+    ensure_geneconv_fss_table();
+    auto& fss_mc = maxchi_fss_table();
+    std::vector<unsigned char> redo(static_cast<std::size_t>(triplet_count), 0);
+    std::vector<unsigned char> worthwhilescan(static_cast<std::size_t>(triplet_count), 1);
+    std::vector<unsigned char> missing_data(
+        static_cast<std::size_t>(scan_state.sequence_length + 1) *
+            static_cast<std::size_t>(scan_state.next_no + 1), 0);
+    const int correction = std::max(1, correction_tests);
+    const double sub_threshold = mc_flag != 0
+        ? lowest_probability
+        : lowest_probability / static_cast<double>(correction);
+    constexpr int window_size = 70;
+    constexpr int max_window = ChiLookupTable::max_window;
+    const int half_window = vb_clng(window_size / 2.0);
+    const int critical = critical_difference(window_size, lowest_probability);
+    const auto& chi = chi_lookup_table();
+    const double window_fraction = 0.1;
+    const short* seq_num = scan_state.sequence_data.data();
+    const int target_unused = 0;
+    (void)target_unused;
+    (void)MathFuncs::MyMathFuncs::AlistMC3(
+        0, worthwhilescan.data(), 0, scan_state.analysis_list_last,
+        0, 171, max_window, half_window, half_window, critical, 0,
+        scan_state.next_no, store_lpv_ub,
+        const_cast<double*>(store_lpv.data()),
+        const_cast<short*>(scan_state.analysis_list.data()),
+        scan_state.analysis_list_last, redo.data(),
+        static_cast<short>(circular), correction, static_cast<short>(mc_flag),
+        sub_threshold, lowest_probability, window_fraction, window_size, 0,
+        scan_state.sequence_length, scan_state.compressed_sequence_ub,
+        const_cast<unsigned char*>(scan_state.compressed_sequence.data()),
+        125, fss_mc.data(), const_cast<short*>(seq_num), missing_data.data(),
+        const_cast<int*>(chi.map.data()),
+        const_cast<float*>(chi.values.data()));
+    result.redo = redo;
+    result.candidates.reserve(static_cast<std::size_t>(triplet_count));
+    for (int index = 0; index < triplet_count; ++index) {
+        if (redo[index] != 1) continue;
+        result.candidates.push_back({
+            scan_state.analysis_list[index * 3],
+            scan_state.analysis_list[index * 3 + 1],
+            scan_state.analysis_list[index * 3 + 2]});
+    }
+    return result;
+}
+
+RdpMethodScreenResult screen_rdp_chimaera_candidates_impl(
+    const RdpScanState& scan_state, const std::vector<double>& store_lpv,
+    const int store_lpv_ub, const int correction_tests,
+    const double lowest_probability, const int circular, const int mc_flag) {
+    RdpMethodScreenResult result;
+    const int triplet_count = scan_state.analysis_list_last + 1;
+    if (triplet_count <= 0) return result;
+    if (scan_state.analysis_list.size() <
+        static_cast<std::size_t>(triplet_count) * 3) {
+        throw std::runtime_error("CHIMAERA analysis list is truncated");
+    }
+    const int correction = std::max(1, correction_tests);
+    const double sub_threshold = mc_flag != 0
+        ? lowest_probability
+        : lowest_probability / static_cast<double>(correction);
+    constexpr int window_size = 70;
+    constexpr int max_window = ChiLookupTable::max_window;
+    const int half_window = vb_clng(window_size / 2.0);
+    const int critical = critical_difference(window_size, lowest_probability);
+    const auto& chi = chi_lookup_table();
+    std::vector<unsigned char> redo(static_cast<std::size_t>(triplet_count), 0);
+    std::vector<unsigned char> worthwhile_scan(
+        static_cast<std::size_t>(triplet_count), 127);
+    std::vector<unsigned char> missing_data(
+        static_cast<std::size_t>(scan_state.sequence_length + 1) *
+            static_cast<std::size_t>(scan_state.next_no + 1), 0);
+    const short* seq_num = scan_state.sequence_data.data();
+    (void)MathFuncs::MyMathFuncs::AlistChi(
+        0, missing_data.data(), worthwhile_scan.data(), 0,
+        scan_state.analysis_list_last,
+        0, 171, max_window, half_window, half_window, critical, 0,
+        scan_state.next_no, store_lpv_ub,
+        const_cast<double*>(store_lpv.data()),
+        const_cast<short*>(scan_state.analysis_list.data()),
+        scan_state.analysis_list_last, redo.data(), static_cast<short>(circular),
+        correction, static_cast<short>(mc_flag), sub_threshold,
+        lowest_probability, 0.1, window_size, 0, scan_state.sequence_length,
+        scan_state.compressed_sequence_ub,
+        const_cast<unsigned char*>(scan_state.compressed_sequence.data()),
+        125, chimaera_fss_table().data(), const_cast<short*>(seq_num),
+        const_cast<int*>(chi.map.data()), const_cast<float*>(chi.values.data()));
+    result.redo = redo;
+    result.candidates.reserve(static_cast<std::size_t>(triplet_count));
+    for (int index = 0; index < triplet_count; ++index) {
+        if (redo[index] != 1) continue;
+        result.candidates.push_back({
+            scan_state.analysis_list[index * 3],
+            scan_state.analysis_list[index * 3 + 1],
+            scan_state.analysis_list[index * 3 + 2]});
+    }
+    return result;
+}
+
 int find_subseq_maxchi_compressed(
     const RdpScanState& scan_state, const std::array<int, 3>& sequences,
     std::vector<int>& difference_position,
@@ -460,6 +751,93 @@ int find_subseq_maxchi_compressed(
         }
     }
     return informative;
+}
+
+std::vector<std::array<int, 3>> make_rdp_inner_method_triplets_impl(
+    const RdpScanState& scan_state, const std::array<int, 3>& rnum,
+    const std::vector<int>& rlist, const int win_pp,
+    const std::vector<int>& trace_sub,
+    const std::vector<int>& actual_sequence_sizes,
+    const std::vector<unsigned char>& do_pairs,
+    const int permanent_next_no, const int min_sequence_size,
+    const int method_program, const int selected_program_bits,
+    const float probability_step) {
+    const int count = scan_state.next_no + 1;
+    const int triplet_count = scan_state.analysis_list_last + 1;
+    if (win_pp < 0 || win_pp > 2 || rnum[win_pp] < -1 ||
+        rlist.size() < static_cast<std::size_t>(3) *
+            static_cast<std::size_t>(std::max(0, rnum[win_pp] + 1)) ||
+        trace_sub.size() < static_cast<std::size_t>(count) ||
+        actual_sequence_sizes.size() < static_cast<std::size_t>(count) ||
+        do_pairs.size() < static_cast<std::size_t>(count) * count) {
+        throw std::runtime_error("MakeAListISP3 input dimensions differ");
+    }
+    if (method_program < 0 || method_program > 7 ||
+        (selected_program_bits & (1 << method_program)) == 0) {
+        return {};
+    }
+
+    // DNA5 receives Worthwhilescan and ProgBinRead as a packed byte table.
+    // An ordinary run starts with the all-methods value 127; ProgBinRead then
+    // gates the method branch selected by DoScans.  The caller supplies the
+    // selected bits, so this is the same lookup without a mutable global.
+    constexpr unsigned char worthwhile = 127;
+    const int program_upper_bound = 30;
+    const int prog_bin_index = method_program +
+        static_cast<int>(worthwhile) * (program_upper_bound + 1);
+    (void)prog_bin_index;
+
+    // This is MakeAListISP3, including its source carry-forward of Seq1/2/3
+    // between successive AnalysisList rows and the CurProp > 1 sampling
+    // rule.  In the normal InnerScan2 path ProbDo is 1.1, so every accepted
+    // row is emitted; retaining the accumulator also keeps large-list runs
+    // faithful when the source lowers ProbDo to fit MaxAnalno.
+    std::vector<std::array<int, 3>> output;
+    output.reserve(static_cast<std::size_t>(triplet_count));
+    float curprop = 1.0F;
+    std::array<int, 3> sequences{};
+    for (int x = 0; x <= scan_state.analysis_list_last; ++x) {
+        if (triplet_count <= 0) break;
+        sequences = {
+            scan_state.analysis_list[x * 3],
+            scan_state.analysis_list[x * 3 + 1],
+            scan_state.analysis_list[x * 3 + 2]};
+        for (int slot = 0; slot <= rnum[win_pp]; ++slot) {
+            const int replacement = rlist[win_pp + slot * 3];
+            const int base = replacement > permanent_next_no
+                ? trace_sub[replacement] : replacement;
+            if (sequences[0] != base && sequences[1] != base &&
+                sequences[2] != base) {
+                continue;
+            }
+            if (sequences[0] == base) sequences[0] = replacement;
+            else if (sequences[1] == base) sequences[1] = replacement;
+            else if (sequences[2] == base) sequences[2] = replacement;
+            if (sequences[0] < 0 || sequences[1] < 0 || sequences[2] < 0 ||
+                sequences[0] >= count || sequences[1] >= count ||
+                sequences[2] >= count ||
+                actual_sequence_sizes[sequences[0]] <= min_sequence_size ||
+                actual_sequence_sizes[sequences[1]] <= min_sequence_size ||
+                actual_sequence_sizes[sequences[2]] <= min_sequence_size) {
+                continue;
+            }
+            const auto pair = [count, &do_pairs](const int first,
+                                                  const int second) {
+                return do_pairs[first + second * count] == 1;
+            };
+            if (!pair(sequences[0], sequences[1]) ||
+                !pair(sequences[0], sequences[2]) ||
+                !pair(sequences[1], sequences[2])) {
+                continue;
+            }
+            curprop += probability_step;
+            if (curprop > 1.0F) {
+                curprop -= 1.0F;
+                output.push_back(sequences);
+            }
+        }
+    }
+    return output;
 }
 
 int circular_position(int position, const int length) {
@@ -919,15 +1297,60 @@ void fill_legacy_event(RdpLegacyEventAllocator& allocator,
     event.probability = probability;
     event.length_holder = window_width * 2;
     if (!companion) return;
+    // allocate() may grow the row and invalidate references into its vector.
+    // Copy the completed source record before requesting the companion slot.
+    auto reverse = event;
     const int reverse_slot = allocator.allocate(active[0], program, probability);
     if (reverse_slot > 0) {
-        auto reverse = event;
         std::swap(reverse.beginning, reverse.ending);
         allocator.event(active[0], reverse_slot) = reverse;
     }
 }
 
 }  // namespace
+
+std::vector<std::array<int, 3>> make_rdp_inner_method_triplets(
+    const RdpScanState& scan_state, const std::array<int, 3>& rnum,
+    const std::vector<int>& rlist, const int win_pp,
+    const std::vector<int>& trace_sub,
+    const std::vector<int>& actual_sequence_sizes,
+    const std::vector<unsigned char>& do_pairs,
+    const int permanent_next_no, const int min_sequence_size,
+    const int method_program, const int selected_program_bits,
+    const float probability_step) {
+    return make_rdp_inner_method_triplets_impl(
+        scan_state, rnum, rlist, win_pp, trace_sub, actual_sequence_sizes,
+        do_pairs, permanent_next_no, min_sequence_size, method_program,
+        selected_program_bits, probability_step);
+}
+
+RdpMethodScreenResult screen_rdp_geneconv_candidates(
+    const RdpScanState& scan_state, const std::vector<double>& store_lpv,
+    const int store_lpv_ub, const int correction_tests,
+    const double lowest_probability, const int circular, const int mc_flag,
+    const int target) {
+    return screen_rdp_geneconv_candidates_impl(
+        scan_state, store_lpv, store_lpv_ub, correction_tests,
+        lowest_probability, circular, mc_flag, target);
+}
+
+RdpMethodScreenResult screen_rdp_maxchi_candidates(
+    const RdpScanState& scan_state, const std::vector<double>& store_lpv,
+    const int store_lpv_ub, const int correction_tests,
+    const double lowest_probability, const int circular, const int mc_flag) {
+    return screen_rdp_maxchi_candidates_impl(
+        scan_state, store_lpv, store_lpv_ub, correction_tests,
+        lowest_probability, circular, mc_flag);
+}
+
+RdpMethodScreenResult screen_rdp_chimaera_candidates(
+    const RdpScanState& scan_state, const std::vector<double>& store_lpv,
+    const int store_lpv_ub, const int correction_tests,
+    const double lowest_probability, const int circular, const int mc_flag) {
+    return screen_rdp_chimaera_candidates_impl(
+        scan_state, store_lpv, store_lpv_ub, correction_tests,
+        lowest_probability, circular, mc_flag);
+}
 
 RdpLegacyEventAllocator::RdpLegacyEventAllocator(
     RdpRawEventState& events, const int selected_program_count,
@@ -1574,13 +1997,15 @@ void run_rdp_maxchi_recheck(
                         event.beginning, event.ending, position_difference,
                         difference_position, length, informative,
                         settings.circular != 0);
+                    // The companion allocation can reallocate this row;
+                    // retain the polished primary record before allocating.
+                    auto reverse = event;
                     const int reverse_slot = allocator.allocate(
                         active[0], 3, probability);
                     // MCXoverF does not apply TSXOver's rectangular-slot
                     // guard here: it copies whenever UpdateXOList3 returns a
                     // positive SIP, growing the second dimension as needed.
                     if (reverse_slot > 0) {
-                        auto reverse = event;
                         std::swap(reverse.beginning, reverse.ending);
                         allocator.event(active[0], reverse_slot) = reverse;
                     }
@@ -1973,11 +2398,13 @@ void run_rdp_three_seq_recheck(
         event.probability = side.probability;
         event.distance_holder = sequences[2];
 
+        // As with the other legacy methods, the second allocation may grow
+        // the vector backing the first slot, so snapshot it first.
+        auto reverse = event;
         const int companion = allocator.allocate(
             active[0], 8, side.probability);
         if (companion > -1 &&
             allocator.has_strictly_later_slot(companion)) {
-            auto reverse = event;
             std::swap(reverse.major_parent, reverse.minor_parent);
             std::swap(reverse.beginning, reverse.ending);
             allocator.event(active[0], companion) = reverse;

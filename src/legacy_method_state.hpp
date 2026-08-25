@@ -7,6 +7,28 @@
 #include <cstdint>
 #include <vector>
 
+// Source-order screening result from DNA5.AlistGC2.  The compatibility
+// runner keeps this separate from event emission: the VB scanner first builds
+// an AList, calls AlistGC2, then invokes GCXoverD only for RL==1 entries.
+struct RdpMethodScreenResult {
+    std::vector<std::array<int, 3>> candidates;
+    std::vector<unsigned char> redo;
+};
+
+// Literal DNA5.MakeAListISP3 scheduling for one InnerScan2 method pass.
+// The method kernels do not scan the permanent AnalysisList directly once an
+// event has been selected: they expand the selected WinPP RList through the
+// source's TraceSub/ActualSeqSize/DoPairs gates first.  Keeping this routine
+// separate makes that source-order boundary testable for every method.
+std::vector<std::array<int, 3>> make_rdp_inner_method_triplets(
+    const RdpScanState& scan_state, const std::array<int, 3>& rnum,
+    const std::vector<int>& rlist, int win_pp,
+    const std::vector<int>& trace_sub,
+    const std::vector<int>& actual_sequence_sizes,
+    const std::vector<unsigned char>& do_pairs,
+    int permanent_next_no, int min_sequence_size, int method_program,
+    int selected_program_bits, float probability_step = 1.1F);
+
 struct GeneconvEmissionTrace {
     std::array<int, 3> input{};
     std::array<int, 3> counts{};
@@ -91,6 +113,24 @@ void run_rdp_geneconv_recheck(
     const RdpProbabilitySettings& settings,
     RdpLegacyEventAllocator& allocator, bool long_winded = true,
     std::vector<GeneconvEmissionTrace>* trace = nullptr);
+
+// Literal DNA5.AlistGC2 screening over the supplied analysis list.  This is
+// deliberately only a scanner: source scheduling (RList/Worthwhilescan and
+// MakeAListISP3) is layered above it by the analysis loop.
+RdpMethodScreenResult screen_rdp_geneconv_candidates(
+    const RdpScanState& scan_state, const std::vector<double>& store_lpv,
+    int store_lpv_ub, int correction_tests, double lowest_probability,
+    int circular, int mc_flag = 0, int target = 0);
+
+RdpMethodScreenResult screen_rdp_maxchi_candidates(
+    const RdpScanState& scan_state, const std::vector<double>& store_lpv,
+    int store_lpv_ub, int correction_tests, double lowest_probability,
+    int circular, int mc_flag = 0);
+
+RdpMethodScreenResult screen_rdp_chimaera_candidates(
+    const RdpScanState& scan_state, const std::vector<double>& store_lpv,
+    int store_lpv_ub, int correction_tests, double lowest_probability,
+    int circular, int mc_flag = 0);
 
 // Module5.MCXoverF(1), the MaxChi recheck used by FinalTrim.  This is the
 // enumerating VB path (not DNA5.FastRecCheckMC2, which deliberately returns

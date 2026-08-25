@@ -2,8 +2,8 @@
 #include "MathFuncsDll.h"
 
 #include <algorithm>
-#include <cmath>
 #include <cstdint>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <limits>
@@ -3810,8 +3810,38 @@ RdpMaximumDistanceState calculate_rdp_maximum_distances(
             }
         }
     } else {
-        throw std::runtime_error(
-            "CalcMaxD VB Rnd sampling requires a captured >30-row fixture");
+        // Module5.CalcMaxD uses VB6 Rnd(-BSRndNumSeed) followed by
+        // StartSize+1 draws.  The legacy VB generator is a 24-bit LCG; keep
+        // the state local so concurrent analyses do not perturb one another.
+        // BSRndNumSeed is initialized to 3 by the source command-line path.
+        std::uint32_t rnd_state = 3U;
+        const auto vb_rnd = [&]() {
+            rnd_state = (rnd_state * UINT32_C(1140671485) +
+                         UINT32_C(12820163)) & UINT32_C(0x00ffffff);
+            return static_cast<double>(rnd_state) / 16777216.0;
+        };
+        // Rnd(-seed) initializes and returns the first value; the first
+        // value consumed by CalcMaxD is the subsequent Rnd call.
+        (void)vb_rnd();
+        for (int draw = 0; draw <= start_size; ++draw) {
+            int selected = -1;
+            for (int attempt = 0; attempt < (next_no + 1) * 4; ++attempt) {
+                const int candidate = static_cast<int>(
+                    (next_no + 1) * vb_rnd());
+                if (candidate >= 0 && candidate <= next_no &&
+                    state.included_mask[candidate] == 0 &&
+                    state.representative_mask[candidate] == 0 &&
+                    masked_sequences[candidate] == 0) {
+                    selected = candidate;
+                    break;
+                }
+            }
+            // The source loops until a valid row is found.  A malformed mask
+            // can make that impossible; retain all eligible rows rather than
+            // hanging the analysis forever.
+            if (selected < 0) break;
+            state.included_mask[selected] = 1;
+        }
     }
     for (int sequence = 0; sequence <= next_no; ++sequence) {
         if (state.included_mask[sequence] != 0) {

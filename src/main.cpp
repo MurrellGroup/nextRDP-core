@@ -6170,6 +6170,85 @@ int fasta_method_run(
     return 0;
 }
 
+int fasta_geneconv_screen(const std::string& fasta_path) {
+    // Build the exact RDP initial StoreLPV/analysis-list state first, then
+    // invoke the vendored DNA5.AlistGC2 routine over that list.  This is a
+    // diagnostic command while the source RList/Worthwhilescan scheduler is
+    // being lifted; it intentionally does not emit events.
+    const auto initial = run_rdp_initial_analysis_from_fasta_file(fasta_path);
+    const int correction_tests = initial.alignment.analysis_list_last + 1;
+    const auto screened = screen_rdp_geneconv_candidates(
+        initial.alignment, initial.store_lpv, initial.store_lpv_upper_bound,
+        correction_tests, 0.05, 1, 0);
+    int redo_one = 0;
+    int redo_two = 0;
+    for (const auto flag : screened.redo) {
+        redo_one += flag == 1;
+        redo_two += flag == 2;
+    }
+    std::cout << "GENECONV AlistGC2 candidates=" << screened.candidates.size()
+              << " redo1=" << redo_one << " redo2=" << redo_two << '\n';
+    for (std::size_t index = 0; index < screened.candidates.size(); ++index) {
+        const auto& triplet = screened.candidates[index];
+        std::cout << index << ',' << triplet[0] << ',' << triplet[1] << ','
+                  << triplet[2] << ",1\n";
+    }
+    return 0;
+}
+
+int fasta_maxchi_screen(const std::string& fasta_path) {
+    const auto initial = run_rdp_initial_analysis_from_fasta_file(fasta_path);
+    const int correction_tests = initial.alignment.analysis_list_last + 1;
+    const auto screened = screen_rdp_maxchi_candidates(
+        initial.alignment, initial.store_lpv, initial.store_lpv_upper_bound,
+        correction_tests, 0.05, 1, 0);
+    int redo_one = 0;
+    int redo_two = 0;
+    for (const auto flag : screened.redo) {
+        redo_one += flag == 1;
+        redo_two += flag == 2;
+    }
+    std::cout << "MAXCHI AlistMC3 candidates=" << screened.candidates.size()
+              << " redo1=" << redo_one << " redo2=" << redo_two << '\n';
+    for (std::size_t index = 0; index < screened.candidates.size(); ++index) {
+        const auto& triplet = screened.candidates[index];
+        std::cout << index << ',' << triplet[0] << ',' << triplet[1] << ','
+                  << triplet[2] << ",1\n";
+    }
+    return 0;
+}
+
+int fasta_chimaera_screen(const std::string& fasta_path) {
+    // Diagnostic counterpart to fasta-geneconv-screen and
+    // fasta-maxchi-screen.  This exercises the literal DNA5.AlistChi
+    // scanner over the exact RDP initial analysis list without running the
+    // later event-resolution loop.
+    const auto initial = run_rdp_initial_analysis_from_fasta_file(fasta_path);
+    const int correction_tests = initial.alignment.analysis_list_last + 1;
+    const auto screened = screen_rdp_chimaera_candidates(
+        initial.alignment, initial.store_lpv,
+        initial.store_lpv_upper_bound, correction_tests, 0.05, 1, 0);
+    int redo_one = 0;
+    int redo_two = 0;
+    int orientation_calls = 0;
+    for (const auto flag : screened.redo) {
+        redo_one += flag == 1;
+        redo_two += flag == 2;
+        orientation_calls += (flag & 1U) != 0;
+        orientation_calls += (flag & 4U) != 0;
+        orientation_calls += (flag & 16U) != 0;
+    }
+    std::cout << "CHIMAERA AlistChi candidates=" << screened.candidates.size()
+              << " redo1=" << redo_one << " redo2=" << redo_two
+              << " orientation-calls=" << orientation_calls << '\n';
+    for (std::size_t index = 0; index < screened.candidates.size(); ++index) {
+        const auto& triplet = screened.candidates[index];
+        std::cout << index << ',' << triplet[0] << ',' << triplet[1] << ','
+                  << triplet[2] << ',' << 1 << '\n';
+    }
+    return 0;
+}
+
 int fasta_rdp_full_transition_fixture(
     const std::string& fasta_path, const std::string& addjust_trace_path) {
     RdpFullAnalysisTrace trace;
@@ -7510,6 +7589,15 @@ int main(int argc, char** argv) {
         return fasta_method_run(
             argv[2], std::stoi(argv[3]), argc == 5 ? argv[4] : "");
     }
+    if (argc == 3 && std::string_view(argv[1]) == "fasta-geneconv-screen") {
+        return fasta_geneconv_screen(argv[2]);
+    }
+    if (argc == 3 && std::string_view(argv[1]) == "fasta-maxchi-screen") {
+        return fasta_maxchi_screen(argv[2]);
+    }
+    if (argc == 3 && std::string_view(argv[1]) == "fasta-chimaera-screen") {
+        return fasta_chimaera_screen(argv[2]);
+    }
     if (argc == 4 &&
         std::string_view(argv[1]) == "fasta-rdp-full-transition-fixture") {
         return fasta_rdp_full_transition_fixture(argv[2], argv[3]);
@@ -7654,6 +7742,9 @@ int main(int argc, char** argv) {
         << "       rdp-core fasta-preprocess-fixture <alignment.fasta> <alist-capture.bin>\n"
         << "       rdp-core fasta-distance-fixture <alignment.fasta> <alist-capture.bin>\n"
         << "       rdp-core fasta-tree-distance-fixture <alignment.fasta> <alist-capture.bin>\n"
+        << "       rdp-core fasta-geneconv-screen <alignment.fasta>\n"
+        << "       rdp-core fasta-maxchi-screen <alignment.fasta>\n"
+        << "       rdp-core fasta-chimaera-screen <alignment.fasta>\n"
         << "       rdp-core fasta-alist-rdp4-fixture <alignment.fasta> <alist-capture.bin>\n"
         << "       rdp-core fasta-first-xover-fixture <alignment.fasta> <alist-capture.bin> <find-subseq-pb3-capture.bin>\n"
         << "       rdp-core fasta-first-xover-walk-fixture <alignment.fasta> <alist-capture.bin> <find-subseq-pb3-capture.bin> <xohomology-capture.bin> <find-next-capture.bin> <define-event-capture.bin> <prob-calc-p2-capture.bin> <prob-calc-p-capture.bin> <find-subseq-pb4-capture.bin> <clean-xosnw-capture.bin>\n"
