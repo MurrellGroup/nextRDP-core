@@ -817,6 +817,65 @@ std::vector<unsigned char> make_rdp_acceptable_correlations(
     return result;
 }
 
+std::vector<unsigned char> make_rdp_direct_acceptable_correlations(
+    const int next_no, const std::array<int, 3>& sequences,
+    const std::array<unsigned char, 3>& inside,
+    const std::vector<float>& background,
+    const std::vector<float>& event_region) {
+    const int sequence_count = next_no + 1;
+    const auto expected = static_cast<std::size_t>(sequence_count) *
+        sequence_count;
+    if (background.size() != expected || event_region.size() != expected) {
+        throw std::runtime_error("AcceptableCoR matrix dimensions differ");
+    }
+    const auto at = [sequence_count](const int row, const int column) {
+        return static_cast<std::size_t>(row) +
+            static_cast<std::size_t>(column) * sequence_count;
+    };
+    const auto role_index = [&](const int role) {
+        return static_cast<int>(inside[role]);
+    };
+    const int role0 = role_index(0);
+    const int role1 = role_index(1);
+    const int role2 = role_index(2);
+    const int sequence0 = sequences[role0];
+    const int sequence1 = sequences[role1];
+    const int sequence2 = sequences[role2];
+
+    // This is the literal Module3b AcceptableCoR pass.  In particular, it
+    // reads the full FAMat/SAMat matrices and does not perform MakeACOR's
+    // compact-matrix minimum/equality normalization.
+    const float first_threshold = background[at(sequence2, sequence0)];
+    const float second_threshold = event_region[at(sequence1, sequence0)];
+    const float third_threshold = event_region[at(sequence2, sequence0)];
+    if (std::getenv("RDP_TRACE_DIRECT_ACOR") != nullptr &&
+        (next_no == 24 || next_no == 25)) {
+        std::cerr << "direct-acor seqs=" << sequences[0] << ':'
+                  << sequences[1] << ':' << sequences[2] << " inside="
+                  << role0 << ':' << role1 << ':' << role2 << " thresholds="
+                  << first_threshold << ':' << second_threshold << ':'
+                  << third_threshold << " x3="
+                  << background[at(sequences[role0], 3)] << ':'
+                  << event_region[at(sequences[role1], 3)] << ':'
+                  << background[at(sequences[role2], 3)] << ':'
+                  << event_region[at(sequences[role2], 3)] << '\n';
+    }
+    std::vector<unsigned char> result(
+        static_cast<std::size_t>(3) * sequence_count, 0);
+    for (int sequence = 0; sequence <= next_no; ++sequence) {
+        if (background[at(sequences[role0], sequence)] < first_threshold ||
+            event_region[at(sequences[role1], sequence)] < second_threshold) {
+            result[role0 + sequence * 3] = 1;
+            result[role1 + sequence * 3] = 1;
+        }
+        if (background[at(sequences[role2], sequence)] < first_threshold ||
+            event_region[at(sequences[role2], sequence)] < third_threshold) {
+            result[role2 + sequence * 3] = 1;
+        }
+    }
+    return result;
+}
+
 RdpCandidateLists make_rdp_candidate_lists(
     const int next_no, const std::vector<int>& good_comparisons,
     const std::array<int, 3>& sequences,
@@ -2308,6 +2367,27 @@ RdpTreeCompatibilityFlowState run_rdp_tree_compatibility_flow(
             }
         }
     }
+    if (std::getenv("RDP_TRACE_COMPAT") != nullptr) {
+        auto print3 = [](const char* name, const std::array<int, 3>& x) {
+            std::cerr << ' ' << name << '=' << x[0] << ':' << x[1] << ':'
+                      << x[2];
+        };
+        std::cerr << "compat-flow next=" << next_no << " cand="
+                  << candidate_last[0] << ':' << candidate_last[1] << ':'
+                  << candidate_last[2] << " events="
+                  << output.event_sets.candidate_last[0] << ':'
+                  << output.event_sets.candidate_last[1] << ':'
+                  << output.event_sets.candidate_last[2];
+        print3("bg", output.background);
+        print3("rg", output.region);
+        print3("bg2", output.background_secondary);
+        print3("rg2", output.region_secondary);
+        print3("bg3", output.background_sets);
+        print3("rg3", output.region_sets);
+        print3("bg4", output.background_secondary_sets);
+        print3("rg4", output.region_secondary_sets);
+        std::cerr << '\n';
+    }
     return output;
 }
 
@@ -2490,6 +2570,18 @@ RdpFinalTrimState run_rdp_final_trim_candidate_maintenance(
     output.nonrecombinant_last.fill(0);
     output.nonrecombinant_list.assign(small_cells, 0);
     output.acceptable_sequences = acceptable_sequences;
+    const bool trace_trim = std::getenv("RDP_TRACE_TRIM") != nullptr;
+    if (trace_trim && next_no == 32) {
+        std::cerr << "trim-maintenance-input rwin=" << rwinpp;
+        for (int role = 0; role < 3; ++role) {
+            std::cerr << " role" << role << '=';
+            for (int slot = 0; slot <= output.candidate_last[role]; ++slot) {
+                if (slot != 0) std::cerr << ':';
+                std::cerr << output.candidate_list[role + slot * 3];
+            }
+        }
+        std::cerr << '\n';
+    }
 
     // Module2.FinalTrim 23398-23477: preserve the correlation cube, then
     // erase evidence from warned regions and inverted interpretations.
@@ -2599,11 +2691,13 @@ RdpFinalTrimState run_rdp_final_trim_candidate_maintenance(
                     }
                 }
                 auto mark_from_panel_pair = [&](const int sequence,
+                                                const int evidence_region,
                                                 const int first_panel,
                                                 const int second_panel) {
                     int go_on = 0;
-                    if (correlation_warnings[0] == 0) {
-                        if (trimmed_correlations[rc(role, 0, sequence)] > 0.95F) {
+                    if (correlation_warnings[evidence_region] == 0) {
+                        if (trimmed_correlations[rc(role, evidence_region,
+                                                    sequence)] > 0.95F) {
                             for (const int panel : {first_panel, second_panel}) {
                                 if (local_distance_panels[dm(panel, role, sequence)] >
                                         local_distance_panels[dm(
@@ -2682,44 +2776,20 @@ RdpFinalTrimState run_rdp_final_trim_candidate_maintenance(
                             --output.candidate_last[role];
                             continue;
                         }
-                        go_on = mark_from_panel_pair(
-                            sequence, first_panel, second_panel);
-                        if (go_on > 0 && correlation_warnings[evidence_region] == 0) {
-                            go_on = 0;
-                            if (trimmed_correlations[
-                                    rc(role, evidence_region, sequence)] > 0.95F) {
-                                for (const int panel : {first_panel, second_panel}) {
-                                    if (local_distance_panels[dm(panel, role, sequence)] >
-                                            local_distance_panels[dm(
-                                                panel, role,
-                                                sequences[comparison_matrix[role]])] ||
-                                        local_distance_panels[dm(panel, role, sequence)] >
-                                            local_distance_panels[dm(
-                                                panel, role,
-                                                sequences[comparison_matrix[role + 3]])]) {
-                                        if (local_distance_panels[dm(panel, role, sequence)] >
-                                                local_distance_panels[dm(
-                                                    panel, comparison_matrix[role], sequence)] ||
-                                            local_distance_panels[dm(panel, role, sequence)] >
-                                                local_distance_panels[dm(
-                                                    panel, comparison_matrix[role + 3], sequence)]) {
-                                            go_on += 2;
-                                        } else {
-                                            go_on += 1;
-                                        }
-                                    } else {
-                                        go_on -= 1;
-                                    }
-                                }
-                            } else {
-                                go_on = 1;
-                            }
+                        // In VB both MarkRemove columns use the two-region
+                        // gate: the first panel pair (0,1) is evaluated, and
+                        // only when it passes is the second pair (2,3)
+                        // evaluated.  The old port evaluated the same pair
+                        // twice, which left candidates that FinalTrim removes.
+                        go_on = mark_from_panel_pair(sequence, 0, 0, 1);
+                        if (go_on > 0) {
+                            go_on = mark_from_panel_pair(sequence, 1, 2, 3);
                         }
                         if (go_on > 0) remove[sequence + mark_side * count] = 1;
                         ++slot;
                     }
                 };
-                prune_pass(first_prune, 1, 2, 3, 0, nearest_distances[0]);
+                prune_pass(first_prune, 0, 0, 1, 0, nearest_distances[0]);
 
                 nearest_distances[1] = 1000000.0;
                 for (int slot = 0; slot <= output.nonrecombinant_last[role]; ++slot) {
@@ -2767,6 +2837,23 @@ RdpFinalTrimState run_rdp_final_trim_candidate_maintenance(
                 nearest_first, first_prune[row(role, sequence)]);
             nearest_region = std::min<double>(
                 nearest_region, region_prune[row(role, sequence)]);
+        }
+        // Module2.FinalTrim explicitly sets SNRD(0/1)=0 when NRNum=-1.
+        // Leaving the initial sentinel (1,000,000) here admits every sequence
+        // during the subsequent "add sequences back" pass.
+        if (output.nonrecombinant_last[role] < 0) {
+            nearest_first = 0.0;
+            nearest_region = 0.0;
+        }
+        if (trace_trim && next_no == 32) {
+            std::cerr << "trim-addback-gate role=" << role << " nr="
+                      << output.nonrecombinant_last[role] << " snrd="
+                      << nearest_first << ':' << nearest_region << " before=";
+            for (int slot = 0; slot <= output.candidate_last[role]; ++slot) {
+                if (slot != 0) std::cerr << ':';
+                std::cerr << output.candidate_list[row(role, slot)];
+            }
+            std::cerr << '\n';
         }
         for (int sequence = 0; sequence <= next_no; ++sequence) {
             if (already_in[sequence] == 0 &&
@@ -3046,6 +3133,17 @@ RdpFinalTrimState run_rdp_final_trim_candidate_maintenance(
             output.acceptable_sequences[ok(
                 role, 15, output.candidate_list[row(role, slot)])] = 1.0;
         }
+    }
+    if (trace_trim && next_no == 32) {
+        std::cerr << "trim-maintenance-output rwin=" << rwinpp;
+        for (int role = 0; role < 3; ++role) {
+            std::cerr << " role" << role << '=';
+            for (int slot = 0; slot <= output.candidate_last[role]; ++slot) {
+                if (slot != 0) std::cerr << ':';
+                std::cerr << output.candidate_list[role + slot * 3];
+            }
+        }
+        std::cerr << '\n';
     }
     return output;
 }
@@ -4265,6 +4363,79 @@ RdpConsensusState make_rdp_consensus(RdpConsensusInputs inputs) {
             }
         }
     }
+    const auto tbreak = [&](const int role) {
+        return v.phylpro[role] - v.triplet_score[role] +
+            v.compatibility[role] + v.region_compatibility[role];
+    };
+    const int parent0 = parent(winner, 0);
+    const int parent1 = parent(winner, 1);
+    if (state.consensus[winner] == state.consensus[parent0]) {
+        if (tbreak(winner) > tbreak(parent0)) winner = parent0;
+    } else if (state.consensus[winner] == state.consensus[parent1]) {
+        if (tbreak(winner) > tbreak(parent1)) winner = parent1;
+    }
+    if (std::getenv("RDP_TRACE_CONSENSUS_VALUES") != nullptr) {
+        std::cerr << "cons-values next=" << v.next_no
+                  << " seqs=" << v.comparison_matrix[0] << ':'
+                  << v.comparison_matrix[3] << ':'
+                  << v.comparison_matrix[4]
+                  << " scores=" << state.consensus[0] << ':'
+                  << state.consensus[1] << ':' << state.consensus[2]
+                  << " winner=" << winner << " dmax="
+                  << v.maximum_distance[0] << ':' << v.maximum_distance[1]
+                  << ':' << v.maximum_distance[2] << " rcompat="
+                  << v.compatibility[0] << ':' << v.compatibility[1] << ':'
+                  << v.compatibility[2] << " rcompS="
+                  << v.region_compatibility[0] << ':'
+                  << v.region_compatibility[1] << ':'
+                  << v.region_compatibility[2] << " post="
+                  << v.post_trim_compatibility[0] << ':'
+                  << v.post_trim_compatibility[1] << ':'
+                  << v.post_trim_compatibility[2] << ','
+                  << v.post_trim_region_compatibility[0] << ':'
+                  << v.post_trim_region_compatibility[1] << ':'
+                  << v.post_trim_region_compatibility[2] << " ph="
+                  << v.phylpro[0] << ':' << v.phylpro[1] << ':'
+                  << v.phylpro[2] << " ph2="
+                  << v.phylpro_secondary[0] << ':' << v.phylpro_secondary[1]
+                  << ':' << v.phylpro_secondary[2] << " ph3="
+                  << v.phylpro_collapsed[0] << ':' << v.phylpro_collapsed[1]
+                  << ':' << v.phylpro_collapsed[2] << " subph="
+                  << v.subtree_phylpro[0] << ':' << v.subtree_phylpro[1]
+                  << ':' << v.subtree_phylpro[2] << " subph2="
+                  << v.subtree_phylpro_secondary[0] << ':'
+                  << v.subtree_phylpro_secondary[1] << ':'
+                  << v.subtree_phylpro_secondary[2] << " subs="
+                  << v.subtree_score[0] << ':' << v.subtree_score[1] << ':'
+                  << v.subtree_score[2] << " subs2="
+                  << v.subtree_score_secondary[0] << ':'
+                  << v.subtree_score_secondary[1] << ':'
+                  << v.subtree_score_secondary[2] << " trip="
+                  << v.triplet_score[0] << ':' << v.triplet_score[1] << ':'
+                  << v.triplet_score[2] << " list="
+                  << v.list_correlation[0] << ':' << v.list_correlation[1]
+                  << ':' << v.list_correlation[2] << " list2="
+                  << v.list_correlation_secondary[0] << ':'
+                  << v.list_correlation_secondary[1] << ':'
+                  << v.list_correlation_secondary[2] << " sim="
+                  << v.simple_distance_strength[0] << ':'
+                  << v.simple_distance_strength[1] << ':'
+                  << v.simple_distance_strength[2] << " simscore="
+                  << v.simple_distance_score[0] << ':'
+                  << v.simple_distance_score[1] << ':'
+                  << v.simple_distance_score[2] << " ssd="
+                  << v.split_distance[0] << ':' << v.split_distance[1]
+                  << ':' << v.split_distance[2] << " oui="
+                  << v.outlier_index[0] << ':' << v.outlier_index[1] << ':'
+                  << v.outlier_index[2] << " ou="
+                  << v.outlier_check[0] << ':' << v.outlier_check[1] << ':'
+                  << v.outlier_check[2] << " bad="
+                  << v.bad_distances[0] << ':' << v.bad_distances[1] << ':'
+                  << v.bad_distances[2] << " rank="
+                  << v.ranks[0][0] << ':' << v.ranks[1][0] << ':'
+                  << v.ranks[2][0] << ',' << v.ranks[0][1] << ':'
+                  << v.ranks[1][1] << ':' << v.ranks[2][1] << '\n';
+    }
     state.winning_role = winner;
     state.rounded_inputs = std::move(inputs);
     return state;
@@ -5046,6 +5217,19 @@ RdpFinalTrimState apply_rdp_strict_group_constraints(
             }
         }
 
+        if (std::getenv("RDP_TRACE_STRICT_DETAIL") != nullptr && next_no == 32) {
+            std::cerr << "strict-detail role=" << role << " seqs=" << seq1
+                      << ':' << seq2 << ':' << seq3 << " removed=";
+            for (int sequence = 0; sequence <= next_no; ++sequence) {
+                if (remove[sequence] != 0) std::cerr << sequence << ',';
+            }
+            std::cerr << " kept=";
+            for (int item = 0; item <= state.candidate_last[role]; ++item) {
+                std::cerr << state.candidate_list[row(role, item)] << ',';
+            }
+            std::cerr << " ilp=" << ilp[0] << ':' << ilp[1] << '\n';
+        }
+
         float highest_s = 0.0F;
         float highest_f = 0.0F;
         float highest_sa = 0.0F;
@@ -5073,8 +5257,9 @@ RdpFinalTrimState apply_rdp_strict_group_constraints(
                 state.strict_readded[row(role, sequence)] = 1;
             }
         };
-        for (int sequence = 0; sequence <= next_no; ++sequence) {
-            go_on = 0;
+        if (std::getenv("RDP_SKIP_STRICT_READD") == nullptr) {
+            for (int sequence = 0; sequence <= next_no; ++sequence) {
+                go_on = 0;
             // Preserve the source typo: the fourth bound is FAMatSmall <= HDF,
             // not FMatSmall <= HDF.
             if (sa[row(role, sequence)] <= highest_sa &&
@@ -5103,8 +5288,14 @@ RdpFinalTrimState apply_rdp_strict_group_constraints(
                     go_on = 1;
                 }
             }
-            if (go_on == 1) {
-                state.synthetic_event_roles.push_back({role, sequence});
+                if (go_on == 1) {
+                    state.synthetic_event_roles.push_back({role, sequence});
+                }
+                if (std::getenv("RDP_TRACE_STRICT_DETAIL") != nullptr &&
+                    next_no == 32 && go_on == 1) {
+                    std::cerr << "strict-detail-readd role=" << role
+                              << " sequence=" << sequence << '\n';
+                }
             }
         }
 
@@ -5162,6 +5353,7 @@ RdpRawEventState prepare_rdp_collection_event_list(
     }
     RdpRawEventState prepared = events;
     const RdpRawEvent selected = events.xover_list[trace[0]][trace[1] - 1];
+    if (std::getenv("RDP_DISABLE_COLLECTION_COPIES") == nullptr) {
     for (int slot = 0; slot <= candidate_last[winning_role]; ++slot) {
         const int sequence = candidate_list[winning_role + slot * 3];
         const auto ok_index = static_cast<std::size_t>(winning_role) +
@@ -5186,6 +5378,7 @@ RdpRawEventState prepare_rdp_collection_event_list(
         prepared.xover_list[sequence].push_back(copy);
         prepared.current_xover[sequence] = static_cast<std::int16_t>(
             prepared.xover_list[sequence].size());
+    }
     }
 
     return prepared;
@@ -5316,6 +5509,136 @@ RdpCollectedEventsState make_rdp_parent_collect_events(
     }
     const auto& selected = source_events.xover_list[trace[0]][trace[1] - 1];
     state.events[selected_slot + selected.program_flag * count] = selected;
+    state.result = 1;
+    return state;
+}
+
+RdpCollectedEventsState make_rdp_source_collect_events(
+    const int sequence_length, const int next_no, const int role,
+    std::array<int, 6> region_sizes,
+    const std::vector<int>& overlap_sequence,
+    const std::array<int, 6>& comparison_matrix,
+    const std::array<int, 3>& candidate_last,
+    const std::vector<int>& candidate_list,
+    const int add_num, const std::array<int, 3>& sequences,
+    const std::array<int, 2>& trace,
+    const RdpRawEventState& source_events) {
+    const int count = next_no + 1;
+    if (sequence_length < 1 || next_no < 2 || role < 0 || role > 2 ||
+        overlap_sequence.size() != static_cast<std::size_t>(sequence_length + 1) ||
+        candidate_list.size() != static_cast<std::size_t>(3 * count) ||
+        source_events.current_xover.size() != static_cast<std::size_t>(count) ||
+        source_events.xover_list.size() != static_cast<std::size_t>(count) ||
+        add_num < 0) {
+        throw std::runtime_error("MakeCollecteventsX dimensions differ");
+    }
+    RdpCollectedEventsState state;
+    state.events.resize(static_cast<std::size_t>(count) *
+                        static_cast<std::size_t>(add_num + 1));
+    if (candidate_last[role] < 0) return state;
+
+    // MakeCollecteventsX builds TList from all three role lists, then accepts
+    // only events whose three members occur in at least one of those lists.
+    std::vector<unsigned char> tlist(static_cast<std::size_t>(3 * count), 0);
+    for (int member_role = 0; member_role < 3; ++member_role) {
+        for (int slot = 0; slot <= candidate_last[member_role]; ++slot) {
+            const int sequence = candidate_list[member_role + slot * 3];
+            if (sequence >= 0 && sequence <= next_no) {
+                tlist[member_role + sequence * 3] = 1;
+            }
+        }
+    }
+    const auto listed_in_any_role = [&](const int sequence) {
+        return sequence >= 0 && sequence <= next_no &&
+            (tlist[role + sequence * 3] != 0 ||
+             tlist[comparison_matrix[role] + sequence * 3] != 0 ||
+             tlist[comparison_matrix[role + 3] + sequence * 3] != 0);
+    };
+    const int role_count = candidate_last[role] + 1;
+    std::vector<double> best_probability(
+        static_cast<std::size_t>(role_count) *
+            static_cast<std::size_t>(add_num + 1), 1.0);
+    const auto event_size_and_overlap = [&](const RdpRawEvent& event) {
+        int event_size = 0;
+        int overlap = 0;
+        if (event.beginning < event.ending) {
+            event_size = event.ending - event.beginning + 1;
+            for (int position = event.beginning;
+                 position <= event.ending; ++position) {
+                overlap += overlap_sequence[position];
+            }
+        } else {
+            event_size = event.ending + sequence_length -
+                event.beginning + 1;
+            for (int position = 1; position <= event.ending; ++position) {
+                overlap += overlap_sequence[position];
+            }
+            for (int position = event.beginning;
+                 position <= sequence_length; ++position) {
+                overlap += overlap_sequence[position];
+            }
+        }
+        // FindOverlapP receives RSize by reference and writes RSize(1) for
+        // every event before MakeCollecteventsX evaluates this denominator.
+        const float match = event_size > 0
+            ? static_cast<float>(overlap * 2.0) /
+                static_cast<float>(region_sizes[0] + event_size)
+            : 0.0F;
+        return std::round(static_cast<double>(match) * 100000.0) / 100000.0;
+    };
+
+    for (int row = 0; row <= next_no; ++row) {
+        for (const auto& event : source_events.xover_list[row]) {
+            if (!listed_in_any_role(event.daughter) ||
+                !listed_in_any_role(event.major_parent) ||
+                !listed_in_any_role(event.minor_parent)) {
+                continue;
+            }
+            if (!(event_size_and_overlap(event) > 0.1)) continue;
+            int collection_slot = -1;
+            for (int slot = 0; slot < role_count; ++slot) {
+                const int candidate = candidate_list[role + slot * 3];
+                if (candidate == event.daughter ||
+                    candidate == event.major_parent ||
+                    candidate == event.minor_parent) {
+                    collection_slot = slot;
+                    break;
+                }
+            }
+            const int method = event.program_flag;
+            if (collection_slot < 0 || method < 0 || method > add_num) {
+                continue;
+            }
+            const auto index = static_cast<std::size_t>(collection_slot) +
+                static_cast<std::size_t>(method) *
+                    static_cast<std::size_t>(role_count);
+            if (best_probability[index] > event.probability ||
+                best_probability[index] == 0.0) {
+                best_probability[index] = event.probability;
+                state.events[collection_slot + method * count] = event;
+            }
+        }
+    }
+
+    // Source MakeCollecteventsX always installs the selected event in its
+    // corresponding slot, even if the overlap scan did not retain it.
+    if (trace[0] >= 0 && trace[0] <= next_no && trace[1] >= 1 &&
+        trace[1] <= static_cast<int>(source_events.xover_list[trace[0]].size())) {
+        const auto& selected = source_events.xover_list[trace[0]][trace[1] - 1];
+        int selected_slot = -1;
+        for (int slot = 0; slot < role_count; ++slot) {
+            const int candidate = candidate_list[role + slot * 3];
+            if (candidate == sequences[0] || candidate == sequences[1] ||
+                candidate == sequences[2]) {
+                selected_slot = slot;
+                break;
+            }
+        }
+        if (selected_slot >= 0 && selected.program_flag >= 0 &&
+            selected.program_flag <= add_num) {
+            state.events[selected_slot + selected.program_flag * count] = selected;
+        }
+    }
     state.result = 1;
     return state;
 }

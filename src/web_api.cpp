@@ -86,6 +86,11 @@ struct WebContext {
     bool loaded = false;
     bool started = false;
     bool finished = false;
+    bool enable_geneconv = false;
+    bool enable_maxchi = false;
+    bool enable_chimaera = false;
+    bool enable_three_seq = false;
+    bool polish_breakpoints_with_burt = false;
     std::vector<unsigned char> masked;
     std::vector<unsigned char> disabled;
     std::vector<unsigned int> reference_groups;
@@ -205,6 +210,12 @@ std::string full_json(const WebContext& context) {
     std::ostringstream output;
     output << std::setprecision(17)
            << "{\"sourceFaithfulCore\":true,\"engineVersion\":\"nextRDP-core 0.1.0\""
+           << ",\"enabledMethods\":[\"RDP\"";
+    if (context.enable_geneconv) output << ",\"GENECONV\"";
+    if (context.enable_maxchi) output << ",\"MAXCHI\"";
+    if (context.enable_chimaera) output << ",\"CHIMAERA\"";
+    if (context.enable_three_seq) output << ",\"3SEQ\"";
+    output << "]"
            << ",\"sequenceCount\":" << result.sequence_count
            << ",\"sequenceLength\":" << result.sequence_length
            << ",\"tripletCount\":" << result.triplet_count
@@ -214,6 +225,7 @@ std::string full_json(const WebContext& context) {
         if (index != 0) output << ',';
         const auto& event = result.events[index];
         output << "{\"id\":" << index
+               << ",\"program\":" << event.program_flag
                << ",\"winningRole\":" << event.winning_role
                << ",\"probability\":" << event.probability
                << ",\"beginning\":" << event.beginning
@@ -368,10 +380,10 @@ NEXT_RDP_KEEPALIVE const char* rdp_get_summary_json(const std::uint32_t handle) 
 NEXT_RDP_KEEPALIVE int rdp_scan_begin(
     const std::uint32_t handle, const int circular, const int /*correction_mode*/,
     const double p_value_cutoff, const std::uint32_t window_sites,
-    const int /*maxchi_enabled*/, const std::uint32_t /*maxchi_window_sites*/,
-    const int /*chimaera_enabled*/, const std::uint32_t /*chimaera_window_sites*/,
-    const int /*geneconv_enabled*/, const std::uint32_t /*geneconv_mismatch_scale*/,
-    const std::uint32_t /*geneconv_max_overlaps*/, const int /*threeseq_enabled*/,
+    const int maxchi_enabled, const std::uint32_t /*maxchi_window_sites*/,
+    const int chimaera_enabled, const std::uint32_t /*chimaera_window_sites*/,
+    const int geneconv_enabled, const std::uint32_t /*geneconv_mismatch_scale*/,
+    const std::uint32_t /*geneconv_max_overlaps*/, const int threeseq_enabled,
     const int /*bootscan_primary_enabled*/, const int /*bootscan_secondary_enabled*/,
     const std::uint32_t /*bootscan_window_sites*/, const std::uint32_t /*bootscan_step_sites*/,
     const std::uint32_t /*bootscan_bootstrap_replicates*/, const double /*bootscan_support_cutoff*/,
@@ -379,7 +391,7 @@ NEXT_RDP_KEEPALIVE int rdp_scan_begin(
     const int /*siscan_secondary_enabled*/, const std::uint32_t /*siscan_window_sites*/,
     const std::uint32_t /*siscan_step_sites*/, const std::uint32_t /*siscan_scan_permutations*/,
     const std::uint32_t /*siscan_p_value_permutations*/, const std::uint32_t /*siscan_random_seed*/,
-    const int /*polish_breakpoints*/, const int /*query_reference_mode*/,
+    const int polish_breakpoints, const int /*query_reference_mode*/,
     const std::uint32_t* /*reference_groups*/, const std::size_t /*reference_group_count*/,
     const std::uint8_t* masked_sequences, const std::size_t mask_length,
     const std::uint8_t* disabled_sequences, const std::size_t disabled_length) {
@@ -392,6 +404,16 @@ NEXT_RDP_KEEPALIVE int rdp_scan_begin(
         return 0;
     }
     context->options = {circular != 0, p_value_cutoff, static_cast<int>(window_sites)};
+    context->options.enable_geneconv = geneconv_enabled != 0;
+    context->options.enable_maxchi = maxchi_enabled != 0;
+    context->options.enable_chimaera = chimaera_enabled != 0;
+    context->options.enable_three_seq = threeseq_enabled != 0;
+    context->options.polish_breakpoints_with_burt = polish_breakpoints != 0;
+    context->enable_geneconv = context->options.enable_geneconv;
+    context->enable_maxchi = context->options.enable_maxchi;
+    context->enable_chimaera = context->options.enable_chimaera;
+    context->enable_three_seq = context->options.enable_three_seq;
+    context->polish_breakpoints_with_burt = context->options.polish_breakpoints_with_burt;
     context->masked.assign(masked_sequences, masked_sequences + mask_length);
     context->disabled.assign(disabled_sequences, disabled_sequences + disabled_length);
     context->started = true;

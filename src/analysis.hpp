@@ -38,6 +38,7 @@ struct RdpInitialAnalysisResult {
 
 struct RdpFinalEvent {
     int event_number = 0;
+    int program_flag = 0;
     int winning_role = 0;
     double probability = 1.0;
     int beginning = 0;
@@ -59,6 +60,11 @@ struct RdpFullAnalysisTrace {
     std::vector<std::array<int, 2>> selected_slots;
     std::vector<std::vector<unsigned char>> done_before_selection;
     std::vector<int> done_row_upper_bounds;
+    // Diagnostic snapshots of the expanded alignment at the start of each
+    // finalized round.  Kept out of normal result APIs; used to compare DLL
+    // method calls against the exact in-memory sequence set.
+    std::vector<std::vector<short>> sequence_data_before_round;
+    std::vector<std::vector<short>> sequence_data_after_modseq;
     std::vector<RdpConsensusState> consensus_states;
     std::vector<RdpCompleteRoundState> complete_round_states;
     std::vector<RdpFinalTrimState> consensus_candidate_states;

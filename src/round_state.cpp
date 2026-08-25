@@ -4,9 +4,30 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cstdint>
+#include <cstring>
+#include <iostream>
 #include <string>
 
 namespace {
+
+// Temporary parity probe for comparing the exact MakeNJTreesP2 input/output
+// matrices with the native DLL trace.  Kept behind an environment variable;
+// this is removed once the first shared divergence is identified.
+std::uint64_t trace_matrix_bits(const std::vector<float>& matrix, int count) {
+    std::uint64_t hash = 1469598103934665603ULL;
+    const auto cells = static_cast<std::size_t>(count) * count;
+    for (std::size_t i = 0; i < cells && i < matrix.size(); ++i) {
+        std::uint32_t bits = 0;
+        std::memcpy(&bits, &matrix[i], sizeof(bits));
+        for (int shift = 0; shift < 32; shift += 8) {
+            hash ^= (bits >> shift) & 0xffU;
+            hash *= 1099511628211ULL;
+        }
+    }
+    return hash;
+}
 
 std::vector<float> make_zero_rep_collapsed_matrix(
     const int next_no,
@@ -237,6 +258,11 @@ RdpRoundPrefixState identify_rdp_round_prefix(
             }
         }
     }
+    if (std::getenv("RDP_TRACE_CONSENSUS_VALUES") != nullptr) {
+        std::cerr << "pre-nj-pair next=" << next_no << " min="
+                  << static_cast<int>(minimum_pair[0]) << ':'
+                  << static_cast<int>(minimum_pair[1]) << '\n';
+    }
     std::vector<int> minimums(stride, 0);
     std::vector<unsigned char> missing_pair(
         static_cast<std::size_t>(stride) * stride, 0);
@@ -249,6 +275,42 @@ RdpRoundPrefixState identify_rdp_round_prefix(
         state.region_distance.valid_sites.data(), next_no,
         state.matrices.background.data(), state.matrices.event_region.data(),
         background_total.data(), region_total.data());
+
+    if (std::getenv("RDP_TRACE_NJ") != nullptr) {
+        std::cerr << "nj-input next=" << next_no << " n=" << (next_no + 1)
+                  << " seqs=" << state.sequences[0] << ':'
+                  << state.sequences[1] << ':' << state.sequences[2]
+                  << " min=" << static_cast<int>(minimum_pair[0]) << ':'
+                  << static_cast<int>(minimum_pair[1])
+                  << " hash=" << trace_matrix_bits(state.matrices.background, next_no + 1)
+                  << ':' << trace_matrix_bits(state.matrices.event_region, next_no + 1)
+                  << " pairs=";
+        for (int first = 0; first < 2; ++first) {
+            for (int second = first + 1; second < 3; ++second) {
+                const auto offset = static_cast<std::size_t>(
+                    state.sequences[first] + state.sequences[second] * stride);
+                std::cerr << state.matrices.background[offset] << '/'
+                          << state.matrices.event_region[offset] << ',';
+            }
+        }
+        std::cerr << '\n';
+    }
+
+    if (std::getenv("RDP_TRACE_DIRECT_ACOR") != nullptr && next_no == 25) {
+        std::cerr << "round-input next=25 seqs=" << state.sequences[0] << ':'
+                  << state.sequences[1] << ':' << state.sequences[2]
+                  << " direct=";
+        for (int first = 0; first < 2; ++first) {
+            for (int second = first + 1; second < 3; ++second) {
+                const auto offset = static_cast<std::size_t>(
+                    state.sequences[first] +
+                    state.sequences[second] * stride);
+                std::cerr << state.matrices.background[offset] << '/'
+                          << state.matrices.event_region[offset] << ',';
+            }
+        }
+        std::cerr << '\n';
+    }
 
     std::vector<int> outlier{2, 1, 0};
     std::vector<int> redo(stride, 0);
@@ -291,6 +353,44 @@ RdpRoundPrefixState identify_rdp_round_prefix(
         state.region_adjusted.data(), redo.data(), background_holder.data(),
         region_holder.data(), temporary_background.data(),
         temporary_region.data());
+    if (std::getenv("RDP_TRACE_NJ") != nullptr) {
+        std::cerr << "nj-output next=" << next_no << " min="
+                  << static_cast<int>(minimum_pair[0]) << ':'
+                  << static_cast<int>(minimum_pair[1]) << " hash="
+                  << trace_matrix_bits(state.background_adjusted, next_no + 1)
+                  << ':' << trace_matrix_bits(state.region_adjusted, next_no + 1)
+                  << " pairs=";
+        for (int first = 0; first < 2; ++first) {
+            for (int second = first + 1; second < 3; ++second) {
+                const auto offset = static_cast<std::size_t>(
+                    state.sequences[first] + state.sequences[second] * stride);
+                std::cerr << state.background_adjusted[offset] << '/'
+                          << state.region_adjusted[offset] << ',';
+            }
+        }
+        std::cerr << '\n';
+    }
+    if (std::getenv("RDP_TRACE_DIRECT_ACOR") != nullptr &&
+        (next_no == 24 || next_no == 25)) {
+        std::cerr << "round-nj next=" << next_no << " min="
+                  << static_cast<int>(minimum_pair[0]) << ':'
+                  << static_cast<int>(minimum_pair[1]) << " local="
+                  << local_last << " redo=";
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            if (redo[sequence] != 0) std::cerr << sequence << ':';
+        }
+        std::cerr << " adjusted=";
+        for (int first = 0; first < 2; ++first) {
+            for (int second = first + 1; second < 3; ++second) {
+                const auto offset = static_cast<std::size_t>(
+                    state.sequences[first] +
+                    state.sequences[second] * stride);
+                std::cerr << state.background_adjusted[offset] << '/'
+                          << state.region_adjusted[offset] << ',';
+            }
+        }
+        std::cerr << '\n';
+    }
     state.background_adjusted_before_collapse = state.background_adjusted;
     state.region_adjusted_before_collapse = state.region_adjusted;
     state.matrix_redo = redo;
@@ -304,6 +404,56 @@ RdpRoundPrefixState identify_rdp_round_prefix(
         next_no, local_last, 1, trace, redo,
         state.matrices.background, state.background_adjusted,
         temporary_background);
+    if (std::getenv("RDP_TRACE_POST_NJ") != nullptr) {
+        const auto pair_value = [&](const std::vector<float>& matrix,
+                                    int first, int second) {
+            return matrix[static_cast<std::size_t>(
+                state.sequences[first] + state.sequences[second] * stride)];
+        };
+        std::array<unsigned char, 2> recomputed{3, 3};
+        float best[2]{1000000.0F, 1000000.0F};
+        int role_pair = 0;
+        for (int first = 0; first < 2; ++first) {
+            for (int second = first + 1; second < 3; ++second) {
+                const float values[2]{
+                    pair_value(state.background_adjusted, first, second),
+                    pair_value(state.region_adjusted, first, second)};
+                for (int matrix = 0; matrix < 2; ++matrix) {
+                    if (values[matrix] < best[matrix]) {
+                        best[matrix] = values[matrix];
+                        recomputed[matrix] = static_cast<unsigned char>(role_pair);
+                    }
+                }
+                ++role_pair;
+            }
+        }
+        std::cerr << "post-nj-pair next=" << next_no << " seqs="
+                  << state.sequences[0] << ':' << state.sequences[1] << ':'
+                  << state.sequences[2] << " api="
+                  << static_cast<int>(minimum_pair[0]) << ':'
+                  << static_cast<int>(minimum_pair[1]) << " recomputed="
+                  << static_cast<int>(recomputed[0]) << ':'
+                  << static_cast<int>(recomputed[1]) << " pairs="
+                  << pair_value(state.background_adjusted, 0, 1) << '/'
+                  << pair_value(state.region_adjusted, 0, 1) << ','
+                  << pair_value(state.background_adjusted, 0, 2) << '/'
+                  << pair_value(state.region_adjusted, 0, 2) << ','
+                  << pair_value(state.background_adjusted, 1, 2) << '/'
+                  << pair_value(state.region_adjusted, 1, 2) << '\n';
+        std::cerr << "post-nj-collapsed next=" << next_no << " pairs="
+                  << state.background_collapsed[state.sequences[0] +
+                      state.sequences[1] * stride] << '/'
+                  << state.region_collapsed[state.sequences[0] +
+                      state.sequences[1] * stride] << ','
+                  << state.background_collapsed[state.sequences[0] +
+                      state.sequences[2] * stride] << '/'
+                  << state.region_collapsed[state.sequences[0] +
+                      state.sequences[2] * stride] << ','
+                  << state.background_collapsed[state.sequences[1] +
+                      state.sequences[2] * stride] << '/'
+                  << state.region_collapsed[state.sequences[1] +
+                      state.sequences[2] * stride] << '\n';
+    }
     state.minimum_pair = {minimum_pair[0], minimum_pair[1]};
     state.sequence_pair = {
         sequence_pair[0], sequence_pair[1], sequence_pair[2]};
@@ -392,41 +542,116 @@ RdpRoundPrefixState identify_rdp_round_prefix(
     state.region_direct_small = make_small(state.matrices.event_region);
     state.first_adjusted_small = make_small(state.background_adjusted);
     state.region_adjusted_small = make_small(state.region_adjusted);
-    std::array<unsigned char, 2> final_pair{};
-    std::array<float, 2> final_distance{1000000.0F, 1000000.0F};
-    int pair = 0;
-    for (int first = 0; first < 2; ++first) {
-        for (int second = first + 1; second < 3; ++second) {
-            const auto offset = static_cast<std::size_t>(
-                first + state.sequences[second] * 3);
-            if (state.first_adjusted_small[offset] < final_distance[0]) {
-                final_distance[0] = state.first_adjusted_small[offset];
-                final_pair[0] = static_cast<unsigned char>(pair);
-            }
-            if (state.region_adjusted_small[offset] < final_distance[1]) {
-                final_distance[1] = state.region_adjusted_small[offset];
-                final_pair[1] = static_cast<unsigned char>(pair);
-            }
-            ++pair;
-        }
-    }
+    // MakeNJTreesP2 computes FAMat/SAMat and mutates MinPair from those
+    // tree-distance matrices.  Module3b consumes that post-NJ MinPair; do
+    // not re-derive it from the matrices after ReAddDistsB has rewritten
+    // their missing/redo entries.
+    const std::array<unsigned char, 2> final_pair{
+        minimum_pair[0], minimum_pair[1]};
     state.role_lists = make_rdp_role_lists(final_pair);
+    if (std::getenv("RDP_TRACE_DIRECT_ACOR") != nullptr &&
+        (next_no == 24 || next_no == 25)) {
+        std::cerr << "round-pair next=" << next_no << " seqs="
+                  << state.sequences[0] << ':' << state.sequences[1] << ':'
+                  << state.sequences[2] << " min="
+                  << static_cast<int>(final_pair[0]) << ':'
+                  << static_cast<int>(final_pair[1]) << " direct=";
+        for (int first = 0; first < 2; ++first) {
+            for (int second = first + 1; second < 3; ++second) {
+                const auto offset = static_cast<std::size_t>(first) +
+                    static_cast<std::size_t>(state.sequences[second]) * stride;
+                std::cerr << state.first_adjusted_small[offset] << '/'
+                          << state.region_adjusted_small[offset] << ',';
+            }
+        }
+        std::cerr << '\n';
+    }
     state.first_collapsed_small = make_small(state.background_collapsed);
     state.region_collapsed_small = make_small(state.region_collapsed);
-    state.acceptable_correlations = make_rdp_acceptable_correlations(
+    state.acceptable_correlations = make_rdp_direct_acceptable_correlations(
         next_no, state.sequences, state.role_lists.inside,
-        state.first_direct_small, state.region_direct_small,
-        state.first_adjusted_small, state.region_adjusted_small,
-        state.first_collapsed_small, state.region_collapsed_small);
+        state.background_adjusted_before_collapse,
+        state.region_adjusted_before_collapse);
     state.dont_redo.assign(static_cast<std::size_t>(3) * stride, 0);
     auto candidates = make_rdp_candidate_lists(
         next_no, state.good_comparisons, state.sequences,
         state.correlation_decisions, state.dont_redo,
         state.acceptable_correlations);
+    if (std::getenv("RDP_TRACE_ACTUAL") != nullptr) {
+        const auto dump = [next_no](const char* label,
+                                    const RdpCandidateLists& c) {
+            std::cerr << "actual " << label << " next=" << next_no;
+            for (int role = 0; role < 3; ++role) {
+                std::cerr << " role" << role << "=";
+                for (int slot = 0; slot <= c.last[role]; ++slot) {
+                    if (slot != 0) std::cerr << ':';
+                    std::cerr << c.list[role + slot * 3];
+                }
+            }
+            std::cerr << '\n';
+        };
+        dump("make", candidates);
+        if (next_no == 25) {
+            const auto& corr = state.correlation_decisions.correlations;
+            std::cerr << "actual inputs next=25 warnings="
+                      << state.correlation_decisions.warnings[0] << ':'
+                      << state.correlation_decisions.warnings[1] << ':'
+                      << state.correlation_decisions.warnings[2] << " good=";
+            for (int s = 0; s <= next_no; ++s) {
+                std::cerr << state.good_comparisons[s] << ',';
+            }
+            std::cerr << "/";
+            for (int s = 0; s <= next_no; ++s) {
+                std::cerr << state.good_comparisons[s + next_no + 1] << ',';
+            }
+            std::cerr << " acceptable=";
+            for (int s = 0; s <= next_no; ++s) {
+                std::cerr << static_cast<int>(state.acceptable_correlations[s * 3]) << ':'
+                          << static_cast<int>(state.acceptable_correlations[s * 3 + 1]) << ':'
+                          << static_cast<int>(state.acceptable_correlations[s * 3 + 2]) << ',';
+            }
+            std::cerr << " dont=";
+            for (int s = 0; s <= next_no; ++s) {
+                std::cerr << static_cast<int>(state.dont_redo[s * 3]) << ':'
+                          << static_cast<int>(state.dont_redo[s * 3 + 1]) << ':'
+                          << static_cast<int>(state.dont_redo[s * 3 + 2]) << ',';
+            }
+            std::cerr << " corr=";
+            for (int role = 0; role < 3; ++role) {
+                std::cerr << " role" << role << "=";
+                for (int s = 0; s <= next_no; ++s) {
+                    std::cerr << corr.correlation[role + s * 9] << ':'
+                              << corr.correlation[role + 3 + s * 9] << ':'
+                              << corr.correlation[role + 6 + s * 9] << ',';
+                }
+            }
+            std::cerr << '\n';
+        }
+    }
     state.actual_resolution = resolve_rdp_actual_events(
         sequence_length, next_no, state.sequences, comparison,
         state.starts, state.ends, state.correlation_decisions,
         std::move(candidates), state.dont_redo, events, next_no);
+    if (std::getenv("RDP_TRACE_ACTUAL") != nullptr) {
+        const auto& c = state.actual_resolution.candidates;
+        std::cerr << "actual resolved next=" << next_no;
+        for (int role = 0; role < 3; ++role) {
+            std::cerr << " role" << role << "=";
+            for (int slot = 0; slot <= c.last[role]; ++slot) {
+                if (slot != 0) std::cerr << ':';
+                std::cerr << c.list[role + slot * 3];
+            }
+        }
+        std::cerr << " before-strip";
+        for (int role = 0; role < 3; ++role) {
+            std::cerr << " role" << role << "=";
+            for (int slot = 0; slot <= state.actual_resolution.candidate_last_before_strip[role]; ++slot) {
+                if (slot != 0) std::cerr << ':';
+                std::cerr << state.actual_resolution.candidate_list_before_strip[role + slot * 3];
+            }
+        }
+        std::cerr << '\n';
+    }
     return state;
 }
 
@@ -477,6 +702,42 @@ RdpCompleteRoundState identify_rdp_complete_round(
     state.score_filters[0] = make_rdp_score_filter(
         next_no, sequences, prefix.first_direct_small,
         prefix.first_direct_small, prefix.region_direct_small);
+    if (std::getenv("RDP_TRACE_DONETHIS") != nullptr) {
+        std::cerr << "donethis-input next=" << next_no << " seqs="
+                  << sequences[0] << ':' << sequences[1] << ':' << sequences[2]
+                  << " direct=";
+        for (int role = 0; role < 3; ++role) {
+            std::cerr << "r" << role << ':';
+            for (int sequence : {6, 8, 9, 12, 13, 15, 23, 26, 27}) {
+                if (sequence <= next_no) {
+                    std::cerr << prefix.first_direct_small[role + sequence * 3]
+                              << ',';
+                }
+            }
+            std::cerr << ';';
+        }
+        std::cerr << " region=";
+        for (int role = 0; role < 3; ++role) {
+            std::cerr << "r" << role << ':';
+            for (int sequence : {6, 8, 9, 12, 13, 15, 23, 26, 27}) {
+                if (sequence <= next_no) {
+                    std::cerr << prefix.region_direct_small[role + sequence * 3]
+                              << ',';
+                }
+            }
+            std::cerr << ';';
+        }
+        std::cerr << " done=";
+        for (int sequence = 0; sequence <= next_no; ++sequence) {
+            if (state.score_filters[0][sequence * 2] ||
+                state.score_filters[0][sequence * 2 + 1]) {
+                std::cerr << sequence << ':'
+                          << state.score_filters[0][sequence * 2] << ':'
+                          << state.score_filters[0][sequence * 2 + 1] << ',';
+            }
+        }
+        std::cerr << '\n';
+    }
     apply_rdp_alignment_quality_filter(
         next_no, sequences, full_distance, prefix.region_distance,
         state.score_filters[0]);
@@ -578,6 +839,20 @@ RdpCompleteRoundState identify_rdp_complete_round(
         next_no, sequences, prefix.role_lists.inside,
         prefix.first_adjusted_small, prefix.matrices.background,
         prefix.matrices.event_region, state.score_filters[0]);
+    if (std::getenv("RDP_TRACE_CONSENSUS_VALUES") != nullptr) {
+        std::cerr << "split-roles next=" << next_no << " min="
+                  << static_cast<int>(prefix.minimum_pair[0]) << ':'
+                  << static_cast<int>(prefix.minimum_pair[1]) << " inside="
+                  << static_cast<int>(prefix.role_lists.inside[0]) << ':'
+                  << static_cast<int>(prefix.role_lists.inside[1]) << ':'
+                  << static_cast<int>(prefix.role_lists.inside[2]) << " dist="
+                  << state.split_distances.distances[0] << ':'
+                  << state.split_distances.distances[1] << ':'
+                  << state.split_distances.distances[2] << " oui="
+                  << static_cast<int>(state.split_distances.outlier_index[0]) << ':'
+                  << static_cast<int>(state.split_distances.outlier_index[1]) << ':'
+                  << static_cast<int>(state.split_distances.outlier_index[2]) << '\n';
+    }
     state.simple_distances = calculate_rdp_simple_distances(
         next_no, sequences, prefix.role_lists.inside,
         prefix.actual_resolution.candidates.last,
@@ -683,6 +958,21 @@ RdpCompleteRoundState identify_rdp_complete_round(
     state.consensus = make_rdp_consensus(std::move(consensus_inputs));
     if (!state.consensus_retrimmed) {
         run_full_candidate_maintenance(state.consensus.winning_role);
+    }
+    if (std::getenv("RDP_TRACE_TRIM") != nullptr) {
+        const auto dump = [](const char* label, const RdpFinalTrimState& value) {
+            std::cerr << "trim-state " << label;
+            for (int role = 0; role < 3; ++role) {
+                std::cerr << " role" << role << '=';
+                for (int slot = 0; slot <= value.candidate_last[role]; ++slot) {
+                    if (slot != 0) std::cerr << ':';
+                    std::cerr << value.candidate_list[role + slot * 3];
+                }
+            }
+            std::cerr << '\n';
+        };
+        dump("consensus", state.consensus_candidates);
+        dump("final-pre-strict", state.consensus_candidates);
     }
     state.final_candidates = apply_rdp_strict_group_constraints(
         next_no, sequences, comparison, prefix.matrices.background,

@@ -119,6 +119,8 @@ RdpAdjustedEvents adjust_rdp_events_exact(
     }
 
     RdpAdjustedEvents output;
+    output.candidate_last = candidate_last;
+    output.candidate_list = candidate_list;
     output.done_row_upper_bound = next_no;
     output.done_slot_upper_bound = output_slot_upper_bound;
     output.done_sequence.assign(
@@ -144,6 +146,10 @@ RdpAdjustedEvents adjust_rdp_events_exact(
         mutable_trace_sub.data(), output_current.data(), next_no,
         output_slot_upper_bound, output_matrix.data(), source_current.data(),
         next_no, source_slot_upper_bound, source_matrix.data());
+    // AddjustCXO updates RNum/RList by reference.  The native caller keeps
+    // these mutations for the scan immediately following the adjustment.
+    output.candidate_last = mutable_candidate_last;
+    output.candidate_list = std::move(mutable_candidate_list);
     output.events.current_xover = output_current;
     output.events.xover_list.resize(row_count);
     for (int row = 0; row <= next_no; ++row) {

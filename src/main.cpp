@@ -29,6 +29,7 @@
 #include <iomanip>
 #include <iostream>
 #include <set>
+#include <sstream>
 #include <string_view>
 #include <tuple>
 #include <type_traits>
@@ -6254,6 +6255,82 @@ int fasta_rdp_full_transition_fixture(
     RdpFullAnalysisTrace trace;
     const auto result = run_rdp_full_analysis_from_fasta_file_with_trace(
         fasta_path, trace);
+    if (const char* dump_path = std::getenv("RDP_TRACE_DUMP_ALIGNMENT")) {
+        int wanted_round = 10;
+        if (const char* round_env = std::getenv("RDP_TRACE_DUMP_ROUND")) {
+            wanted_round = std::atoi(round_env);
+        }
+        if (wanted_round > 0 && wanted_round <= static_cast<int>(
+                trace.sequence_data_before_round.size())) {
+            const auto& data = trace.sequence_data_before_round[
+                static_cast<std::size_t>(wanted_round - 1)];
+            const int stride = result.sequence_length + 1;
+            const int count = stride > 0
+                ? static_cast<int>(data.size() / static_cast<std::size_t>(stride))
+                : 0;
+            std::ofstream output(dump_path);
+            const auto base = [](const short value) {
+                switch (value) {
+                case 66: return 'A';
+                case 68: return 'C';
+                case 72: return 'G';
+                case 85: return 'T';
+                default: return '-';
+                }
+            };
+            for (int sequence = 0; sequence < count; ++sequence) {
+                output << '>' << sequence << '\n';
+                for (int position = 1; position <= result.sequence_length;
+                     ++position) {
+                    output << base(data[static_cast<std::size_t>(sequence) *
+                                        static_cast<std::size_t>(stride) +
+                                        static_cast<std::size_t>(position)]);
+                }
+                output << '\n';
+            }
+            std::cerr << "dumped alignment round=" << wanted_round
+                      << " sequences=" << count << " to " << dump_path
+                      << '\n';
+        }
+    }
+    if (const char* dump_path = std::getenv("RDP_TRACE_DUMP_MODSEQ")) {
+        int wanted_round = 10;
+        if (const char* round_env = std::getenv("RDP_TRACE_DUMP_ROUND")) {
+            wanted_round = std::atoi(round_env);
+        }
+        if (wanted_round > 0 && wanted_round <= static_cast<int>(
+                trace.sequence_data_after_modseq.size())) {
+            const auto& data = trace.sequence_data_after_modseq[
+                static_cast<std::size_t>(wanted_round - 1)];
+            const int stride = result.sequence_length + 1;
+            const int count = stride > 0
+                ? static_cast<int>(data.size() / static_cast<std::size_t>(stride))
+                : 0;
+            std::ofstream output(dump_path);
+            const auto base = [](const short value) {
+                switch (value) {
+                case 66: return 'A';
+                case 68: return 'C';
+                case 72: return 'G';
+                case 85: return 'T';
+                default: return '-';
+                }
+            };
+            for (int sequence = 0; sequence < count; ++sequence) {
+                output << '>' << sequence << '\n';
+                for (int position = 1; position <= result.sequence_length;
+                     ++position) {
+                    output << base(data[static_cast<std::size_t>(sequence) *
+                                        static_cast<std::size_t>(stride) +
+                                        static_cast<std::size_t>(position)]);
+                }
+                output << '\n';
+            }
+            std::cerr << "dumped modseq alignment round=" << wanted_round
+                      << " sequences=" << count << " to " << dump_path
+                      << '\n';
+        }
+    }
     auto alist_trace_path = addjust_trace_path;
     const auto addjust_name = alist_trace_path.rfind("addjust-dopairs.bin");
     if (addjust_name != std::string::npos) {
@@ -6271,6 +6348,112 @@ int fasta_rdp_full_transition_fixture(
                 trace.adjusted_events[round], native_adjusted);
         const auto native_post = load_findbetter_events(
             addjust_trace_path, static_cast<int>(round) + 2);
+        if (std::getenv("RDP_TRACE_ALL_PAIRS") != nullptr) {
+            const int pair_next_no = static_cast<int>(std::sqrt(
+                static_cast<double>(
+                    trace.adjusted_pairs_to_rescan[round].size()))) - 1;
+            const auto native_pairs = load_addjust_pairs(
+                addjust_trace_path, pair_next_no, static_cast<int>(round) + 1);
+            std::size_t pair_differences = 0;
+            for (std::size_t cell = 0;
+                 cell < native_pairs.size() &&
+                     cell < trace.adjusted_pairs_to_rescan[round].size();
+                 ++cell) {
+                if (native_pairs[cell] !=
+                    trace.adjusted_pairs_to_rescan[round][cell]) {
+                    ++pair_differences;
+                }
+            }
+            std::cerr << "adjust-pairs-check round=" << round + 1
+                      << " match=" << (pair_differences == 0 ? "PASS" : "FAIL")
+                      << ":" << pair_differences << '\n';
+        }
+        if (std::getenv("RDP_TRACE_ALL_ADJUST_INPUT") != nullptr) {
+            const auto native_adjust_input = load_addjust_input_events(
+                addjust_trace_path, static_cast<unsigned int>(round) + 1U);
+            const auto [input_match, input_differences] =
+                compare_rdp_event_states(
+                    trace.collection_events_before_adjustment[round],
+                    native_adjust_input);
+            std::cerr << "adjust-input-check round=" << round + 1
+                      << " match=" << (input_match ? "PASS" : "FAIL")
+                      << ":" << input_differences << '\n';
+            if (!input_match) {
+                const auto print_counts = [](const char* label,
+                                             const RdpRawEventState& state) {
+                    std::array<int, 32> counts{};
+                    for (const auto& row : state.xover_list) {
+                        for (const auto& event : row) {
+                            if (event.program_flag >= 0 &&
+                                event.program_flag < static_cast<int>(counts.size())) {
+                                ++counts[event.program_flag];
+                            }
+                        }
+                    }
+                    std::cerr << label;
+                    for (std::size_t p = 0; p < counts.size(); ++p) {
+                        if (counts[p] != 0) std::cerr << p << ':' << counts[p] << ',';
+                    }
+                    std::cerr << '\n';
+                };
+                print_counts("adjust-input-check-actual=",
+                             trace.collection_events_before_adjustment[round]);
+                print_counts("adjust-input-check-native=", native_adjust_input);
+                int shown = 0;
+                const auto rows = std::min(
+                    trace.collection_events_before_adjustment[round].xover_list.size(),
+                    native_adjust_input.xover_list.size());
+                for (std::size_t row = 0; row < rows && shown < 12; ++row) {
+                    const auto& actual_row =
+                        trace.collection_events_before_adjustment[round].xover_list[row];
+                    const auto& native_row = native_adjust_input.xover_list[row];
+                    const auto slots = std::min(actual_row.size(), native_row.size());
+                    for (std::size_t slot = 0; slot < slots && shown < 12; ++slot) {
+                        if (!raw_event_equivalent(actual_row[slot], native_row[slot])) {
+                            const auto& a = actual_row[slot];
+                            const auto& n = native_row[slot];
+                            std::cerr << "adjust-input-check-diff row=" << row
+                                      << " slot=" << slot << " actual="
+                                      << static_cast<int>(a.program_flag) << ':'
+                                      << a.daughter << ':' << a.minor_parent << ':'
+                                      << a.major_parent << ':' << a.beginning << ':'
+                                      << a.ending << ':' << a.probability << ':'
+                                      << a.distance_holder << " native="
+                                      << static_cast<int>(n.program_flag) << ':'
+                                      << n.daughter << ':' << n.minor_parent << ':'
+                                      << n.major_parent << ':' << n.beginning << ':'
+                                      << n.ending << ':' << n.probability << ':'
+                                      << n.distance_holder << '\n';
+                            ++shown;
+                        }
+                    }
+                }
+            }
+        }
+        if (std::getenv("RDP_TRACE_TRANSITION_COUNTS") != nullptr) {
+            const auto count_programs = [](const RdpRawEventState& state) {
+                std::array<int, 32> counts{};
+                for (const auto& row : state.xover_list) {
+                    for (const auto& event : row) {
+                        if (event.program_flag < counts.size()) {
+                            ++counts[event.program_flag];
+                        }
+                    }
+                }
+                std::ostringstream text;
+                for (std::size_t program = 0; program < counts.size(); ++program) {
+                    if (counts[program] != 0) {
+                        text << program << ':' << counts[program] << ',';
+                    }
+                }
+                return text.str();
+            };
+            const auto native_input = load_addjust_input_events(
+                addjust_trace_path, static_cast<unsigned int>(round) + 1U);
+            std::cerr << "transition-count round=" << round + 1
+                      << " input=" << count_programs(native_input)
+                      << " post=" << count_programs(native_post) << '\n';
+        }
         const auto [post_match, post_differences] = compare_rdp_event_states(
             trace.post_rescan_events[round], native_post);
         std::cout << "round=" << round + 1
@@ -6797,6 +6980,19 @@ int fasta_rdp_full_transition_fixture(
                     if (ar.size() != er.size()) {
                         std::cout << "post-row=" << row << " size="
                                   << ar.size() << '/' << er.size() << '\n';
+                        if (std::getenv("RDP_TRACE_EVENTS_DETAIL") != nullptr) {
+                            const auto print_event = [](const char* label,
+                                                        const RdpRawEvent& e) {
+                                std::cout << label << static_cast<int>(e.program_flag)
+                                    << ',' << e.daughter << ',' << e.minor_parent
+                                    << ',' << e.major_parent << ',' << e.beginning
+                                    << ',' << e.ending << ',' << e.probability
+                                    << ',' << e.distance_holder << ',' << e.event_number
+                                    << '\n';
+                            };
+                            for (const auto& e : ar) print_event("post-actual=", e);
+                            for (const auto& e : er) print_event("post-native=", e);
+                        }
                         break;
                     }
                     for (std::size_t slot = 0; slot < ar.size(); ++slot) {

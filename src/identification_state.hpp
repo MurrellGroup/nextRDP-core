@@ -74,6 +74,15 @@ std::vector<unsigned char> make_rdp_acceptable_correlations(
     std::vector<float>& first_collapsed,
     std::vector<float>& second_collapsed);
 
+// The cyclic RDP identification path has a separate, full-matrix
+// AcceptableCoR pass (Module3b).  It must not be conflated with MakeACOR,
+// which normalizes the compact matrices used by the fixture/initial path.
+std::vector<unsigned char> make_rdp_direct_acceptable_correlations(
+    int next_no, const std::array<int, 3>& sequences,
+    const std::array<unsigned char, 3>& inside,
+    const std::vector<float>& background,
+    const std::vector<float>& event_region);
+
 struct RdpCandidateLists {
     std::vector<int> list_by_threshold;
     std::vector<int> inverse_by_threshold;
@@ -448,6 +457,19 @@ struct RdpCollectedEventsState {
 };
 
 RdpCollectedEventsState make_rdp_parent_collect_events(
+    int sequence_length, int next_no, int role,
+    std::array<int, 6> region_sizes,
+    const std::vector<int>& overlap_sequence,
+    const std::array<int, 6>& comparison_matrix,
+    const std::array<int, 3>& candidate_last,
+    const std::vector<int>& candidate_list,
+    int add_num, const std::array<int, 3>& sequences,
+    const std::array<int, 2>& trace,
+    const RdpRawEventState& source_events);
+
+// Module2.MakeCollecteventsX: scan the persistent PXOList and retain the
+// lowest-probability event for each winner-list slot and program.
+RdpCollectedEventsState make_rdp_source_collect_events(
     int sequence_length, int next_no, int role,
     std::array<int, 6> region_sizes,
     const std::vector<int>& overlap_sequence,

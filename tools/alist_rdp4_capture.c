@@ -283,6 +283,27 @@ struct FindBestRecSignalP2Header {
   int probability_columns_ub;
 };
 
+/* Compact per-invocation trace for the cyclic selector.  The existing
+ * fixture intentionally records only the first call; this supplemental log
+ * lets us compare later cycles without storing the large probability matrix. */
+#pragma pack(push, 1)
+struct FindBestRecSignalP2AllRecord {
+  int invocation;
+  int next_no;
+  int result;
+  int trace_in[2];
+  int trace_out[2];
+  double low_p_in;
+  double low_p_out;
+  u64 done_in_hash;
+  u64 done_out_hash;
+  u64 current_in_hash;
+  u64 current_out_hash;
+  u64 pvs_in_hash;
+  u64 pvs_out_hash;
+};
+#pragma pack(pop)
+
 struct UFDistHeader {
   char magic[8];
   u32 version;
@@ -1281,6 +1302,19 @@ int STDCALL FindBestRecSignalP2Capture(
   }
   if (!original) return 0;
   ++invocation;
+  struct FindBestRecSignalP2AllRecord all_record;
+  all_record.invocation = invocation;
+  all_record.next_no = next_no;
+  all_record.result = 0;
+  all_record.trace_in[0] = trace[0];
+  all_record.trace_in[1] = trace[1];
+  all_record.trace_out[0] = 0;
+  all_record.trace_out[1] = 0;
+  all_record.low_p_in = *low_p;
+  all_record.low_p_out = 0.0;
+  all_record.done_in_hash = fnv1a64(done_sequence, done_bytes);
+  all_record.current_in_hash = fnv1a64(current_xover, current_bytes);
+  all_record.pvs_in_hash = fnv1a64(test_pvs, probability_bytes);
   if (invocation == 1) {
     struct FindBestRecSignalP2Header header;
     const char magic[8] = {'F', 'B', 'R', 'S', 'I', 'G', '2', '\0'};
@@ -1309,6 +1343,22 @@ int STDCALL FindBestRecSignalP2Capture(
     const int result = original(
         done_target, next_no, probability_rows_ub, probability_columns_ub,
         low_p, done_sequence, trace, current_xover, test_pvs);
+    all_record.result = result;
+    all_record.trace_out[0] = trace[0];
+    all_record.trace_out[1] = trace[1];
+    all_record.low_p_out = *low_p;
+    all_record.done_out_hash = fnv1a64(done_sequence, done_bytes);
+    all_record.current_out_hash = fnv1a64(current_xover, current_bytes);
+    all_record.pvs_out_hash = fnv1a64(test_pvs, probability_bytes);
+    file = CreateFileA(
+        "find-best-rec-signal-p2-all.bin", GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, (void *)0, OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, (HANDLE)0);
+    if (file != INVALID_HANDLE_VALUE) {
+      SetFilePointer(file, 0, (long *)0, FILE_END);
+      write_bytes(file, &all_record, (DWORD)sizeof(all_record));
+      CloseHandle(file);
+    }
     if (invocation == 1) {
       file = CreateFileA(
           "find-best-rec-signal-p2-v1.bin", GENERIC_WRITE,

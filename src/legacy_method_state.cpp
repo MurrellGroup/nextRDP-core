@@ -905,6 +905,61 @@ void centre_initial_breakpoints(
         ending = circular ? ending - sequence_length : sequence_length;
 }
 
+// Module3b.CentreBP as called by TSXOver.  This is intentionally separate
+// from centre_initial_breakpoints: FindSubSeqTS2 returns LenXoverSeq = Y-1,
+// and its XDiffpos/XPosDiff arrays are indexed from zero.  The other legacy
+// methods use one-based FindSubSeqDP maps, so sharing that helper introduces
+// an off-by-one shift at the final informative boundary.
+void centre_ts_breakpoints(
+    int& beginning, int& ending, std::vector<int>& position_difference,
+    const std::vector<int>& difference_position, const int sequence_length,
+    const int len_xover_seq, const bool circular) {
+    if (len_xover_seq < 1 || beginning < 0 || ending < 0 ||
+        beginning >= static_cast<int>(position_difference.size()) ||
+        ending >= static_cast<int>(position_difference.size())) {
+        return;
+    }
+
+    // CentreBP's beginning branch, copied from Module3b.bas.  XPosDiff and
+    // XDiffpos retain the native zero-based TS2 indexing here.
+    if (position_difference[beginning] - 1 > 0) {
+        beginning -= vb_clng(
+            ((beginning -
+              difference_position[position_difference[beginning] - 1]) /
+             2.0) - 0.1);
+    } else {
+        beginning -= vb_clng(
+            ((beginning + sequence_length -
+              difference_position[len_xover_seq]) /
+             2.0) - 0.1);
+    }
+    if (beginning == 0) {
+        beginning = 1;
+    } else if (beginning < 1) {
+        beginning = circular ? sequence_length + beginning : 1;
+    }
+
+    // CentreBP overwrites the terminal alignment position before centring
+    // the ending boundary.  The source passes LenXoverSeq (the last index,
+    // not the number of informative sites) to this assignment.
+    if (sequence_length >= 0 &&
+        sequence_length < static_cast<int>(position_difference.size())) {
+        position_difference[sequence_length] = len_xover_seq;
+    }
+    if (position_difference[ending] + 1 <= len_xover_seq) {
+        ending += vb_clng(
+            ((difference_position[position_difference[ending] + 1] - ending) /
+             2.0) - 0.1);
+    } else {
+        ending += vb_clng(
+            ((difference_position[1] + (sequence_length - ending)) /
+             2.0) - 0.1);
+    }
+    if (ending > sequence_length) {
+        ending = circular ? ending - sequence_length : sequence_length;
+    }
+}
+
 // Module2.FindDaughter, active PrgF=3/4 endpoint-polishing branch.  Despite
 // its name, this branch does not alter the three roles; it only walks the
 // informative-site map and conditionally tightens the stored breakpoints.
@@ -2365,21 +2420,53 @@ void run_rdp_three_seq_recheck(
         scan_state, sequences, settings.circular != 0, settings.mc_flag,
         settings.mc_correction, settings.lowest_probability,
         probability_table, table_bound, true);
-    const int informative = result.informative_last + 1;
-    std::vector<int> difference_position(
-        static_cast<std::size_t>(informative + 1), 0);
-    for (int index = 1; index <= informative; ++index) {
-        difference_position[index] = result.difference_position[index - 1];
+    if (std::getenv("RDP_TRACE_TS_CALLS") != nullptr) {
+        std::cerr << "ts-call seq=" << sequences[0] << ':' << sequences[1]
+                  << ':' << sequences[2] << " informative="
+                  << result.informative_last + 1;
+        for (const auto& side : result.sides) {
+            std::cerr << " side=" << side.beginning << ',' << side.ending
+                      << ',' << side.first_count << ',' << side.second_count
+                      << ',' << side.excursion << ',' << side.probability
+                      << ',' << side.significant;
+        }
+        std::cerr << '\n';
     }
+    const int informative = result.informative_last + 1;
+    // FindSubSeqTS2 returns Y-1 (the last informative index), not the
+    // informative-site count.  Module3b passes that return value unchanged
+    // to CentreBP; preserve the native zero-based maps rather than shifting
+    // them into the one-based representation used by FindSubSeqDP.
+    const int len_xover_seq = result.informative_last;
     auto centre = [&](int& beginning, int& ending) {
         if (informative < 1) return;
         auto position_difference = result.position_difference;
-        centre_initial_breakpoints(
-            beginning, ending, position_difference, difference_position,
-            scan_state.sequence_length, informative, settings.circular != 0);
+        const int original_beginning = beginning;
+        const int original_ending = ending;
+        centre_ts_breakpoints(
+            beginning, ending, position_difference,
+            result.difference_position, scan_state.sequence_length,
+            len_xover_seq, settings.circular != 0);
+        if (std::getenv("RDP_TRACE_TS_CENTRE") != nullptr) {
+            std::cerr << "ts-centre seq=" << sequences[0] << ':' << sequences[1]
+                      << ':' << sequences[2] << " raw=" << original_beginning
+                      << ',' << original_ending << " centred=" << beginning
+                      << ',' << ending << " last=" << len_xover_seq << '\n';
+        }
     };
     for (const auto& side : result.sides) {
         if (!side.significant) continue;
+        int beginning = side.beginning;
+        int ending = side.ending;
+        centre(beginning, ending);
+        if (std::getenv("RDP_TRACE_TS_ALLOC") != nullptr) {
+            std::cerr << "ts-alloc seq=" << sequences[0] << ':'
+                      << sequences[1] << ':' << sequences[2]
+                      << " counts=" << allocator.count(sequences[0]) << ','
+                      << allocator.count(sequences[1]) << ','
+                      << allocator.count(sequences[2]) << " centred="
+                      << beginning << ',' << ending << '\n';
+        }
         const auto active = choose_active(
             sequences, 8, store_lpv, store_lpv_ub, allocator);
         const int slot = allocator.allocate(active[0], 8, side.probability);
@@ -2388,12 +2475,8 @@ void run_rdp_three_seq_recheck(
         event.daughter = static_cast<std::int16_t>(active[0]);
         event.minor_parent = static_cast<std::int16_t>(active[1]);
         event.major_parent = static_cast<std::int16_t>(active[2]);
-        event.beginning = side.beginning;
-        event.ending = side.ending;
-        // The event coordinates returned by the current TS prefix are
-        // already CentreBP-equivalent; keep the historical initial-path
-        // representation here while the FinalTrim side effects are matched
-        // against the native fixture separately.
+        event.beginning = beginning;
+        event.ending = ending;
         event.program_flag = 8;
         event.probability = side.probability;
         event.distance_holder = sequences[2];

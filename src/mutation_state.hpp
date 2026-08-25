@@ -63,6 +63,11 @@ struct RdpAdjustedEvents {
     int done_row_upper_bound = 0;
     int done_slot_upper_bound = 0;
     std::vector<unsigned char> pairs_to_rescan;
+    // DNA.dll AddjustCXO mutates the candidate RNum/RList arrays in place.
+    // Keep those post-call values; callers need them for the subsequent
+    // InnerScan2/OuterScan4 stages of FindActualEventsVB.
+    std::array<int, 3> candidate_last{};
+    std::vector<int> candidate_list;
 };
 
 RdpAdjustedEvents adjust_rdp_events_exact(
