@@ -1,5 +1,6 @@
 #include "MathFuncsDll.h"
 #include "analysis.hpp"
+#include "burt_state.hpp"
 #include "alist_rdp4_fixture.hpp"
 #include "distance_fixture.hpp"
 #include "distance_state.hpp"
@@ -6099,6 +6100,76 @@ int fasta_rdp_full_analysis(const std::string& fasta_path) {
     return 0;
 }
 
+int fasta_burt_analysis(
+    const std::string& fasta_path,
+    const int sequence_one,
+    const int sequence_two,
+    const int sequence_three,
+    const int beginning,
+    const int ending,
+    const bool circular) {
+    const Dna5ScanPreprocessApi api{
+        &MathFuncs::MyMathFuncs::MakeAListP2,
+        &MathFuncs::MyMathFuncs::CountNucs,
+        &MathFuncs::MyMathFuncs::RecodeNucs,
+        &MathFuncs::MyMathFuncs::DoRecodeP,
+        &MathFuncs::MyMathFuncs::MakeCompressSeqP,
+    };
+    const auto scan = build_rdp_scan_state_from_fasta(
+        fasta_path, api);
+    const auto result = run_rdp_burt(
+        scan, {sequence_one, sequence_two, sequence_three}, beginning, ending,
+        circular);
+    std::cout << "BURT trained=" << (result.trained ? 1 : 0)
+              << " informative=" << result.information_rich_sites
+              << " intervals=" << result.intervals.size()
+              << " best=" << result.best_log_likelihood
+              << " polished=" << result.polished_beginning << ','
+              << result.polished_ending << " confidence=";
+    for (std::size_t index = 0; index < result.confidence.size(); ++index) {
+        if (index != 0) std::cout << ',';
+        std::cout << result.confidence[index];
+    }
+    std::cout << '\n';
+    for (std::size_t index = 0; index < result.intervals.size(); ++index) {
+        const auto& interval = result.intervals[index].values;
+        std::cout << "interval=" << index;
+        for (const int value : interval) std::cout << ',' << value;
+        std::cout << '\n';
+    }
+    return result.trained ? 0 : 1;
+}
+
+int fasta_method_run(
+    const std::string& fasta_path,
+    const int mask,
+    const std::string& fixture_directory = {}) {
+    RdpInitialAnalysisOptions options;
+    options.enable_geneconv = (mask & 1) != 0;
+    options.enable_maxchi = (mask & 2) != 0;
+    options.enable_chimaera = (mask & 4) != 0;
+    options.enable_three_seq = (mask & 8) != 0;
+    options.polish_breakpoints_with_burt = (mask & 16) != 0;
+    if (!fixture_directory.empty()) {
+        options.geneconv_call_order_path = fixture_directory + "/geneconv-call-order.bin";
+        options.geneconv_call_count_path = fixture_directory + "/geneconv-count-at-first-make-test.bin";
+        options.maxchi_call_order_path = fixture_directory + "/maxchi-call-order.bin";
+        options.maxchi_call_count_path = fixture_directory + "/maxchi-count-at-first-make-test.bin";
+        options.chimaera_call_order_path = fixture_directory + "/chimaera-call-order.bin";
+        options.chimaera_call_count_path = fixture_directory + "/chimaera-count-at-first-make-test.bin";
+    }
+    const auto result = run_rdp_full_analysis_from_fasta_file(
+        fasta_path, options);
+    std::cout << "mask=" << mask << " final-events=" << result.events.size()
+              << " raw-candidates=" << result.raw_candidate_count << '\n';
+    for (const auto& event : result.events) {
+        std::cout << event.event_number << ',' << event.beginning << ','
+                  << event.ending << ',' << event.probability << ','
+                  << event.winning_role << '\n';
+    }
+    return 0;
+}
+
 int fasta_rdp_full_transition_fixture(
     const std::string& fasta_path, const std::string& addjust_trace_path) {
     RdpFullAnalysisTrace trace;
@@ -7427,6 +7498,18 @@ int main(int argc, char** argv) {
     if (argc == 3 && std::string_view(argv[1]) == "fasta-rdp-full") {
         return fasta_rdp_full_analysis(argv[2]);
     }
+    if ((argc == 8 || argc == 9) &&
+        std::string_view(argv[1]) == "fasta-burt") {
+        return fasta_burt_analysis(
+            argv[2], std::stoi(argv[3]), std::stoi(argv[4]),
+            std::stoi(argv[5]), std::stoi(argv[6]), std::stoi(argv[7]),
+            argc == 8 || std::stoi(argv[8]) != 0);
+    }
+    if ((argc == 4 || argc == 5) &&
+        std::string_view(argv[1]) == "fasta-method-run") {
+        return fasta_method_run(
+            argv[2], std::stoi(argv[3]), argc == 5 ? argv[4] : "");
+    }
     if (argc == 4 &&
         std::string_view(argv[1]) == "fasta-rdp-full-transition-fixture") {
         return fasta_rdp_full_transition_fixture(argv[2], argv[3]);
@@ -7594,6 +7677,8 @@ int main(int argc, char** argv) {
         << "       rdp-core mark-outsides-fixture <capture.bin>\n"
         << "       rdp-core make-sdmp2-fixture <capture.bin>\n"
         << "       rdp-core fill-rmat-fixture <capture.bin>\n"
+        << "       rdp-core fasta-burt <alignment.fasta> <seq1> <seq2> <seq3> <begin> <end> [circular]\n"
+        << "       rdp-core fasta-method-run <alignment.fasta> <mask> [fixture-directory]\n"
         << "       rdp-core oracle-fixture-chain <fixture-directory>\n";
     return 2;
 }

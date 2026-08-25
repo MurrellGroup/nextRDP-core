@@ -12,6 +12,22 @@ struct RdpInitialAnalysisOptions {
     bool circular = true;
     double p_value_cutoff = 0.05;
     int window_sites = 30;
+    bool enable_geneconv = false;
+    bool enable_maxchi = false;
+    bool enable_chimaera = false;
+    bool enable_three_seq = false;
+    bool polish_breakpoints_with_burt = false;
+
+    // Optional source call-order captures.  The primary legacy scanners are
+    // still being lifted in source order; until that work is complete these
+    // captures are required for a selectable method run instead of silently
+    // substituting an all-triplet approximation.
+    std::string geneconv_call_order_path;
+    std::string geneconv_call_count_path;
+    std::string maxchi_call_order_path;
+    std::string maxchi_call_count_path;
+    std::string chimaera_call_order_path;
+    std::string chimaera_call_count_path;
 };
 
 struct RdpInitialAnalysisResult {

@@ -1,6 +1,7 @@
 #include "analysis.hpp"
 
 #include "MathFuncsDll.h"
+#include "burt_state.hpp"
 #include "distance_state.hpp"
 #include "legacy_method_state.hpp"
 #include "mutation_state.hpp"
@@ -333,6 +334,82 @@ RdpInitialAnalysisResult run_rdp_initial_analysis(
         store_lpv_upper_bound, fss_upper_bound, half_window, full_window,
         xover_settings, probability_settings, probability_estimate,
         factorials.three_way, factorials.factorial, xover_api());
+    const int selected_method_count =
+        1 + static_cast<int>(options.enable_geneconv) +
+        static_cast<int>(options.enable_maxchi) +
+        static_cast<int>(options.enable_chimaera) +
+        static_cast<int>(options.enable_three_seq);
+    if (selected_method_count > 1) {
+        const bool has_geneconv_order =
+            !options.geneconv_call_order_path.empty() &&
+            !options.geneconv_call_count_path.empty();
+        const bool has_maxchi_order =
+            !options.maxchi_call_order_path.empty() &&
+            !options.maxchi_call_count_path.empty();
+        const bool has_chimaera_order =
+            !options.chimaera_call_order_path.empty() &&
+            !options.chimaera_call_count_path.empty();
+        if ((options.enable_geneconv && !has_geneconv_order) ||
+            (options.enable_maxchi && !has_maxchi_order) ||
+            (options.enable_chimaera && !has_chimaera_order) ||
+            options.enable_three_seq) {
+            throw std::runtime_error(
+                "selectable legacy method runs require source call-order "
+                "captures (3SEQ capture support is not ported yet)");
+        }
+        RdpLegacyEventAllocator allocator(events, selected_method_count);
+        if (options.enable_geneconv) {
+            std::ifstream count_input(options.geneconv_call_count_path,
+                                       std::ios::binary);
+            int call_count = 0;
+            count_input.read(reinterpret_cast<char*>(&call_count), sizeof(call_count));
+            std::ifstream order_input(options.geneconv_call_order_path,
+                                      std::ios::binary);
+            for (int call = 0; call < call_count; ++call) {
+                std::array<int, 9> record{};
+                order_input.read(reinterpret_cast<char*>(record.data()), sizeof(record));
+                if (!order_input) throw std::runtime_error("truncated GENECONV call-order fixture");
+                std::array<int, 3> input{record[5], record[6], record[7]};
+                run_rdp_geneconv_recheck(
+                    scan_state, input, store_lpv, store_lpv_upper_bound,
+                    probability_settings, allocator);
+            }
+        }
+        if (options.enable_maxchi) {
+            std::ifstream count_input(options.maxchi_call_count_path,
+                                       std::ios::binary);
+            int call_count = 0;
+            count_input.read(reinterpret_cast<char*>(&call_count), sizeof(call_count));
+            std::ifstream order_input(options.maxchi_call_order_path,
+                                      std::ios::binary);
+            for (int call = 0; call < call_count; ++call) {
+                std::array<int, 8> record{};
+                order_input.read(reinterpret_cast<char*>(record.data()), sizeof(record));
+                if (!order_input) throw std::runtime_error("truncated MaxChi call-order fixture");
+                std::array<int, 3> input{record[4], record[5], record[6]};
+                run_rdp_maxchi_recheck(
+                    scan_state, input, store_lpv, store_lpv_upper_bound,
+                    probability_settings, allocator, 0, 0, true);
+            }
+        }
+        if (options.enable_chimaera) {
+            std::ifstream count_input(options.chimaera_call_count_path,
+                                       std::ios::binary);
+            int call_count = 0;
+            count_input.read(reinterpret_cast<char*>(&call_count), sizeof(call_count));
+            std::ifstream order_input(options.chimaera_call_order_path,
+                                      std::ios::binary);
+            for (int call = 0; call < call_count; ++call) {
+                std::array<int, 8> record{};
+                order_input.read(reinterpret_cast<char*>(record.data()), sizeof(record));
+                if (!order_input) throw std::runtime_error("truncated Chimaera call-order fixture");
+                run_rdp_chimaera_recheck(
+                    scan_state, {record[3], record[4], record[5]}, store_lpv,
+                    store_lpv_upper_bound, probability_settings, allocator,
+                    0, 0, true);
+            }
+        }
+    }
     return {
         std::move(scan_state), std::move(events), std::move(store_lpv),
         store_lpv_upper_bound};
@@ -449,7 +526,7 @@ RdpFullAnalysisResult run_rdp_full_analysis(
             done_row_upper_bound = scan_state.next_no;
             continue;
         }
-        const RdpRawEvent selected = selected_slot;
+        RdpRawEvent selected = selected_slot;
         if (analysis_trace != nullptr) {
             analysis_trace->selected_slots.push_back({
                 selection.trace[0], selection.trace[1]});
@@ -460,6 +537,17 @@ RdpFullAnalysisResult run_rdp_full_analysis(
         auto round = identify_rdp_complete_round(
             scan_state, distance_state, events, selected, missing_data,
             permanent_next_no, 20);
+        if (options.polish_breakpoints_with_burt) {
+            const auto burt = run_rdp_burt(
+                scan_state, round.prefix.sequences, selected.beginning,
+                selected.ending, options.circular, 20, 0);
+            if (burt.trained) {
+                selected.beginning = static_cast<std::int16_t>(
+                    burt.polished_beginning);
+                selected.ending = static_cast<std::int16_t>(
+                    burt.polished_ending);
+            }
+        }
         if (analysis_trace != nullptr) {
             analysis_trace->complete_round_states.push_back(round);
             analysis_trace->consensus_states.push_back(round.consensus);
@@ -620,7 +708,13 @@ RdpFullAnalysisResult run_rdp_full_analysis(
             }
             std::cerr << '\n';
         }
-        RdpLegacyEventAllocator legacy_events(temporary_events, 1);
+        const int selected_method_count =
+            1 + static_cast<int>(options.enable_geneconv) +
+            static_cast<int>(options.enable_maxchi) +
+            static_cast<int>(options.enable_chimaera) +
+            static_cast<int>(options.enable_three_seq);
+        RdpLegacyEventAllocator legacy_events(
+            temporary_events, selected_method_count);
         const auto& three_seq_table = active_three_seq_table();
         for (int slot = 0;
              slot <= round.final_candidates.candidate_last[winner]; ++slot) {
@@ -648,50 +742,58 @@ RdpFullAnalysisResult run_rdp_full_analysis(
                               << triplet[1] << ':' << triplet[2] << '\n';
                 }
             };
-            trace_call("geneconv", 0);
-            run_rdp_geneconv_recheck(
-                scan_state, triplet, initial.store_lpv,
-                initial.store_lpv_upper_bound, probability_settings,
-                legacy_events);
-            trace_legacy_method_state("after-geneconv", temporary_events);
-            trace_call("maxchi", 0);
-            run_rdp_maxchi_recheck(
-                scan_state, triplet, initial.store_lpv,
-                initial.store_lpv_upper_bound, probability_settings,
-                legacy_events, selected.beginning, selected.ending);
-            trace_legacy_method_state("after-maxchi", temporary_events);
-            auto rotated = triplet;
-            for (int rotation = 0; rotation < 3; ++rotation) {
-                if (std::getenv("RDP_TRACE_TEMP") != nullptr) {
-                    std::cerr << "temp-call chimaera rotation=" << rotation
-                              << " triplet=" << rotated[0] << ':'
-                              << rotated[1] << ':' << rotated[2] << '\n';
-                }
-                // Preserve the native CXoverA map hand-off: its third
-                // orientation does not replace the map used by later XOver.
-                run_rdp_chimaera_recheck(
-                    scan_state, rotated, initial.store_lpv,
+            if (options.enable_geneconv) {
+                trace_call("geneconv", 0);
+                run_rdp_geneconv_recheck(
+                    scan_state, triplet, initial.store_lpv,
                     initial.store_lpv_upper_bound, probability_settings,
-                    legacy_events, selected.beginning, selected.ending, false,
-                    rotation < 2 ? &shared_xdiffpos0 : nullptr);
-                trace_legacy_method_state("after-chimaera", temporary_events);
-                rotated = {rotated[1], rotated[2], rotated[0]};
-            }
-            rotated = triplet;
-            for (int rotation = 0; rotation < 3; ++rotation) {
-                if (std::getenv("RDP_TRACE_TEMP") != nullptr) {
-                    std::cerr << "temp-call three-seq rotation=" << rotation
-                              << " triplet=" << rotated[0] << ':'
-                              << rotated[1] << ':' << rotated[2] << '\n';
-                }
-                run_rdp_three_seq_recheck(
-                    scan_state, rotated, initial.store_lpv,
-                    initial.store_lpv_upper_bound, probability_settings,
-                    three_seq_table, configured_three_seq_table != nullptr
-                        ? configured_three_seq_table_bound : 45,
                     legacy_events);
-                trace_legacy_method_state("after-three-seq", temporary_events);
-                rotated = {rotated[1], rotated[2], rotated[0]};
+                trace_legacy_method_state("after-geneconv", temporary_events);
+            }
+            if (options.enable_maxchi) {
+                trace_call("maxchi", 0);
+                run_rdp_maxchi_recheck(
+                    scan_state, triplet, initial.store_lpv,
+                    initial.store_lpv_upper_bound, probability_settings,
+                    legacy_events, selected.beginning, selected.ending);
+                trace_legacy_method_state("after-maxchi", temporary_events);
+            }
+            if (options.enable_chimaera) {
+                auto rotated = triplet;
+                for (int rotation = 0; rotation < 3; ++rotation) {
+                    if (std::getenv("RDP_TRACE_TEMP") != nullptr) {
+                        std::cerr << "temp-call chimaera rotation=" << rotation
+                                  << " triplet=" << rotated[0] << ':'
+                                  << rotated[1] << ':' << rotated[2] << '\n';
+                    }
+                    // Preserve the native CXoverA map hand-off: its third
+                    // orientation does not replace the map used by later XOver.
+                    run_rdp_chimaera_recheck(
+                        scan_state, rotated, initial.store_lpv,
+                        initial.store_lpv_upper_bound, probability_settings,
+                        legacy_events, selected.beginning, selected.ending, false,
+                        rotation < 2 ? &shared_xdiffpos0 : nullptr);
+                    trace_legacy_method_state("after-chimaera", temporary_events);
+                    rotated = {rotated[1], rotated[2], rotated[0]};
+                }
+            }
+            if (options.enable_three_seq) {
+                auto rotated = triplet;
+                for (int rotation = 0; rotation < 3; ++rotation) {
+                    if (std::getenv("RDP_TRACE_TEMP") != nullptr) {
+                        std::cerr << "temp-call three-seq rotation=" << rotation
+                                  << " triplet=" << rotated[0] << ':'
+                                  << rotated[1] << ':' << rotated[2] << '\n';
+                    }
+                    run_rdp_three_seq_recheck(
+                        scan_state, rotated, initial.store_lpv,
+                        initial.store_lpv_upper_bound, probability_settings,
+                        three_seq_table, configured_three_seq_table != nullptr
+                            ? configured_three_seq_table_bound : 45,
+                        legacy_events);
+                    trace_legacy_method_state("after-three-seq", temporary_events);
+                    rotated = {rotated[1], rotated[2], rotated[0]};
+                }
             }
         }
         append_rdp_events(events_after_final_trim, temporary_events);

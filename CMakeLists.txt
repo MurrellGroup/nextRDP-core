@@ -34,6 +34,7 @@ endif()
 
 add_library(next_rdp_core STATIC
     src/analysis.cpp
+    src/burt_state.cpp
     src/distance_state.cpp
     src/identification_state.cpp
     src/legacy_method_state.cpp
