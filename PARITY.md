@@ -250,3 +250,18 @@ Dataset7 are completely exact. Current signal totals are: Dataset0
 5,763/5,764. Dataset6 has equal totals but 8,010 of 8,044 comparable
 structural identities; the other non-passing datasets still have one to eight
 missing signals plus later coordinate differences.
+
+## Current RDP-only cyclic status
+
+The RDP-only command-line path is now complete through the cyclic post-event
+loop. The WASM build's `fasta-method-run <dataset> 0` output is byte-identical
+to the locally compiled oracle for all ten supplied datasets, including event
+counts, raw-candidate counts, ordering, role fields, breakpoints,
+probabilities, and consensus fields. The final event totals are 49, 47, 40,
+39, 43, 25, 21, 22, 21, and 20 for Dataset0 through Dataset9.
+
+The mixed-method totals above are a separate optional-method parity track; they
+do not describe the RDP-only path. The key final cyclic fix was a
+source-faithful emulation of Clearcut's x87 intermediate precision and store
+boundaries in the neighbour-joining routine. See
+`../nextRDP-wasm/RDPbugsandquirks.md` for the confirmed compatibility quirk.

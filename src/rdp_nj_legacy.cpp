@@ -9,6 +9,45 @@
 // be matched without changing the preceding distance/matrix routines.
 namespace MathFuncs::rdp_nj_legacy {
 
+/* The original 32-bit RDP build evaluates the Clearcut expressions on an
+ * x87 stack.  WASM has no x87 register format, so these helpers retain the
+ * 64-bit x87 significand after each arithmetic operation until the source
+ * explicitly stores a float. */
+static inline long double x87_round(const long double input) {
+    if (!std::isfinite(input) || input == 0.0L) return input;
+    int exponent = 0;
+    const long double mantissa = std::frexp(input, &exponent);
+    const long double scaled = std::ldexp(mantissa, 64);
+    const long double magnitude = std::fabs(scaled);
+    const long double lower = std::floor(magnitude);
+    const long double fraction = magnitude - lower;
+    long double rounded = lower;
+    if (fraction > 0.5L ||
+        (fraction == 0.5L && std::fmod(lower, 2.0L) != 0.0L)) {
+        rounded += 1.0L;
+    }
+    if (scaled < 0.0L) rounded = -rounded;
+    return std::ldexp(rounded, exponent - 64);
+}
+static inline long double x87_add(const long double a, const long double b) {
+    return x87_round(a + b);
+}
+static inline long double x87_sub(const long double a, const long double b) {
+    return x87_round(a - b);
+}
+static inline long double x87_div(const long double a, const long double b) {
+    return x87_round(a / b);
+}
+
+static inline float f32_add(const float a, const float b) {
+    volatile float result = a + b;
+    return result;
+}
+
+static inline float x87_add_store(const float a, const long double b) {
+    return static_cast<float>(x87_add(static_cast<long double>(a), b));
+}
+
 DMAT *
 NJ_parse_distance_matrix(float *dists,int nextno) {
 
@@ -89,25 +128,25 @@ NJ_init_r(DMAT *dmat) {
 	std::int32_t index;
 	float *r, *r2, *val;
 	std::int32_t size1;
-	float size2;
+	long double size2;
 
 	r = dmat->r;
 	r2 = dmat->r2;
 	val = dmat->val;
 	size = dmat->size;
 	size1 = size - 1;
-	size2 = (float)(size - 2);
+	size2 = size - 2;
 
 	index = 0;
 	for (i = 0; i<size1; i++) {
 		index++;
 		for (j = i + 1; j<size; j++) {
-			r[i] += val[index];
-			r[j] += val[index];
+			r[i] = f32_add(r[i], val[index]);
+			r[j] = f32_add(r[j], val[index]);
 			index++;
 		}
 
-		r2[i] = r[i] / size2;
+		r2[i] = static_cast<float>(x87_div(r[i], size2));
 	}
 
 	return;
@@ -152,8 +191,8 @@ NJ_min_transform(DMAT *dmat,
 	std::int32_t i, j;   /* indices used for looping        */
 	std::int32_t tmp_i = 0;/* to limit pointer dereferencing  */
 	std::int32_t tmp_j = 0;/* to limit pointer dereferencing  */
-	float smallest;  /* track the smallest trans. dist  */
-	float curval;    /* the current trans. dist in loop */
+	long double smallest;  /* track the smallest trans. dist  */
+	long double curval;    /* the current trans. dist in loop */
 
 	float *ptr;      /* pointer into distance matrix    */
 	float *r2;       /* pointer to r2 matrix for computing transformed dists */
@@ -170,12 +209,14 @@ NJ_min_transform(DMAT *dmat,
 		for (j = i + 1; j<dmat->size; j++) {   /* for every column */
 
 											   /* find transformed distance in matrix at i, j */
-			curval = *(ptr++) - (r2[i] + r2[j]);
+			curval = x87_sub(static_cast<long double>(*(ptr++)),
+				x87_add(static_cast<long double>(r2[i]),
+					static_cast<long double>(r2[j])));
 
 			/* if the transformed distanance is less than the known minimum */
 			if (curval < smallest) {
 
-				smallest = curval;
+				smallest = x87_round(curval);
 				tmp_i = i;
 				tmp_j = j;
 			}
@@ -186,7 +227,7 @@ NJ_min_transform(DMAT *dmat,
 	*ret_i = tmp_i;
 	*ret_j = tmp_j;
 
-	return(smallest);  /* return the min transformed distance */
+	return(static_cast<float>(smallest));  /* return the min transformed distance */
 }
 
 
@@ -198,7 +239,7 @@ NJ_decompose(DMAT *dmat,
 	int last_flag) {
 
 	NJ_TREE *new_node;
-	float x2clade, y2clade;
+	long double x2clade, y2clade;
 
 	/* compute the distance from the clade components to the new node */
 	if (last_flag) {
@@ -206,9 +247,9 @@ NJ_decompose(DMAT *dmat,
 			(dmat->val[NJ_MAP(x, y, dmat->size)]);
 	}
 	else {
-		x2clade =
-			(dmat->val[NJ_MAP(x, y, dmat->size)]) / 2 +
-			((dmat->r2[x] - dmat->r2[y]) / 2);
+		x2clade = x87_add(
+			x87_div(dmat->val[NJ_MAP(x, y, dmat->size)], 2.0L),
+			x87_div(x87_sub(dmat->r2[x], dmat->r2[y]), 2.0L));
 	}
 
 	vertex->nodes[x]->dist = x2clade;
@@ -218,9 +259,9 @@ NJ_decompose(DMAT *dmat,
 			(dmat->val[NJ_MAP(x, y, dmat->size)]);
 	}
 	else {
-		y2clade =
-			(dmat->val[NJ_MAP(x, y, dmat->size)]) / 2 +
-			((dmat->r2[y] - dmat->r2[x]) / 2);
+		y2clade = x87_add(
+			x87_div(dmat->val[NJ_MAP(x, y, dmat->size)], 2.0L),
+			x87_div(x87_sub(dmat->r2[y], dmat->r2[x]), 2.0L));
 	}
 
 	vertex->nodes[y]->dist = y2clade;
@@ -275,11 +316,12 @@ NJ_compute_r(DMAT *dmat,
 	ptry = &(val[NJ_MAP(b, b + 1, size)]);
 
 	for (i = a + 1; i<size; i++) {
-		*r -= *(ptrx++);
-
+		long double updated = x87_sub(static_cast<long double>(*r),
+			static_cast<long double>(*ptrx++));
 		if (i>b) {
-			*r -= *(ptry++);
+			updated = x87_sub(updated, static_cast<long double>(*ptry++));
 		}
+		*r = static_cast<float>(updated);
 
 		r++;
 	}
@@ -289,12 +331,14 @@ NJ_compute_r(DMAT *dmat,
 	ptry = &(val[NJ_MAP(0, b, size)]);
 	r = dmat->r;
 	for (i = 0; i<b; i++) {
+		long double updated = static_cast<long double>(*r);
 		if (i<a) {
-			*r -= *ptrx;
+			updated = x87_sub(updated, static_cast<long double>(*ptrx));
 			ptrx += size - i - 1;
 		}
 
-		*r -= *ptry;
+		updated = x87_sub(updated, static_cast<long double>(*ptry));
+		*r = static_cast<float>(updated);
 		ptry += size - i - 1;
 		r++;
 	}
@@ -313,9 +357,9 @@ NJ_collapse(DMAT *dmat,
 
 	std::int32_t i;     /* index used for looping */
 	std::int32_t size;  /* size of dmat --> reduce pointer dereferencing */
-	float a2clade;  /* distance from a to the new node that joins a and b */
-	float b2clade;  /* distance from b to the new node that joins a and b */
-	float cval;     /* stores distance information during loop */
+	long double a2clade;  /* distance from a to the new node that joins a and b */
+	long double b2clade;  /* distance from b to the new node that joins a and b */
+	long double cval;     /* stores distance information during loop */
 	float *vptr;    /* pointer to elements in first row of dist matrix */
 	float *ptra;    /* pointer to elements in row a of distance matrix */
 	float *ptrb;    /* pointer to elements in row b of distance matrix */
@@ -332,10 +376,10 @@ NJ_collapse(DMAT *dmat,
 	size = dmat->size;
 
 	/* compute the distance from the clade components (a, b) to the new node */
-	a2clade =
-		((val[NJ_MAP(a, b, size)]) + (dmat->r2[a] - dmat->r2[b])) / 2.0;
-	b2clade =
-		((val[NJ_MAP(a, b, size)]) + (dmat->r2[b] - dmat->r2[a])) / 2.0;
+	a2clade = x87_div(x87_add(val[NJ_MAP(a, b, size)],
+		x87_sub(dmat->r2[a], dmat->r2[b])), 2.0L);
+	b2clade = x87_div(x87_add(val[NJ_MAP(a, b, size)],
+		x87_sub(dmat->r2[b], dmat->r2[a])), 2.0L);
 
 
 	r[a] = 0.0;  /* we are removing row a, so clear dist. in r */
@@ -352,9 +396,8 @@ NJ_collapse(DMAT *dmat,
 		* Compute distance from new internal node to others in
 		* the distance matrix.
 		*/
-		cval =
-			((*ptra - a2clade) +
-			(*ptrb - b2clade)) / 2.0;
+		cval = x87_div(x87_add(x87_sub(*ptra, a2clade),
+			x87_sub(*ptrb, b2clade)), 2.0L);
 
 		/* incr.  row b pointer differently depending on where i is in loop */
 		if (i<b) {
@@ -368,11 +411,12 @@ NJ_collapse(DMAT *dmat,
 		*(ptra++) = cval;
 
 		/* accumulate the distance onto the r vector */
-		r[a] += cval;
-		r[i] += cval;
+		r[a] = x87_add_store(r[a], cval);
+		const long double updated_i = x87_add(r[i], cval);
+		r[i] = static_cast<float>(updated_i);
 
 		/* scale r2 on the fly here */
-		r2[i] = r[i] / (float)(size - 3);
+		r2[i] = static_cast<float>(x87_div(updated_i, size - 3));
 	}
 
 	/* fill the vertical part of the "a" column and finish computing r and r2 */
@@ -384,19 +428,19 @@ NJ_collapse(DMAT *dmat,
 		* Compute distance from new internal node to others in
 		* the distance matrix.
 		*/
-		cval =
-			((*ptra - a2clade) +
-			(*ptrb - b2clade)) / 2.0;
+		cval = x87_div(x87_add(x87_sub(*ptra, a2clade),
+			x87_sub(*ptrb, b2clade)), 2.0L);
 
 		/* assign the newly computed distance and increment a ptr by a column */
 		*ptra = cval;
 
 		/* accumulate the distance onto the r vector */
-		r[a] += cval;
-		r[i] += cval;
+		r[a] = x87_add_store(r[a], cval);
+		const long double updated_i = x87_add(r[i], cval);
+		r[i] = static_cast<float>(updated_i);
 
 		/* scale r2 on the fly here */
-		r2[i] = r[i] / (float)(size - 3);
+		r2[i] = static_cast<float>(x87_div(updated_i, size - 3));
 
 		/* here, always increment by an entire row */
 		ptra += size - i - 1;
@@ -405,7 +449,7 @@ NJ_collapse(DMAT *dmat,
 
 
 	/* scale r2 on the fly here */
-	r2[a] = r[a] / (float)(size - 3);
+	r2[a] = static_cast<float>(x87_div(r[a], size - 3));
 
 
 

@@ -6,6 +6,8 @@
 - A routine is not considered ported until its observable outputs match a captured oracle fixture.
 - Do not add dataset-specific conditions, lookup tables, role swaps, or breakpoint corrections.
 - Preserve native RDP bugs and quirks. Record confirmed quirks in `../nextRDP-wasm/RDPbugsandquirks.md`.
+- For every confirmed source/runtime behavior needed for parity, record the mechanism and the
+  validating dataset/oracle evidence in that ledger; do not hide a compatibility quirk in a
+  dataset-specific workaround.
 - Keep generated traces, fixtures under construction, and runtime output in this project's `sandbox/` directory.
 - Do not add UI or web integration until the command-line core reaches parity.
-
