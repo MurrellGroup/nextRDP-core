@@ -55,6 +55,20 @@ struct RdpInitialAnalysisResult {
     int store_lpv_upper_bound = 8;
 };
 
+// The values passed to the original VB DrawPlots routine.  RDP plots are not
+// ordinary nucleotide-window identities: they are XOverHomologyP rolling
+// agreement counts over information-rich sites, drawn at XDiffPos.
+struct RdpSlidingWindowProfile {
+    int window_sites = 0;
+    int divisor = 0;
+    int alignment_length = 0;
+    double minimum = 0.0;
+    double maximum = 0.0;
+    bool exact = false;
+    std::vector<int> positions;
+    std::array<std::vector<int>, 3> counts;
+};
+
 struct RdpFinalEvent {
     int event_number = 0;
     int program = 0;
@@ -68,6 +82,7 @@ struct RdpFinalEvent {
     bool burt_attempted = false;
     bool burt_applied = false;
     RdpBurtResult burt{};
+    RdpSlidingWindowProfile rdp_profile{};
 };
 
 struct RdpFullAnalysisResult {

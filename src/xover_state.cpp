@@ -1484,6 +1484,14 @@ RdpRawEventState scan_rdp_redo_triplets(
                                 static_cast<std::int16_t>(storage[0]);
                             event.program_flag = 0;
                             event.probability = probability;
+                            event.profile_sequences = {
+                                static_cast<std::int16_t>(state.sequences[0]),
+                                static_cast<std::int16_t>(state.sequences[1]),
+                                static_cast<std::int16_t>(state.sequences[2])};
+                            event.profile_available = 1;
+                            event.profile_use_compress =
+                                (sequence_event_number == 0 || use_compress)
+                                    ? 1 : 0;
                             if (beginning_warning == 1 &&
                                 ending_warning == 1) {
                                 event.sbp_flag = 3;

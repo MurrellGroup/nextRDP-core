@@ -311,27 +311,51 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
         : context.options.window_sites;
     requested_window = std::max(2, requested_window);
     const int half_window = std::max(1, requested_window / 2);
+    const bool exact_rdp_profile = program == 0 &&
+        event.rdp_profile.exact &&
+        event.rdp_profile.positions.size() ==
+            event.rdp_profile.counts[0].size() &&
+        event.rdp_profile.positions.size() ==
+            event.rdp_profile.counts[1].size() &&
+        event.rdp_profile.positions.size() ==
+            event.rdp_profile.counts[2].size();
     const int stride = std::max(1, (length + 1999) / 2000);
     std::vector<int> coordinates;
-    for (int coordinate = 1; coordinate <= length; coordinate += stride) coordinates.push_back(coordinate);
-    if (coordinates.empty() || coordinates.back() != length) coordinates.push_back(length);
+    if (exact_rdp_profile) {
+        coordinates = event.rdp_profile.positions;
+    } else {
+        for (int coordinate = 1; coordinate <= length; coordinate += stride) coordinates.push_back(coordinate);
+        if (coordinates.empty() || coordinates.back() != length) coordinates.push_back(length);
+    }
     auto add_coordinate = [&](int coordinate) {
         coordinate = std::clamp(coordinate, 1, length);
         coordinates.push_back(coordinate);
     };
-    add_coordinate(event.beginning);
-    add_coordinate(event.ending);
-    std::sort(coordinates.begin(), coordinates.end());
-    coordinates.erase(std::unique(coordinates.begin(), coordinates.end()), coordinates.end());
+    if (!exact_rdp_profile) {
+        add_coordinate(event.beginning);
+        add_coordinate(event.ending);
+        std::sort(coordinates.begin(), coordinates.end());
+        coordinates.erase(std::unique(coordinates.begin(), coordinates.end()), coordinates.end());
+    }
 
     std::vector<std::array<double, 3>> values;
     values.reserve(coordinates.size());
     std::array<double, 3> walks{};
     double minimum = std::numeric_limits<double>::infinity();
     double maximum = -std::numeric_limits<double>::infinity();
-    for (const int coordinate : coordinates) {
+    for (std::size_t coordinate_index = 0;
+         coordinate_index < coordinates.size(); ++coordinate_index) {
+        const int coordinate = coordinates[coordinate_index];
         std::array<double, 3> point{};
-        if (program == 8) {
+        if (exact_rdp_profile) {
+            const double divisor = static_cast<double>(
+                std::max(1, event.rdp_profile.divisor));
+            for (int pair = 0; pair < 3; ++pair) {
+                point[pair] = static_cast<double>(
+                    event.rdp_profile.counts[pair][coordinate_index]) /
+                    divisor;
+            }
+        } else if (program == 8) {
             for (int target = 0; target < 3; ++target) {
                 const int first = (target + 1) % 3;
                 const int second = (target + 2) % 3;
@@ -372,15 +396,24 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
             maximum = std::max(maximum, value);
         }
     }
+    if (exact_rdp_profile) {
+        minimum = event.rdp_profile.minimum;
+        maximum = event.rdp_profile.maximum;
+    }
     if (!std::isfinite(minimum)) minimum = 0.0;
     if (!std::isfinite(maximum)) maximum = 0.0;
     std::ostringstream output;
     output << std::setprecision(17)
            << "{\"signalId\":" << signal_id
            << ",\"windowSites\":" << (program == 8 ? 0 : requested_window)
+           << ",\"alignmentLength\":" << length
            << ",\"method\":\"" << method << "\",\"metric\":\"" << metric
-           << "\",\"profileContext\":\"original-alignment-reconstruction\""
-           << ",\"detectionProfileExact\":false,\"minimumValue\":" << minimum
+           << "\",\"profileContext\":\""
+           << (exact_rdp_profile ? "detection-alignment" :
+               "original-alignment-reconstruction") << "\""
+           << ",\"detectionProfileExact\":"
+           << (exact_rdp_profile ? "true" : "false")
+           << ",\"minimumValue\":" << minimum
            << ",\"maximumValue\":" << maximum << ",\"points\":[";
     for (std::size_t index = 0; index < coordinates.size(); ++index) {
         if (index != 0) output << ',';

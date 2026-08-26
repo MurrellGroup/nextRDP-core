@@ -33,6 +33,86 @@ int count_events(const RdpRawEventState& events) {
     return count;
 }
 
+RdpSlidingWindowProfile make_rdp_sliding_window_profile(
+    const RdpScanState& scan_state, const RdpDistanceState& distance_state,
+    const RdpTreeState& tree_state, const RdpRawEvent& event,
+    const int window_sites, std::vector<unsigned char>& fss_rdp,
+    const Dna5XoverApi& api) {
+    RdpSlidingWindowProfile profile;
+    profile.window_sites = window_sites;
+    // DrawPlots deliberately uses the odd, symmetric window width rather
+    // than the number of valid observations in each window.
+    const int source_half_window = std::max(1, window_sites / 2);
+    profile.divisor = source_half_window * 2 + 1;
+    profile.alignment_length = scan_state.sequence_length;
+    if (event.profile_available == 0) return profile;
+    std::array<int, 3> sequences{};
+    for (int role = 0; role < 3; ++role) {
+        sequences[role] = event.profile_sequences[role];
+        if (sequences[role] < 0 || sequences[role] > scan_state.next_no) {
+            return profile;
+        }
+    }
+
+    // XOver uses the compressed PB3/PB4 path for the initial and rescan
+    // passes, and the plain FindSubSeqP path in FinalTrim.  Preserve that
+    // choice instead of silently reconstructing a different profile.
+    const bool use_compress = event.profile_use_compress != 0;
+    auto state = build_rdp_first_xover_state(
+        scan_state, distance_state, tree_state, 0, 125, fss_rdp,
+        source_half_window, static_cast<short>(window_sites), api,
+        &sequences, use_compress ? 0 : 1, use_compress);
+    if (state.informative_length < source_half_window * 2 ||
+        state.homology_length <= 0) {
+        return profile;
+    }
+    if (use_compress) {
+        // PB3 writes the compact agreement rows but not XDiffPos.  The
+        // source obtains those coordinates lazily through PB4 before
+        // DrawPlots is called.
+        state.position_map_result = api.find_subsequence_with_positions(
+            state.agreement_counts.data(), 125, source_half_window,
+            scan_state.compressed_sequence_ub, scan_state.sequence_length,
+            scan_state.next_no, sequences[0], sequences[1], sequences[2],
+            const_cast<unsigned char*>(scan_state.compressed_sequence.data()),
+            state.xover_sequence_ub, state.xover_sequence.data(),
+            state.xdiffpos.data(), state.xposdiff.data(), fss_rdp.data());
+    }
+
+    const int stride = state.homology_ub + 1;
+    profile.positions.reserve(static_cast<std::size_t>(state.homology_length + 1));
+    for (auto& row : profile.counts) {
+        row.reserve(static_cast<std::size_t>(state.homology_length + 1));
+    }
+    int lower = 1;
+    int upper = 0;
+    for (int position = 0; position <= state.homology_length; ++position) {
+        int alignment_position = state.xdiffpos[static_cast<std::size_t>(position)];
+        // Module30.DrawPlots repairs the sentinel XDiffPos(0) this way,
+        // producing the small initial vertical segment in the legacy plot.
+        if (position == 0 && alignment_position == 0) {
+            alignment_position = state.xdiffpos[1];
+        }
+        if (alignment_position <= 0) alignment_position = 1;
+        profile.positions.push_back(alignment_position);
+        for (int pair = 0; pair < 3; ++pair) {
+            const int value = state.homology[
+                position + pair * stride];
+            profile.counts[pair].push_back(value);
+            if (position > 0) {
+                lower = std::min(lower, value);
+                upper = std::max(upper, value);
+            }
+        }
+    }
+    profile.minimum = static_cast<double>(lower) /
+        static_cast<double>(profile.divisor);
+    profile.maximum = static_cast<double>(upper) /
+        static_cast<double>(profile.divisor);
+    profile.exact = !profile.positions.empty();
+    return profile;
+}
+
 void report_progress(const RdpInitialAnalysisOptions& options,
                      const int phase, const int round,
                      const int processed_triplets, const int total_triplets,
@@ -880,6 +960,25 @@ RdpFullAnalysisResult run_rdp_full_analysis(
         final_event.burt = std::move(burt_result);
         final_event.burt_attempted = final_event.burt.attempted;
         final_event.burt_applied = final_event.burt.trained;
+        if (selected.program_flag == 0) {
+            // AddjustCXO/MakeCollecteventsC communicate through the legacy
+            // XOVERDEFINE ABI, so their bookkeeping copies do not carry the
+            // plot provenance fields.  In that case the complete-round
+            // prefix is the live triplet that the selected event is about;
+            // all post-initial cyclic XOver passes use PB3.
+            RdpRawEvent plot_event = selected;
+            if (plot_event.profile_available == 0) {
+                plot_event.profile_sequences = {
+                    static_cast<std::int16_t>(round.prefix.sequences[0]),
+                    static_cast<std::int16_t>(round.prefix.sequences[1]),
+                    static_cast<std::int16_t>(round.prefix.sequences[2])};
+                plot_event.profile_available = 1;
+                plot_event.profile_use_compress = 1;
+            }
+            final_event.rdp_profile = make_rdp_sliding_window_profile(
+                scan_state, distance_state, tree_state, plot_event,
+                options.window_sites, fss_rdp, xover_api());
+        }
         for (int role = 0; role < 3; ++role) {
             const int representative = round.prefix.sequences[role];
             final_event.representative_sequences[role] =

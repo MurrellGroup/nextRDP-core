@@ -131,6 +131,13 @@ struct RdpRawEvent {
     std::int32_t end_parent = 0;
     double probability = 0.0;
     double distance_holder = 0.0;
+    // The source keeps the triplet and whether XOver used the compressed
+    // FindSubSeqPB3 path implicit in the live buffers.  Retain that small
+    // bit of provenance with each RDP record so the review plot can replay
+    // the same XOverHomologyP profile after the scan has moved on.
+    std::array<std::int16_t, 3> profile_sequences{};
+    std::uint8_t profile_available = 0;
+    std::uint8_t profile_use_compress = 0;
 };
 
 struct RdpRawEventState {
