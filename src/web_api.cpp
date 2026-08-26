@@ -1,4 +1,5 @@
 #include "analysis.hpp"
+#include "legacy_method_state.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -18,6 +19,29 @@
 #define NEXT_RDP_KEEPALIVE EMSCRIPTEN_KEEPALIVE
 #else
 #define NEXT_RDP_KEEPALIVE
+#endif
+
+#if defined(__EMSCRIPTEN__)
+// The worker is inside the synchronous source-faithful call while these
+// milestones are produced.  Posting directly from the WASM worker lets the
+// browser receive them without waiting for the worker's JS queue to resume.
+EM_JS(void, next_rdp_web_emit_native_progress,
+      (int phase, int round, int processed, int total, int events), {
+    if (typeof self !== "undefined" &&
+        typeof self.postMessage === "function") {
+      self.postMessage({
+        type: "native-progress",
+        phase: phase,
+        scanRound: round,
+        processedTriplets: processed,
+        totalTriplets: total,
+        eventCount: events
+      });
+    }
+});
+#else
+void next_rdp_web_emit_native_progress(
+    int, int, int, int, int) {}
 #endif
 
 namespace {
@@ -86,11 +110,30 @@ struct WebContext {
     bool loaded = false;
     bool started = false;
     bool finished = false;
+    int progress_phase = 0;
+    int progress_round = 1;
+    int progress_processed_triplets = 0;
+    int progress_total_triplets = 0;
+    int progress_event_count = 0;
     std::vector<unsigned char> masked;
     std::vector<unsigned char> disabled;
     std::vector<unsigned int> reference_groups;
     std::vector<int> review_states;
 };
+
+void web_progress_callback(
+    const int phase, const int round, const int processed_triplets,
+    const int total_triplets, const int event_count, void* user) {
+    auto* context = static_cast<WebContext*>(user);
+    if (context == nullptr) return;
+    context->progress_phase = phase;
+    context->progress_round = round;
+    context->progress_processed_triplets = processed_triplets;
+    context->progress_total_triplets = total_triplets;
+    context->progress_event_count = event_count;
+    next_rdp_web_emit_native_progress(
+        phase, round, processed_triplets, total_triplets, event_count);
+}
 
 std::vector<std::unique_ptr<WebContext>>& web_contexts() {
     static std::vector<std::unique_ptr<WebContext>> contexts;
@@ -330,7 +373,9 @@ NEXT_RDP_KEEPALIVE const char* rdp_version() {
 
 NEXT_RDP_KEEPALIVE std::uint32_t rdp_set_worker_threads(
     const std::uint32_t handle, const std::uint32_t requested) {
-    return web_context(handle) == nullptr ? 0 : (requested == 0 ? 1 : 1);
+    if (web_context(handle) == nullptr) return 0;
+    return static_cast<std::uint32_t>(set_rdp_method_worker_threads(
+        static_cast<int>(requested == 0 ? 1 : requested)));
 }
 
 NEXT_RDP_KEEPALIVE int rdp_load_alignment(
@@ -400,11 +445,19 @@ NEXT_RDP_KEEPALIVE int rdp_scan_begin(
     options.enable_chimaera = chimaera_enabled != 0;
     options.enable_three_seq = threeseq_enabled != 0;
     options.polish_breakpoints_with_burt = polish_breakpoints != 0;
+    options.progress_callback = &web_progress_callback;
+    options.progress_user = context;
     context->options = std::move(options);
     context->masked.assign(masked_sequences, masked_sequences + mask_length);
     context->disabled.assign(disabled_sequences, disabled_sequences + disabled_length);
     context->started = true;
     context->finished = false;
+    context->progress_phase = 0;
+    context->progress_round = 1;
+    context->progress_processed_triplets = 0;
+    context->progress_total_triplets = count < 3
+        ? 0 : static_cast<int>(count * (count - 1) * (count - 2) / 6);
+    context->progress_event_count = 0;
     context->error.clear();
     return 1;
 }
@@ -435,22 +488,31 @@ NEXT_RDP_KEEPALIVE const char* rdp_get_progress_json(const std::uint32_t handle)
     if (context == nullptr) return "";
     const auto count = context->alignment.names.size();
     const auto total = count < 3 ? 0 : count * (count - 1) * (count - 2) / 6;
+    const int phase = context->finished ? 2 : context->progress_phase;
+    const char* phase_name = phase == 1 ? "cyclic-rescan"
+        : phase == 2 ? "complete" : "primary";
+    const auto processed = context->finished
+        ? static_cast<std::size_t>(total)
+        : static_cast<std::size_t>(std::max(0, context->progress_processed_triplets));
+    const auto event_count = context->finished
+        ? context->full.events.size()
+        : static_cast<std::size_t>(std::max(0, context->progress_event_count));
     std::ostringstream output;
     output << "{\"state\":\"" << (context->finished ? "done" : context->started ? "running" : "idle")
-           << "\",\"phase\":\"" << (context->finished ? "complete" : "primary")
-           << "\",\"processedTriplets\":" << (context->finished ? total : 0)
+           << "\",\"phase\":\"" << phase_name
+           << "\",\"processedTriplets\":" << processed
            << ",\"totalTriplets\":" << total
            << ",\"correctionTests\":" << total
            << ",\"activeWorkingSequenceCount\":" << count
            << ",\"queryWorkingSequenceCount\":0,\"referenceWorkingSequenceCount\":0"
-           << ",\"activeReferenceGroupCount\":0,\"cumulativeTriplets\":" << (context->finished ? total : 0)
-           << ",\"tripletKernelEvaluations\":" << (context->finished ? total : 0)
+           << ",\"activeReferenceGroupCount\":0,\"cumulativeTriplets\":" << processed
+           << ",\"tripletKernelEvaluations\":" << processed
            << ",\"tripletSummariesReused\":0,\"cleanTripletsPruned\":0,\"cachedSignalsReused\":0"
            << ",\"methodScansSkipped\":0,\"invalidScheduleTripletsSkipped\":0,\"pairShortlistTripletsSkipped\":0"
-           << ",\"fragmentSequencesPruned\":0,\"scanRound\":1,\"maximumDetectionCycles\":1000"
-           << ",\"fixedEventCount\":0,\"signalCount\":0,\"eventCount\":" << (context->finished ? context->full.events.size() : 0)
+           << ",\"fragmentSequencesPruned\":0,\"scanRound\":" << context->progress_round << ",\"maximumDetectionCycles\":1000"
+           << ",\"fixedEventCount\":0,\"signalCount\":0,\"eventCount\":" << event_count
            << ",\"cycleTermination\":\"" << (context->finished ? "no-significant-events" : "running")
-           << "\",\"fraction\":" << (context->finished ? 1 : 0)
+           << "\",\"fraction\":" << (context->finished ? 1 : total == 0 ? 0 : static_cast<double>(processed) / static_cast<double>(total))
            << ",\"maxChiProfilesScanned\":0,\"maxChiPeakAttempts\":0,\"maxChiCandidatesFound\":0,\"maxChiPeakLimitTriplets\":0"
            << ",\"chimaeraProfilesScanned\":0,\"chimaeraPeakAttempts\":0,\"chimaeraCandidatesFound\":0,\"chimaeraPeakLimitTargets\":0"
            << ",\"geneconvFragmentsScored\":0,\"geneconvQualifiedFragments\":0,\"geneconvCandidatesFound\":0,\"geneconvOverlapRejections\":0,\"geneconvNumericalFallbackTracks\":0"

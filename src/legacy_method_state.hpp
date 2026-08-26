@@ -7,6 +7,11 @@
 #include <cstdint>
 #include <vector>
 
+// Configure the deterministic per-triplet fan-out used by WASM builds.  The
+// native build delegates to the literal DNA5 OpenMP loops instead.
+int set_rdp_method_worker_threads(int requested);
+int rdp_method_worker_threads();
+
 // Source-order screening result from DNA5.AlistGC2.  The compatibility
 // runner keeps this separate from event emission: the VB scanner first builds
 // an AList, calls AlistGC2, then invokes GCXoverD only for RL==1 entries.

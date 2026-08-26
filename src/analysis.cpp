@@ -17,11 +17,69 @@
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
+
+int count_events(const RdpRawEventState& events) {
+    int count = 0;
+    for (const auto& row : events.xover_list) {
+        count += static_cast<int>(row.size());
+    }
+    return count;
+}
+
+void report_progress(const RdpInitialAnalysisOptions& options,
+                     const int phase, const int round,
+                     const int processed_triplets, const int total_triplets,
+                     const int event_count) {
+    if (options.progress_callback == nullptr) return;
+    options.progress_callback(
+        phase, round, processed_triplets, total_triplets, event_count,
+        options.progress_user);
+}
+
+template <typename Function>
+void run_initial_rdp_ranges(const int count, Function&& function) {
+    if (count <= 0) return;
+#if defined(NEXT_RDP_METHOD_MANUAL_THREADS) && !defined(NEXT_RDP_USE_REAL_OPENMP)
+    // Emscripten has no libomp in the supported toolchain.  AlistRDP4's
+    // per-row work is independent (each row writes only RL[y]), so invoke the
+    // same vendored routine over deterministic contiguous ranges on pthreads.
+    // Native OpenMP builds call it once and let the literal source pragma
+    // select its team, avoiding nested parallel regions.
+    const int requested = std::max(1, rdp_method_worker_threads());
+    const int workers = std::min(requested, count);
+    if (workers <= 1) {
+        function(0, count - 1);
+        return;
+    }
+    std::vector<std::thread> threads;
+    threads.reserve(static_cast<std::size_t>(workers));
+    std::exception_ptr failure;
+    std::mutex failure_mutex;
+    for (int worker = 0; worker < workers; ++worker) {
+        const int first = (count * worker) / workers;
+        const int last = (count * (worker + 1)) / workers - 1;
+        threads.emplace_back([&, first, last] {
+            try {
+                if (first <= last) function(first, last);
+            } catch (...) {
+                std::lock_guard<std::mutex> lock(failure_mutex);
+                if (!failure) failure = std::current_exception();
+            }
+        });
+    }
+    for (auto& thread : threads) thread.join();
+    if (failure) std::rethrow_exception(failure);
+#else
+    function(0, count - 1);
+#endif
+}
 
 void trace_legacy_method_state(const char* label,
                                const RdpRawEventState& events) {
@@ -297,21 +355,25 @@ RdpInitialAnalysisResult run_rdp_initial_analysis(
     const short full_window = static_cast<short>(options.window_sites);
     const int half_window = static_cast<int>(std::nearbyint(
         static_cast<double>(options.window_sites) / 2.0));
-    MathFuncs::MyMathFuncs::AlistRDP4(
-        store_lpv_upper_bound, store_lpv.data(),
-        scan_state.analysis_list.data(), scan_state.analysis_list_last,
-        0, scan_state.analysis_list_last, scan_state.next_no,
-        uncorrected_threshold, redo.data(), options.circular ? 1 : 0,
-        correction_tests, 0, options.p_value_cutoff, target,
-        scan_state.sequence_length, 100, scan_state.next_no,
-        distance_state.distance.data(), scan_state.next_no,
-        tree_state.tree_distance.data(), fss_upper_bound,
-        scan_state.compressed_sequence_ub,
-        scan_state.compressed_sequence.data(), scan_state.sequence_data.data(),
-        half_window, full_window, fss_rdp.data(), 0, 171, 171,
-        probability_estimate.data(),
-        RdpFactorialTables::three_way_upper_bound,
-        factorials.three_way.data(), factorials.factorial.data());
+    const auto run_alist_rdp4 = [&](const int first, const int last) {
+        (void)MathFuncs::MyMathFuncs::AlistRDP4(
+            store_lpv_upper_bound, store_lpv.data(),
+            scan_state.analysis_list.data(), scan_state.analysis_list_last,
+            first, last, scan_state.next_no,
+            uncorrected_threshold, redo.data(), options.circular ? 1 : 0,
+            correction_tests, 0, options.p_value_cutoff, target,
+            scan_state.sequence_length, 100, scan_state.next_no,
+            distance_state.distance.data(), scan_state.next_no,
+            tree_state.tree_distance.data(), fss_upper_bound,
+            scan_state.compressed_sequence_ub,
+            scan_state.compressed_sequence.data(), scan_state.sequence_data.data(),
+            half_window, full_window, fss_rdp.data(), 0, 171, 171,
+            probability_estimate.data(),
+            RdpFactorialTables::three_way_upper_bound,
+            factorials.three_way.data(), factorials.factorial.data());
+    };
+    run_initial_rdp_ranges(triplet_count, run_alist_rdp4);
+    report_progress(options, 0, 1, 0, triplet_count, 0);
 
     const RdpXoverSettings xover_settings{
         100,
@@ -333,7 +395,9 @@ RdpInitialAnalysisResult run_rdp_initial_analysis(
         scan_state, distance_state, tree_state, redo, fss_rdp, store_lpv,
         store_lpv_upper_bound, fss_upper_bound, half_window, full_window,
         xover_settings, probability_settings, probability_estimate,
-        factorials.three_way, factorials.factorial, xover_api());
+        factorials.three_way, factorials.factorial, xover_api(), 0, nullptr,
+        nullptr, 0, nullptr, false, nullptr, options.progress_callback,
+        options.progress_user, 0, 1);
     const int selected_method_count =
         1 + static_cast<int>(options.enable_geneconv) +
         static_cast<int>(options.enable_maxchi) +
@@ -472,6 +536,8 @@ RdpInitialAnalysisResult run_rdp_initial_analysis(
             }
         }
     }
+    report_progress(
+        options, 0, 1, triplet_count, triplet_count, count_events(events));
     return {
         std::move(scan_state), std::move(events), std::move(store_lpv),
         store_lpv_upper_bound};
@@ -547,6 +613,14 @@ RdpFullAnalysisResult run_rdp_full_analysis(
     std::vector<unsigned char> done_sequence;
     int done_row_upper_bound = -1;
 
+    // The initial AlistRDP4/redo pass has completed at this point. Keep the
+    // source triplet total, then let the cyclic loop report its round
+    // boundaries without pretending that its internal DNA5 calls are
+    // interruptible.
+    report_progress(
+        options, 0, 1, output.triplet_count, output.triplet_count,
+        count_events(events));
+
     auto& fss_rdp = shared_fss_rdp();
     auto& factorials = shared_factorial_tables();
     auto& probability_estimate = shared_probability_estimate();
@@ -571,6 +645,10 @@ RdpFullAnalysisResult run_rdp_full_analysis(
     rescan_settings.full_window = full_window;
 
     for (int round_number = 1; round_number <= 1000; ++round_number) {
+        report_progress(
+            options, round_number == 1 ? 0 : 1, round_number,
+            output.triplet_count, output.triplet_count,
+            static_cast<int>(output.events.size()));
         auto selection = select_rdp_best_event(
             events, scan_state.next_no, options.p_value_cutoff,
             done_sequence, done_row_upper_bound);
@@ -654,9 +732,14 @@ RdpFullAnalysisResult run_rdp_full_analysis(
             std::cerr << '\n';
         }
         if (options.polish_breakpoints_with_burt) {
+            // RDP calls PolishBP(20, 0, ...): the HMM iteration count is a
+            // fixed 20, independent of MinSeqSize.  MinSeqSize is only the
+            // sequence-size gate used by the surrounding NJ/rescan logic.
+            // Passing minimum_sequence_size here accidentally made long
+            // alignments run dozens (or hundreds) of extra HMM cycles.
             const auto burt = run_rdp_burt(
                 scan_state, round.prefix.sequences, selected.beginning,
-                selected.ending, options.circular, minimum_sequence_size, 0);
+                selected.ending, options.circular, 20, 0);
             if (burt.trained) {
                 selected.beginning = static_cast<std::int16_t>(
                     burt.polished_beginning);
@@ -758,6 +841,10 @@ RdpFullAnalysisResult run_rdp_full_analysis(
             }
         }
         output.events.push_back(std::move(final_event));
+        report_progress(
+            options, round_number == 1 ? 0 : 1, round_number,
+            output.triplet_count, output.triplet_count,
+            static_cast<int>(output.events.size()));
 
         auto selected_collection_event = selected;
         selected_collection_event.distance_holder =

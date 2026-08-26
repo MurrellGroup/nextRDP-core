@@ -1351,7 +1351,11 @@ RdpRawEventState scan_rdp_redo_triplets(
     const int sequence_event_number,
     const std::vector<unsigned char>* missing_data,
     const bool use_compress,
-    int* shared_xdiffpos0) {
+    int* shared_xdiffpos0,
+    RdpXoverProgressCallback progress_callback,
+    void* progress_user,
+    const int progress_phase,
+    const int progress_round) {
     RdpRawEventState events = initial_events == nullptr
         ? RdpRawEventState{} : *initial_events;
     if (initial_events == nullptr) {
@@ -1360,8 +1364,27 @@ RdpRawEventState scan_rdp_redo_triplets(
     }
     events.triplets_with_events.assign(
         static_cast<std::size_t>(scan_state.analysis_list_last + 1), 0);
+    const int total_triplets = scan_state.analysis_list_last + 1;
+    const auto report = [&](const int processed) {
+        if (progress_callback == nullptr) return;
+        int event_count = 0;
+        for (const auto& row : events.xover_list) {
+            event_count += static_cast<int>(row.size());
+        }
+        progress_callback(
+            progress_phase, progress_round, processed, total_triplets,
+            event_count, progress_user);
+    };
     for (int triplet = 0; triplet <= scan_state.analysis_list_last;
          ++triplet) {
+        // This walk follows the source's AlistRDP4 pass and can itself take
+        // seconds.  Emit completed list-row checkpoints instead of leaving
+        // the browser at a stale 0/N snapshot until the whole call returns.
+        if (progress_callback != nullptr &&
+            (triplet == 0 || (triplet % 32) == 0 ||
+             triplet == scan_state.analysis_list_last)) {
+            report(triplet);
+        }
         if (static_cast<std::size_t>(triplet) >= redo.size() ||
             redo[triplet] != 1) {
             continue;
@@ -1853,5 +1876,6 @@ RdpRawEventState scan_rdp_redo_triplets(
             state.homology_length + xover_window * 2, xover_window,
             state.xover_sequence_ub, state.xover_sequence.data());
     }
+    report(total_triplets);
     return events;
 }

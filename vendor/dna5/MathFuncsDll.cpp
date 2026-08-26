@@ -10917,7 +10917,13 @@ int MyMathFuncs::MakeCollecteventsC(int NextNo, int lenstrainseq0, int WinPP, in
 		if (procs < 3)
 			procs = 3;
 		omp_set_num_threads(procs);
+
+// The source GUI drawing loop exits on its first non-rectangle row.  GCC's
+// OpenMP front end correctly rejects `break` in a parallel loop, so keep this
+// presentation-only routine serial when the native method passes use OpenMP.
+#if !defined(NEXT_RDP_USE_REAL_OPENMP)
 #pragma omp parallel for private(os2, Y1, Y2, hold, X1, X2)
+#endif
 		for (x = 0; x < NumSeqLines; x++) {
 			os2 = x*os;
 			if (SeqLines[os2] == 0) { //rectangle

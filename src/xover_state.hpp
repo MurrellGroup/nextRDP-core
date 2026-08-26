@@ -56,6 +56,13 @@ struct RdpProbabilitySettings {
     double lowest_probability = 0.0;
 };
 
+// Optional observer used by the source-faithful scan wrapper.  This is kept
+// in the xover header (rather than depending on analysis.hpp) so the low-level
+// triplet walker can report real work while a vendored DNA5 call is running.
+using RdpXoverProgressCallback = void (*) (
+    int phase, int round, int processed_triplets, int total_triplets,
+    int event_count, void* user);
+
 struct RdpFirstXoverState {
     std::array<int, 3> sequences{};
     std::array<int, 3> agreement_counts{};
@@ -195,4 +202,8 @@ RdpRawEventState scan_rdp_redo_triplets(
     int sequence_event_number = 0,
     const std::vector<unsigned char>* missing_data = nullptr,
     bool use_compress = false,
-    int* shared_xdiffpos0 = nullptr);
+    int* shared_xdiffpos0 = nullptr,
+    RdpXoverProgressCallback progress_callback = nullptr,
+    void* progress_user = nullptr,
+    int progress_phase = 0,
+    int progress_round = 1);

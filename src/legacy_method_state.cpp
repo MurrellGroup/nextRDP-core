@@ -13,9 +13,49 @@
 #include <limits>
 #include <mutex>
 #include <stdexcept>
+#include <thread>
 #include <vector>
+#include <atomic>
 
 namespace {
+
+std::atomic<int> configured_method_threads{1};
+
+template <typename Function>
+void run_method_ranges(const int count, Function&& function) {
+    if (count <= 0) return;
+#if defined(NEXT_RDP_USE_REAL_OPENMP)
+    // The source DLL's Alist* routines contain their own OpenMP workshare;
+    // partitioning around them would create nested teams and change the
+    // original scheduling.  Let the literal OpenMP loop own native work.
+    function(0, count - 1);
+#else
+    const int requested = std::max(1, configured_method_threads.load());
+    const int workers = std::min(requested, count);
+    if (workers <= 1) {
+        function(0, count - 1);
+        return;
+    }
+    std::vector<std::thread> threads;
+    threads.reserve(static_cast<std::size_t>(workers));
+    std::exception_ptr failure;
+    std::mutex failure_mutex;
+    for (int worker = 0; worker < workers; ++worker) {
+        const int first = (count * worker) / workers;
+        const int last = (count * (worker + 1)) / workers - 1;
+        threads.emplace_back([&, first, last] {
+            try {
+                if (first <= last) function(first, last);
+            } catch (...) {
+                std::lock_guard<std::mutex> lock(failure_mutex);
+                if (!failure) failure = std::current_exception();
+            }
+        });
+    }
+    for (auto& thread : threads) thread.join();
+    if (failure) std::rethrow_exception(failure);
+#endif
+}
 
 std::uint64_t fnv1a64(const unsigned char* data, const std::size_t bytes) {
     std::uint64_t hash = 1469598103934665603ULL;
@@ -580,18 +620,20 @@ RdpMethodScreenResult screen_rdp_geneconv_candidates_impl(
         ? lowest_probability
         : lowest_probability / static_cast<double>(correction);
     constexpr int gc_dimension = 2999;
-    (void)MathFuncs::MyMathFuncs::AlistGC2(
-        store_lpv_ub, const_cast<double*>(store_lpv.data()), 0, 1,
-        gc_dimension, const_cast<short*>(scan_state.analysis_list.data()),
-        scan_state.analysis_list_last, 0, scan_state.analysis_list_last,
-        scan_state.next_no, sub_threshold, redo.data(), circular, correction,
-        mc_flag, lowest_probability,
-        target != 0 ? target : static_cast<int>(std::nearbyint(
-            static_cast<double>(scan_state.sequence_length) / 10.0)),
-        scan_state.sequence_length, 171, 125,
-        scan_state.compressed_sequence_ub,
-        const_cast<unsigned char*>(scan_state.compressed_sequence.data()),
-        geneconv_fss_table().data());
+    const int target_value = target != 0 ? target : static_cast<int>(
+        std::nearbyint(static_cast<double>(scan_state.sequence_length) / 10.0));
+    run_method_ranges(triplet_count, [&](const int first, const int last) {
+        (void)MathFuncs::MyMathFuncs::AlistGC2(
+            store_lpv_ub, const_cast<double*>(store_lpv.data()), 0, 1,
+            gc_dimension, const_cast<short*>(scan_state.analysis_list.data()),
+            scan_state.analysis_list_last, first, last,
+            scan_state.next_no, sub_threshold, redo.data(), circular, correction,
+            mc_flag, lowest_probability, target_value,
+            scan_state.sequence_length, 171, 125,
+            scan_state.compressed_sequence_ub,
+            const_cast<unsigned char*>(scan_state.compressed_sequence.data()),
+            geneconv_fss_table().data());
+    });
     result.redo = redo;
     result.candidates.reserve(static_cast<std::size_t>(triplet_count));
     for (int index = 0; index < triplet_count; ++index) {
@@ -649,20 +691,22 @@ RdpMethodScreenResult screen_rdp_maxchi_candidates_impl(
     const short* seq_num = scan_state.sequence_data.data();
     const int target_unused = 0;
     (void)target_unused;
-    (void)MathFuncs::MyMathFuncs::AlistMC3(
-        event_number, worthwhilescan.data(), 0, scan_state.analysis_list_last,
-        0, 171, max_window, half_window, half_window, critical, 0,
-        scan_state.next_no, store_lpv_ub,
-        const_cast<double*>(store_lpv.data()),
-        const_cast<short*>(scan_state.analysis_list.data()),
-        scan_state.analysis_list_last, redo.data(),
-        static_cast<short>(circular), correction, static_cast<short>(mc_flag),
-        sub_threshold, lowest_probability, window_fraction, window_size, 0,
-        scan_state.sequence_length, scan_state.compressed_sequence_ub,
-        const_cast<unsigned char*>(scan_state.compressed_sequence.data()),
-        125, fss_mc.data(), const_cast<short*>(seq_num), missing_data.data(),
-        const_cast<int*>(chi.map.data()),
-        const_cast<float*>(chi.values.data()));
+    run_method_ranges(triplet_count, [&](const int first, const int last) {
+        (void)MathFuncs::MyMathFuncs::AlistMC3(
+            event_number, worthwhilescan.data(), first, last,
+            0, 171, max_window, half_window, half_window, critical, 0,
+            scan_state.next_no, store_lpv_ub,
+            const_cast<double*>(store_lpv.data()),
+            const_cast<short*>(scan_state.analysis_list.data()),
+            scan_state.analysis_list_last, redo.data(),
+            static_cast<short>(circular), correction, static_cast<short>(mc_flag),
+            sub_threshold, lowest_probability, window_fraction, window_size, 0,
+            scan_state.sequence_length, scan_state.compressed_sequence_ub,
+            const_cast<unsigned char*>(scan_state.compressed_sequence.data()),
+            125, fss_mc.data(), const_cast<short*>(seq_num), missing_data.data(),
+            const_cast<int*>(chi.map.data()),
+            const_cast<float*>(chi.values.data()));
+    });
     result.redo = redo;
     result.candidates.reserve(static_cast<std::size_t>(triplet_count));
     for (int index = 0; index < triplet_count; ++index) {
@@ -714,20 +758,21 @@ RdpMethodScreenResult screen_rdp_chimaera_candidates_impl(
             : std::vector<unsigned char>::const_iterator{});
     if (missing_data.size() != missing_size) missing_data.assign(missing_size, 0);
     const short* seq_num = scan_state.sequence_data.data();
-    (void)MathFuncs::MyMathFuncs::AlistChi(
-        event_number, missing_data.data(), worthwhile_scan.data(), 0,
-        scan_state.analysis_list_last,
-        0, 171, max_window, half_window, half_window, critical, 0,
-        scan_state.next_no, store_lpv_ub,
-        const_cast<double*>(store_lpv.data()),
-        const_cast<short*>(scan_state.analysis_list.data()),
-        scan_state.analysis_list_last, redo.data(), static_cast<short>(circular),
-        correction, static_cast<short>(mc_flag), sub_threshold,
-        lowest_probability, 0.1, window_size, 0, scan_state.sequence_length,
-        scan_state.compressed_sequence_ub,
-        const_cast<unsigned char*>(scan_state.compressed_sequence.data()),
-        125, chimaera_fss_table().data(), const_cast<short*>(seq_num),
-        const_cast<int*>(chi.map.data()), const_cast<float*>(chi.values.data()));
+    run_method_ranges(triplet_count, [&](const int first, const int last) {
+        (void)MathFuncs::MyMathFuncs::AlistChi(
+            event_number, missing_data.data(), worthwhile_scan.data(), first,
+            last, 0, 171, max_window, half_window, half_window, critical, 0,
+            scan_state.next_no, store_lpv_ub,
+            const_cast<double*>(store_lpv.data()),
+            const_cast<short*>(scan_state.analysis_list.data()),
+            scan_state.analysis_list_last, redo.data(), static_cast<short>(circular),
+            correction, static_cast<short>(mc_flag), sub_threshold,
+            lowest_probability, 0.1, window_size, 0, scan_state.sequence_length,
+            scan_state.compressed_sequence_ub,
+            const_cast<unsigned char*>(scan_state.compressed_sequence.data()),
+            125, chimaera_fss_table().data(), const_cast<short*>(seq_num),
+            const_cast<int*>(chi.map.data()), const_cast<float*>(chi.values.data()));
+    });
     result.redo = redo;
     result.candidates.reserve(static_cast<std::size_t>(triplet_count));
     for (int index = 0; index < triplet_count; ++index) {
@@ -1313,6 +1358,28 @@ void fill_legacy_event(RdpLegacyEventAllocator& allocator,
 
 }  // namespace
 
+int set_rdp_method_worker_threads(const int requested) {
+#if defined(NEXT_RDP_USE_REAL_OPENMP)
+    // Native DNA5 owns its workshare through the literal OpenMP loops.  The
+    // public value is still returned so callers can report the runtime mode.
+    configured_method_threads.store(std::max(1, requested));
+    return configured_method_threads.load();
+#elif defined(NEXT_RDP_METHOD_MANUAL_THREADS)
+    configured_method_threads.store(std::clamp(requested, 1, 8));
+    return configured_method_threads.load();
+#else
+    // A non-pthread WASM/native compatibility build has no fan-out workers.
+    // Keep the reported capacity honest instead of silently accepting a
+    // request that the serial fallback cannot execute.
+    configured_method_threads.store(1);
+    return 1;
+#endif
+}
+
+int rdp_method_worker_threads() {
+    return configured_method_threads.load();
+}
+
 std::vector<std::array<int, 3>> make_rdp_inner_method_triplets(
     const RdpScanState& scan_state, const std::array<int, 3>& rnum,
     const std::vector<int>& rlist, const int win_pp,
@@ -1699,13 +1766,21 @@ void run_rdp_maxchi_recheck(
               static_cast<short>(sequences[2]),
               const_cast<short*>(scan_state.sequence_data.data()),
               difference_position.data(), position_difference.data());
-    const std::uint64_t difference_position_hash = fnv1a64(
-        reinterpret_cast<const unsigned char*>(difference_position.data()),
-        static_cast<std::size_t>(informative + 1) * sizeof(int));
-    const std::uint64_t position_difference_hash = fnv1a64(
-        reinterpret_cast<const unsigned char*>(position_difference.data()),
-        static_cast<std::size_t>(
-            scan_state.compressed_sequence_ub * 3 + 1) * sizeof(int));
+    // These hashes exist solely to annotate an optional MaxChi trace.  The
+    // normal scan never consumes them; computing O(alignment-length) hashes
+    // for every candidate was a large avoidable cost on the original
+    // multi-thousand-site fixtures.
+    std::uint64_t difference_position_hash = 0;
+    std::uint64_t position_difference_hash = 0;
+    if (trace != nullptr) {
+        difference_position_hash = fnv1a64(
+            reinterpret_cast<const unsigned char*>(difference_position.data()),
+            static_cast<std::size_t>(informative + 1) * sizeof(int));
+        position_difference_hash = fnv1a64(
+            reinterpret_cast<const unsigned char*>(position_difference.data()),
+            static_cast<std::size_t>(
+                scan_state.compressed_sequence_ub * 3 + 1) * sizeof(int));
+    }
     if (informative < critical * 2 || informative < 7) return;
     if (initial_scan) {
         // MakeWindowSize takes the configured fixed width when BEP=ENP=0,
@@ -1786,19 +1861,26 @@ void run_rdp_maxchi_recheck(
         difference_position.data(),
         const_cast<short*>(scan_state.sequence_data.data()),
         window_scores.data());
-    const std::uint64_t score_hash = fnv1a64(scores.data(), scores.size());
+    std::uint64_t score_hash = 0;
     std::array<std::uint64_t, 3> score_plane_hash{};
-    for (int plane = 0; plane < 3; ++plane) {
-        score_plane_hash[plane] = fnv1a64(
-            scores.data() + plane * sequence_stride, informative + 1);
+    std::uint64_t chi_table_hash = 0;
+    std::uint64_t chi_map_hash = 0;
+    if (trace != nullptr) {
+        score_hash = fnv1a64(scores.data(), scores.size());
+        for (int plane = 0; plane < 3; ++plane) {
+            score_plane_hash[plane] = fnv1a64(
+                scores.data() + plane * sequence_stride, informative + 1);
+        }
     }
     const auto& table = chi_lookup_table();
-    const std::uint64_t chi_table_hash = fnv1a64(
-        reinterpret_cast<const unsigned char*>(table.values.data()),
-        table.values.size() * sizeof(float));
-    const std::uint64_t chi_map_hash = fnv1a64(
-        reinterpret_cast<const unsigned char*>(table.map.data()),
-        table.map.size() * sizeof(int));
+    if (trace != nullptr) {
+        chi_table_hash = fnv1a64(
+            reinterpret_cast<const unsigned char*>(table.values.data()),
+            table.values.size() * sizeof(float));
+        chi_map_hash = fnv1a64(
+            reinterpret_cast<const unsigned char*>(table.map.data()),
+            table.map.size() * sizeof(int));
+    }
     // MCXoverF's FindAllFlag=1 path (the FinalTrim recheck) always uses the
     // formula CalcChiValsP branch, even for a linear alignment.  The lookup
     // table is selected only by the FindAllFlag=0/CircularFlag=0 branch.

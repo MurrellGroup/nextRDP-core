@@ -8,6 +8,10 @@
 #include <string>
 #include <vector>
 
+using RdpProgressCallback = void (*)(
+    int phase, int round, int processed_triplets, int total_triplets,
+    int event_count, void* user);
+
 struct RdpInitialAnalysisOptions {
     bool circular = true;
     double p_value_cutoff = 0.05;
@@ -27,6 +31,12 @@ struct RdpInitialAnalysisOptions {
     std::string maxchi_call_count_path;
     std::string chimaera_call_order_path;
     std::string chimaera_call_count_path;
+
+    // Optional observer used by the web wrapper. It reports source-stage
+    // boundaries and completed rows from the low-level XOver walk; it never
+    // fabricates progress for work that has not completed.
+    RdpProgressCallback progress_callback = nullptr;
+    void* progress_user = nullptr;
 };
 
 struct RdpInitialAnalysisResult {

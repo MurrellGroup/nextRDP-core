@@ -40,3 +40,25 @@ we may want to expose to users.
 - `StripUnfound2` in the DNA5 path uses the legacy informative-site bounds and
   can leave the final informative site out of the strip loop.  Do not “fix” the
   bound while reproducing RDP; record it here instead.
+
+- `PolishBP` invokes `BenHMM` with a fixed `HMMCycles = 20`.  This is
+  independent of `MinSeqSize`, which is a separate sequence-size gate used by
+  the surrounding event/tree logic.  Passing `MinSeqSize` as the HMM cycle
+  count is a port defect, not an RDP optimization: on a 9,594-site alignment
+  it changed 20 cycles to 96 and materially increased BURT runtime.  The
+  compatibility port keeps the source's fixed 20-cycle call.
+
+- The DNA5 DLL's `AlistGC2`, `AlistMC3`, and `AlistChi` routines use OpenMP
+  worksharing over triplet rows.  Their per-row scratch buffers and `RL[y]`
+  outputs are independent, so deterministic range partitioning reproduces the
+  serial results while restoring the intended parallelism in pthread WASM.
+  `BenHMM` is different: the active source path explicitly calls
+  `DoHMMCyclesSerial`, so BURT must remain serial even when method screens are
+  threaded.  A cleanup should expose these two policies instead of treating
+  every source `#pragma omp` as interchangeable.
+
+- `AlistRDP4` has the same independent-row OpenMP structure.  In the
+  Emscripten pthread build it is invoked over deterministic contiguous row
+  ranges; native OpenMP builds invoke the vendored routine once so its own
+  source workshare is retained.  The resulting `Redo` bytes and downstream
+  event order are unchanged.
