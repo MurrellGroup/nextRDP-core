@@ -125,12 +125,14 @@ RdpMethodScreenResult screen_rdp_geneconv_candidates(
 RdpMethodScreenResult screen_rdp_maxchi_candidates(
     const RdpScanState& scan_state, const std::vector<double>& store_lpv,
     int store_lpv_ub, int correction_tests, double lowest_probability,
-    int circular, int mc_flag = 0);
+    int circular, int mc_flag = 0, int event_number = 0,
+    const std::vector<unsigned char>* missing_data = nullptr);
 
 RdpMethodScreenResult screen_rdp_chimaera_candidates(
     const RdpScanState& scan_state, const std::vector<double>& store_lpv,
     int store_lpv_ub, int correction_tests, double lowest_probability,
-    int circular, int mc_flag = 0);
+    int circular, int mc_flag = 0, int event_number = 0,
+    const std::vector<unsigned char>* missing_data = nullptr);
 
 // Module5.MCXoverF(1), the MaxChi recheck used by FinalTrim.  This is the
 // enumerating VB path (not DNA5.FastRecCheckMC2, which deliberately returns
@@ -141,7 +143,8 @@ void run_rdp_maxchi_recheck(
     const RdpProbabilitySettings& settings,
     RdpLegacyEventAllocator& allocator, int event_beginning, int event_ending,
     bool initial_scan = false,
-    std::vector<MaxchiPeakTrace>* trace = nullptr);
+    std::vector<MaxchiPeakTrace>* trace = nullptr,
+    bool inner_scan = false);
 
 // Module30.CXoverA(2), the Chimaera recheck used in each of FinalTrim's three
 // source-order role rotations.

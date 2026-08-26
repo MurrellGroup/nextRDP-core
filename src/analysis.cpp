@@ -1358,13 +1358,126 @@ RdpFullAnalysisResult run_rdp_full_analysis(
         inner_event_state.analysis_list = flatten_rdp_triplets(inner_triplets);
         inner_event_state.analysis_list_last =
             static_cast<int>(inner_triplets.size()) - 1;
-        const auto inner_events = scan_rdp_redo_triplets(
+        auto inner_events = scan_rdp_redo_triplets(
             inner_event_state, distance_state, tree_state, inner_redo,
             fss_rdp, initial.store_lpv, initial.store_lpv_upper_bound, 125,
             half_window, full_window, xover_settings, probability_settings,
             probability_estimate, factorials.three_way,
             factorials.factorial, xover_api(), 0, nullptr, nullptr, 1,
             &mutation.missing_data, true, &shared_xdiffpos0);
+
+        // Module8.InnerScan2 runs the optional method branches against the
+        // same permanent AnalysisList/RList expansion as the RDP branch,
+        // after the selected tract has been erased.  The earlier FinalTrim
+        // pass above is a separate source pass; omitting this post-mutation
+        // pass drops events that only become significant on the edited
+        // sequence (for example the MaxChi event at 71--1220 on Dataset0).
+        if (selected_method_count > 1) {
+            RdpLegacyEventAllocator inner_method_events(
+                inner_events, selected_method_count);
+            const auto inner_method_triplets = [&](const int program) {
+                auto& selected_pairs = propagated_pairs;
+                if (std::getenv("RDP_TRACE_INNER_ALLPAIRS") != nullptr &&
+                    (round_number == 7 || round_number == 9)) {
+                    selected_pairs.assign(
+                        static_cast<std::size_t>(scan_state.next_no + 1) *
+                            static_cast<std::size_t>(scan_state.next_no + 1), 1);
+                }
+                return make_rdp_inner_method_triplets(
+                    permanent_analysis_scan,
+                    round.final_candidates.candidate_last,
+                    round.final_candidates.candidate_list, winner,
+                    trace_sub, actual_sequence_sizes, selected_pairs,
+                    permanent_next_no, minimum_sequence_size, program,
+                    method_bits);
+            };
+            const auto run_inner_method_scan = [&](const int program,
+                                                   const bool screen_geneconv,
+                                                   const bool screen_maxchi) {
+                const auto triplets = inner_method_triplets(program);
+                auto method_scan = inner_scan_state;
+                method_scan.analysis_list = flatten_rdp_triplets(triplets);
+                method_scan.analysis_list_last =
+                    static_cast<int>(triplets.size()) - 1;
+                if (method_scan.analysis_list_last < 0) return;
+                if (screen_geneconv) {
+                    const auto screened = screen_rdp_geneconv_candidates(
+                        method_scan, initial.store_lpv,
+                        initial.store_lpv_upper_bound, correction_tests,
+                        options.p_value_cutoff, options.circular ? 1 : 0, 0,
+                        target);
+                    for (const auto& candidate : screened.candidates) {
+                        auto input = candidate;
+                        run_rdp_geneconv_recheck(
+                            inner_scan_state, input, initial.store_lpv,
+                            initial.store_lpv_upper_bound, probability_settings,
+                            inner_method_events);
+                    }
+                } else if (screen_maxchi) {
+                    const auto screened = screen_rdp_maxchi_candidates(
+                        method_scan, initial.store_lpv,
+                        initial.store_lpv_upper_bound, correction_tests,
+                        options.p_value_cutoff, options.circular ? 1 : 0, 0,
+                        round_number, &mutation.missing_data);
+                    for (const auto& candidate : screened.candidates) {
+                        run_rdp_maxchi_recheck(
+                            inner_scan_state, candidate, initial.store_lpv,
+                            initial.store_lpv_upper_bound, probability_settings,
+                            inner_method_events, 0, 0, false, nullptr, true);
+                    }
+                } else if (program == 4) {
+                    const auto screened = screen_rdp_chimaera_candidates(
+                        method_scan, initial.store_lpv,
+                        initial.store_lpv_upper_bound, correction_tests,
+                        options.p_value_cutoff, options.circular ? 1 : 0, 0,
+                        round_number, &mutation.missing_data);
+                    for (int index = 0;
+                         index <= method_scan.analysis_list_last; ++index) {
+                        const unsigned char redo_flags = screened.redo[index];
+                        const std::array<int, 3> candidate{
+                            method_scan.analysis_list[index * 3],
+                            method_scan.analysis_list[index * 3 + 1],
+                            method_scan.analysis_list[index * 3 + 2]};
+                        const std::array<std::array<int, 3>, 3> orientations{{
+                            candidate,
+                            {candidate[1], candidate[2], candidate[0]},
+                            {candidate[2], candidate[0], candidate[1]}}};
+                        const std::array<unsigned char, 3> orientation_bits{
+                            1, 4, 16};
+                        for (int rotation = 0; rotation < 3; ++rotation) {
+                            if ((redo_flags & orientation_bits[rotation]) == 0)
+                                continue;
+                            run_rdp_chimaera_recheck(
+                                inner_scan_state, orientations[rotation],
+                                initial.store_lpv,
+                                initial.store_lpv_upper_bound,
+                                probability_settings, inner_method_events,
+                                0, 0, false,
+                                rotation < 2 ? &shared_xdiffpos0 : nullptr);
+                        }
+                    }
+                } else if (program == 6) {
+                    for (const auto& candidate : triplets) {
+                        auto rotated = candidate;
+                        for (int rotation = 0; rotation < 3; ++rotation) {
+                            run_rdp_three_seq_recheck(
+                                inner_scan_state, rotated, initial.store_lpv,
+                                initial.store_lpv_upper_bound,
+                                probability_settings, three_seq_table,
+                                configured_three_seq_table != nullptr
+                                    ? configured_three_seq_table_bound : 45,
+                                inner_method_events);
+                            rotated = {rotated[1], rotated[2], rotated[0]};
+                        }
+                    }
+                }
+            };
+            if (options.enable_geneconv) run_inner_method_scan(1, true, false);
+            if (options.enable_maxchi) run_inner_method_scan(3, false, true);
+            if (options.enable_chimaera) run_inner_method_scan(4, false, false);
+            if (options.enable_three_seq) run_inner_method_scan(6, false, false);
+            trace_legacy_method_state("inner-methods", inner_events);
+        }
 
         // FindActualEventsVB calls MakeBestXOList, then InnerScan2, then
         // StripUnfound2.  WinnerPos is populated from MakeCollecteventsC;
@@ -1470,6 +1583,24 @@ RdpFullAnalysisResult run_rdp_full_analysis(
         }
         auto combined_events = adjusted.events;
         append_rdp_events(combined_events, inner_events);
+        if (std::getenv("RDP_TRACE_COMBINED_BROAD") != nullptr &&
+            round_number <= 3) {
+            for (std::size_t row = 0; row < combined_events.xover_list.size(); ++row) {
+                for (const auto& event : combined_events.xover_list[row]) {
+                    if (event.beginning >= 1400 && event.beginning <= 2300 &&
+                        event.ending >= 3500 && event.ending <= 4600) {
+                        std::cerr << "combined-broad round=" << round_number
+                                  << " row=" << row << " method="
+                                  << static_cast<int>(event.program_flag)
+                                  << " roles=" << event.daughter << ':'
+                                  << event.minor_parent << ':' << event.major_parent
+                                  << " interval=" << event.beginning << '-'
+                                  << event.ending << " p=" << event.probability
+                                  << '\n';
+                    }
+                }
+            }
+        }
         combined_events.xover_list.resize(expanded_next_no + 1);
         combined_events.current_xover.resize(expanded_next_no + 1, 0);
         const auto expanded_tree = build_rdp_upgma_tree_state(
@@ -1496,6 +1627,24 @@ RdpFullAnalysisResult run_rdp_full_analysis(
             probability_estimate, factorials.three_way,
             factorials.factorial, xover_api(), 0, nullptr, nullptr, 1,
             &expanded_missing, true, &shared_xdiffpos0);
+        if (std::getenv("RDP_TRACE_OUTER_BROAD") != nullptr &&
+            round_number <= 3) {
+            for (std::size_t row = 0; row < outer_events.xover_list.size(); ++row) {
+                for (const auto& event : outer_events.xover_list[row]) {
+                    if (event.beginning >= 1400 && event.beginning <= 2300 &&
+                        event.ending >= 3500 && event.ending <= 4600) {
+                        std::cerr << "outer-broad round=" << round_number
+                                  << " row=" << row << " method="
+                                  << static_cast<int>(event.program_flag)
+                                  << " roles=" << event.daughter << ':'
+                                  << event.minor_parent << ':' << event.major_parent
+                                  << " interval=" << event.beginning << '-'
+                                  << event.ending << " p=" << event.probability
+                                  << '\n';
+                    }
+                }
+            }
+        }
         auto dropped = drop_rdp_unused_fragment_events(
             permanent_next_no, scan_state.next_no, expanded_next_no,
             scan_state.sequence_length, minimum_sequence_size,

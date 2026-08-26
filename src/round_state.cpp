@@ -395,6 +395,12 @@ RdpRoundPrefixState identify_rdp_round_prefix(
         static_cast<std::size_t>(stride) * stride, 0.0F);
     state.region_adjusted.assign(
         static_cast<std::size_t>(stride) * stride, 0.0F);
+    // Clearcut/NJ assumes at least two retained sequences.  When every
+    // sequence is marked for redo the VB path has no NJ panel; passing -1 to
+    // the legacy allocator underflows its matrix.  Keep a neutral one-cell
+    // panel for the downstream collapse and skip that impossible call.
+    const bool have_nj_panel = local_last >= 1;
+    if (local_last < 0) local_last = 0;
     const int local_stride = local_last + 1;
     std::vector<char> background_holder(
         static_cast<std::size_t>(local_stride) * 80 + 1, 0);
@@ -447,16 +453,18 @@ RdpRoundPrefixState identify_rdp_round_prefix(
         for (int i = 0; i <= next_no; ++i) std::cerr << redo[i];
         std::cerr << "\n";
     }
-    MathFuncs::MyMathFuncs::MakeNJTreesP2(
-        1, local_last, next_no, mutable_sequences.data(), minimum_pair.data(),
-        sequence_pair.data(), 3, name_length, sequence_length, 1,
-        outlier.data(), trace.data(), next_no,
-        state.matrices.background.data(), next_no,
-        state.matrices.event_region.data(), next_no,
-        state.background_adjusted.data(), next_no,
-        state.region_adjusted.data(), redo.data(), background_holder.data(),
-        region_holder.data(), temporary_background.data(),
-        temporary_region.data());
+    if (have_nj_panel) {
+        MathFuncs::MyMathFuncs::MakeNJTreesP2(
+            1, local_last, next_no, mutable_sequences.data(), minimum_pair.data(),
+            sequence_pair.data(), 3, name_length, sequence_length, 1,
+            outlier.data(), trace.data(), next_no,
+            state.matrices.background.data(), next_no,
+            state.matrices.event_region.data(), next_no,
+            state.background_adjusted.data(), next_no,
+            state.region_adjusted.data(), redo.data(), background_holder.data(),
+            region_holder.data(), temporary_background.data(),
+            temporary_region.data());
+    }
     if (std::getenv("RDP_TRACE_NJ_DETAIL") != nullptr &&
         state.sequences[0] == 12 && state.sequences[1] == 4 &&
         state.sequences[2] == 10 && next_no == 26) {

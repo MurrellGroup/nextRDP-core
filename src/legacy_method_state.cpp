@@ -44,16 +44,32 @@ std::array<int, 3> choose_active(
     const int first = sequences[0];
     const int second = sequences[1];
     const int third = sequences[2];
-    if (allocator.count(first) < allocator.count(second) &&
-        allocator.count(first) < allocator.count(third)) {
+    // GCXoverD/CXoverA/TSXOver use inclusive comparisons, while MCXoverF
+    // retains the older strict-comparison branch.  Keep that source quirk
+    // keyed by program rather than normalizing all optional methods.
+    const bool inclusive_counts = program != 3;
+    const auto first_wins = inclusive_counts
+        ? allocator.count(first) <= allocator.count(second) &&
+              allocator.count(first) <= allocator.count(third)
+        : allocator.count(first) < allocator.count(second) &&
+              allocator.count(first) < allocator.count(third);
+    const auto second_wins = inclusive_counts
+        ? allocator.count(second) <= allocator.count(first) &&
+              allocator.count(second) <= allocator.count(third)
+        : allocator.count(second) < allocator.count(first) &&
+              allocator.count(second) < allocator.count(third);
+    const auto third_wins = inclusive_counts
+        ? allocator.count(third) <= allocator.count(first) &&
+              allocator.count(third) <= allocator.count(second)
+        : allocator.count(third) < allocator.count(first) &&
+              allocator.count(third) < allocator.count(second);
+    if (first_wins) {
         return {first, second, third};
     }
-    if (allocator.count(second) < allocator.count(first) &&
-        allocator.count(second) < allocator.count(third)) {
+    if (second_wins) {
         return {second, first, third};
     }
-    if (allocator.count(third) < allocator.count(first) &&
-        allocator.count(third) < allocator.count(second)) {
+    if (third_wins) {
         return {third, first, second};
     }
     const double first_p = store_probability(
@@ -609,7 +625,9 @@ RdpMethodScreenResult screen_rdp_geneconv_candidates_impl(
 RdpMethodScreenResult screen_rdp_maxchi_candidates_impl(
     const RdpScanState& scan_state, const std::vector<double>& store_lpv,
     const int store_lpv_ub, const int correction_tests,
-    const double lowest_probability, const int circular, const int mc_flag) {
+    const double lowest_probability, const int circular, const int mc_flag,
+    const int event_number,
+    const std::vector<unsigned char>* supplied_missing_data) {
     RdpMethodScreenResult result;
     const int triplet_count = scan_state.analysis_list_last + 1;
     if (triplet_count <= 0) return result;
@@ -621,9 +639,19 @@ RdpMethodScreenResult screen_rdp_maxchi_candidates_impl(
     auto& fss_mc = maxchi_fss_table();
     std::vector<unsigned char> redo(static_cast<std::size_t>(triplet_count), 0);
     std::vector<unsigned char> worthwhilescan(static_cast<std::size_t>(triplet_count), 1);
-    std::vector<unsigned char> missing_data(
+    const std::size_t missing_size =
         static_cast<std::size_t>(scan_state.sequence_length + 1) *
-            static_cast<std::size_t>(scan_state.next_no + 1), 0);
+        static_cast<std::size_t>(scan_state.next_no + 1);
+    std::vector<unsigned char> missing_data(
+        supplied_missing_data != nullptr &&
+                supplied_missing_data->size() >= missing_size
+            ? supplied_missing_data->begin()
+            : std::vector<unsigned char>::const_iterator{},
+        supplied_missing_data != nullptr &&
+                supplied_missing_data->size() >= missing_size
+            ? supplied_missing_data->begin() + missing_size
+            : std::vector<unsigned char>::const_iterator{});
+    if (missing_data.size() != missing_size) missing_data.assign(missing_size, 0);
     const int correction = std::max(1, correction_tests);
     const double sub_threshold = mc_flag != 0
         ? lowest_probability
@@ -638,7 +666,7 @@ RdpMethodScreenResult screen_rdp_maxchi_candidates_impl(
     const int target_unused = 0;
     (void)target_unused;
     (void)MathFuncs::MyMathFuncs::AlistMC3(
-        0, worthwhilescan.data(), 0, scan_state.analysis_list_last,
+        event_number, worthwhilescan.data(), 0, scan_state.analysis_list_last,
         0, 171, max_window, half_window, half_window, critical, 0,
         scan_state.next_no, store_lpv_ub,
         const_cast<double*>(store_lpv.data()),
@@ -666,7 +694,9 @@ RdpMethodScreenResult screen_rdp_maxchi_candidates_impl(
 RdpMethodScreenResult screen_rdp_chimaera_candidates_impl(
     const RdpScanState& scan_state, const std::vector<double>& store_lpv,
     const int store_lpv_ub, const int correction_tests,
-    const double lowest_probability, const int circular, const int mc_flag) {
+    const double lowest_probability, const int circular, const int mc_flag,
+    const int event_number,
+    const std::vector<unsigned char>* supplied_missing_data) {
     RdpMethodScreenResult result;
     const int triplet_count = scan_state.analysis_list_last + 1;
     if (triplet_count <= 0) return result;
@@ -686,12 +716,22 @@ RdpMethodScreenResult screen_rdp_chimaera_candidates_impl(
     std::vector<unsigned char> redo(static_cast<std::size_t>(triplet_count), 0);
     std::vector<unsigned char> worthwhile_scan(
         static_cast<std::size_t>(triplet_count), 127);
-    std::vector<unsigned char> missing_data(
+    const std::size_t missing_size =
         static_cast<std::size_t>(scan_state.sequence_length + 1) *
-            static_cast<std::size_t>(scan_state.next_no + 1), 0);
+        static_cast<std::size_t>(scan_state.next_no + 1);
+    std::vector<unsigned char> missing_data(
+        supplied_missing_data != nullptr &&
+                supplied_missing_data->size() >= missing_size
+            ? supplied_missing_data->begin()
+            : std::vector<unsigned char>::const_iterator{},
+        supplied_missing_data != nullptr &&
+                supplied_missing_data->size() >= missing_size
+            ? supplied_missing_data->begin() + missing_size
+            : std::vector<unsigned char>::const_iterator{});
+    if (missing_data.size() != missing_size) missing_data.assign(missing_size, 0);
     const short* seq_num = scan_state.sequence_data.data();
     (void)MathFuncs::MyMathFuncs::AlistChi(
-        0, missing_data.data(), worthwhile_scan.data(), 0,
+        event_number, missing_data.data(), worthwhile_scan.data(), 0,
         scan_state.analysis_list_last,
         0, 171, max_window, half_window, half_window, critical, 0,
         scan_state.next_no, store_lpv_ub,
@@ -762,14 +802,19 @@ std::vector<std::array<int, 3>> make_rdp_inner_method_triplets_impl(
     const int permanent_next_no, const int min_sequence_size,
     const int method_program, const int selected_program_bits,
     const float probability_step) {
-    const int count = scan_state.next_no + 1;
+    const int pair_stride = static_cast<int>(std::sqrt(
+        static_cast<double>(do_pairs.size())));
+    if (pair_stride <= 0 ||
+        static_cast<std::size_t>(pair_stride) * pair_stride != do_pairs.size()) {
+        throw std::runtime_error("MakeAListISP3 pair matrix is not square");
+    }
     const int triplet_count = scan_state.analysis_list_last + 1;
+    if (triplet_count <= 0) return {};
     if (win_pp < 0 || win_pp > 2 || rnum[win_pp] < -1 ||
         rlist.size() < static_cast<std::size_t>(3) *
             static_cast<std::size_t>(std::max(0, rnum[win_pp] + 1)) ||
-        trace_sub.size() < static_cast<std::size_t>(count) ||
-        actual_sequence_sizes.size() < static_cast<std::size_t>(count) ||
-        do_pairs.size() < static_cast<std::size_t>(count) * count) {
+        trace_sub.size() < static_cast<std::size_t>(pair_stride) ||
+        actual_sequence_sizes.size() < static_cast<std::size_t>(pair_stride)) {
         throw std::runtime_error("MakeAListISP3 input dimensions differ");
     }
     if (method_program < 0 || method_program > 7 ||
@@ -777,65 +822,40 @@ std::vector<std::array<int, 3>> make_rdp_inner_method_triplets_impl(
         return {};
     }
 
-    // DNA5 receives Worthwhilescan and ProgBinRead as a packed byte table.
-    // An ordinary run starts with the all-methods value 127; ProgBinRead then
-    // gates the method branch selected by DoScans.  The caller supplies the
-    // selected bits, so this is the same lookup without a mutable global.
-    constexpr unsigned char worthwhile = 127;
-    const int program_upper_bound = 30;
-    const int prog_bin_index = method_program +
-        static_cast<int>(worthwhile) * (program_upper_bound + 1);
-    (void)prog_bin_index;
-
-    // This is MakeAListISP3, including its source carry-forward of Seq1/2/3
-    // between successive AnalysisList rows and the CurProp > 1 sampling
-    // rule.  In the normal InnerScan2 path ProbDo is 1.1, so every accepted
-    // row is emitted; retaining the accumulator also keeps large-list runs
-    // faithful when the source lowers ProbDo to fit MaxAnalno.
+    // Feed the vendored DNA5 routine directly.  MakeAListISP3's subtle
+    // RestartPos/ProgBinRead/Worthwhilescan/ProbDo behavior is part of the
+    // observable method call order and is not safely approximated in a loop.
+    constexpr int worthwhile = 127;
+    constexpr int prog_bin_upper_bound = 30;
+    std::vector<unsigned char> prog_bin_read(
+        static_cast<std::size_t>(256) * (prog_bin_upper_bound + 1), 0);
+    prog_bin_read[method_program + worthwhile * (prog_bin_upper_bound + 1)] =
+        (selected_program_bits & (1 << method_program)) != 0 ? 1 : 0;
+    std::vector<unsigned char> worthwhile_scan(
+        static_cast<std::size_t>(std::max(0, triplet_count)),
+        static_cast<unsigned char>(worthwhile));
+    const int max_alist = std::max(0, triplet_count +
+        std::max(0, rnum[win_pp]) * 3);
+    std::vector<short> alist(
+        static_cast<std::size_t>(max_alist + 1) * 3, 0);
+    int restart_pos = 0;
+    const int alist_last = MathFuncs::MyMathFuncs::MakeAListISP3(
+        probability_step, method_program, &restart_pos,
+        prog_bin_upper_bound, prog_bin_read.data(),
+        const_cast<int*>(trace_sub.data()), win_pp,
+        const_cast<int*>(rnum.data()), 2, const_cast<int*>(rlist.data()),
+        2, const_cast<short*>(scan_state.analysis_list.data()),
+        scan_state.analysis_list_last, worthwhile_scan.data(),
+        const_cast<int*>(actual_sequence_sizes.data()), permanent_next_no,
+        pair_stride - 1, min_sequence_size, 2, max_alist,
+        alist.data(), pair_stride - 1,
+        const_cast<unsigned char*>(do_pairs.data()));
     std::vector<std::array<int, 3>> output;
-    output.reserve(static_cast<std::size_t>(triplet_count));
-    float curprop = 1.0F;
-    std::array<int, 3> sequences{};
-    for (int x = 0; x <= scan_state.analysis_list_last; ++x) {
-        if (triplet_count <= 0) break;
-        sequences = {
-            scan_state.analysis_list[x * 3],
-            scan_state.analysis_list[x * 3 + 1],
-            scan_state.analysis_list[x * 3 + 2]};
-        for (int slot = 0; slot <= rnum[win_pp]; ++slot) {
-            const int replacement = rlist[win_pp + slot * 3];
-            const int base = replacement > permanent_next_no
-                ? trace_sub[replacement] : replacement;
-            if (sequences[0] != base && sequences[1] != base &&
-                sequences[2] != base) {
-                continue;
-            }
-            if (sequences[0] == base) sequences[0] = replacement;
-            else if (sequences[1] == base) sequences[1] = replacement;
-            else if (sequences[2] == base) sequences[2] = replacement;
-            if (sequences[0] < 0 || sequences[1] < 0 || sequences[2] < 0 ||
-                sequences[0] >= count || sequences[1] >= count ||
-                sequences[2] >= count ||
-                actual_sequence_sizes[sequences[0]] <= min_sequence_size ||
-                actual_sequence_sizes[sequences[1]] <= min_sequence_size ||
-                actual_sequence_sizes[sequences[2]] <= min_sequence_size) {
-                continue;
-            }
-            const auto pair = [count, &do_pairs](const int first,
-                                                  const int second) {
-                return do_pairs[first + second * count] == 1;
-            };
-            if (!pair(sequences[0], sequences[1]) ||
-                !pair(sequences[0], sequences[2]) ||
-                !pair(sequences[1], sequences[2])) {
-                continue;
-            }
-            curprop += probability_step;
-            if (curprop > 1.0F) {
-                curprop -= 1.0F;
-                output.push_back(sequences);
-            }
-        }
+    if (alist_last < 0) return output;
+    output.reserve(static_cast<std::size_t>(alist_last + 1));
+    for (int index = 0; index <= alist_last; ++index) {
+        output.push_back({alist[index * 3], alist[index * 3 + 1],
+                          alist[index * 3 + 2]});
     }
     return output;
 }
@@ -1337,19 +1357,23 @@ RdpMethodScreenResult screen_rdp_geneconv_candidates(
 RdpMethodScreenResult screen_rdp_maxchi_candidates(
     const RdpScanState& scan_state, const std::vector<double>& store_lpv,
     const int store_lpv_ub, const int correction_tests,
-    const double lowest_probability, const int circular, const int mc_flag) {
+    const double lowest_probability, const int circular, const int mc_flag,
+    const int event_number,
+    const std::vector<unsigned char>* missing_data) {
     return screen_rdp_maxchi_candidates_impl(
         scan_state, store_lpv, store_lpv_ub, correction_tests,
-        lowest_probability, circular, mc_flag);
+        lowest_probability, circular, mc_flag, event_number, missing_data);
 }
 
 RdpMethodScreenResult screen_rdp_chimaera_candidates(
     const RdpScanState& scan_state, const std::vector<double>& store_lpv,
     const int store_lpv_ub, const int correction_tests,
-    const double lowest_probability, const int circular, const int mc_flag) {
+    const double lowest_probability, const int circular, const int mc_flag,
+    const int event_number,
+    const std::vector<unsigned char>* missing_data) {
     return screen_rdp_chimaera_candidates_impl(
         scan_state, store_lpv, store_lpv_ub, correction_tests,
-        lowest_probability, circular, mc_flag);
+        lowest_probability, circular, mc_flag, event_number, missing_data);
 }
 
 RdpLegacyEventAllocator::RdpLegacyEventAllocator(
@@ -1434,6 +1458,10 @@ void run_rdp_geneconv_recheck(
     RdpLegacyEventAllocator& allocator, const bool long_winded,
     std::vector<GeneconvEmissionTrace>* trace) {
     constexpr short mismatch_penalty = 1;
+    // The command-line scan resets GCMaxOverlapFrags to its default of one
+    // for the exploratory pass used by these fixtures.  DelPVals compares
+    // the overlap counter inclusively, so this value is observable in both
+    // event order and the final cyclic selection.
     constexpr short max_overlap_fragments = 1;
     const int length = scan_state.sequence_length;
     // GCXoverD receives the global GCDimSize separately from the alignment
@@ -1535,15 +1563,9 @@ void run_rdp_geneconv_recheck(
         fragment_count.data(), kmax.data(), ll.data(), high_enough.data(),
         critical.data());
     if (maximum_score > cutoff) return;
-    if (settings.mc_flag == 0 &&
-        maximum_score * settings.mc_correction >=
-            store_probability(store_lpv, store_lpv_ub, 1, sequences[0]) &&
-        maximum_score * settings.mc_correction >=
-            store_probability(store_lpv, store_lpv_ub, 1, sequences[1]) &&
-        maximum_score * settings.mc_correction >=
-            store_probability(store_lpv, store_lpv_ub, 1, sequences[2])) {
-        return;
-    }
+    // GCXoverD does not apply the RDP StoreLPV pre-filter.  Its only global
+    // threshold check is MaxScore > PCO; StoreLPV is used for neither the
+    // initial exploratory pass nor the LongWinded role choice.
     std::vector<int> deleted(informative + 2, 0);
     double prior = 0.0;
     int repetitions = 0;
@@ -1663,7 +1685,7 @@ void run_rdp_maxchi_recheck(
     const RdpProbabilitySettings& settings,
     RdpLegacyEventAllocator& allocator, const int event_beginning,
     const int event_ending, const bool initial_scan,
-    std::vector<MaxchiPeakTrace>* trace) {
+    std::vector<MaxchiPeakTrace>* trace, const bool inner_scan) {
     constexpr int window_size = 70;
     constexpr int max_window = ChiLookupTable::max_window;
     const int length = scan_state.sequence_length;
@@ -1708,10 +1730,20 @@ void run_rdp_maxchi_recheck(
         if (half_window <= critical)
             half_window = vb_clng(informative / 2.0 + 0.00001) - 1;
         if (half_window < 6) return;
+    } else if (inner_scan) {
+        // InnerScan2 calls MCXoverF with FindAllFlag=0 and BEP=ENP=0.
+        // MakeWindowSize therefore uses the configured fixed MC window; the
+        // event-specific window is only used by FinalTrim's FindAllFlag=1
+        // recheck.
+        const int go_on = MathFuncs::MyMathFuncs::MakeWindowSizeP(
+            0, 0, &critical, informative, 0.1, window_size, &half_window,
+            half_window, 0);
+        if (go_on == 0) return;
     } else {
-        half_window = event_half_window(
-            event_beginning, event_ending, informative, critical, half_window,
-            position_difference);
+        const int go_on = MathFuncs::MyMathFuncs::MakeWindowSizeP(
+            event_beginning, event_ending, &critical, informative, 0.1,
+            window_size, &half_window, half_window, 0);
+        if (go_on == 0) return;
     }
     if (half_window < 0) return;
     const int win_upper = length + half_window * 2;
@@ -1727,6 +1759,19 @@ void run_rdp_maxchi_recheck(
         static_cast<std::size_t>(sequence_stride) * 3, 0.0);
     std::vector<int> banned_windows(length + 2, 0);
     std::vector<unsigned char> missing_map(length + 3, 0);
+    if (inner_scan && settings.circular == 0) {
+        // MCXoverF's FindAllFlag=0 branch always excludes windows crossing
+        // the ends of a linear alignment.  The compiled DLL's current DNA5
+        // source clears MDMap/BanWin, then applies precisely these sentinels
+        // (its missing-data MakeBanWin call is commented out in this build).
+        missing_map[1] = 1;
+        missing_map[informative] = 1;
+        for (int position = informative - half_window + 2;
+             position <= informative; ++position) {
+            if (position >= 0 && position < static_cast<int>(banned_windows.size()))
+                banned_windows[position] = 1;
+        }
+    }
     MathFuncs::MyMathFuncs::WinScoreCalcP(
         win_upper, critical, half_window, informative, length + 1,
         sequences[0], sequences[1], sequences[2], scores.data(),
@@ -1750,7 +1795,7 @@ void run_rdp_maxchi_recheck(
     // formula CalcChiValsP branch, even for a linear alignment.  The lookup
     // table is selected only by the FindAllFlag=0/CircularFlag=0 branch.
     // `initial_scan` denotes that latter first-pass path here.
-    double maximum = initial_scan && settings.circular == 0
+    double maximum = (initial_scan || inner_scan) && settings.circular == 0
         ? MathFuncs::MyMathFuncs::CalcChiVals4P3(
               win_upper, critical, half_window, informative, length,
               window_scores.data(), chi_values.data(), banned_windows.data(),
@@ -1786,7 +1831,8 @@ void run_rdp_maxchi_recheck(
         if (maximum_position == 0) maximum_position = 1;
         int growing_window = half_window;
         MathFuncs::MyMathFuncs::MakeTWinP(
-            initial_scan ? 0 : 1, half_window, &growing_window, informative);
+            (initial_scan || inner_scan) ? 0 : 1, half_window,
+            &growing_window, informative);
         int maximum_failures = half_window * 2;
         maximum_failures = std::min(
             maximum_failures, (informative - growing_window * 2) / 2);
@@ -1817,13 +1863,25 @@ void run_rdp_maxchi_recheck(
         int right = maximum_position + growing_window;
         if (right >= informative * 2) right -= informative * 2;
         if (right >= informative) right -= informative;
-        MathFuncs::MyMathFuncs::GrowMChiWinP2(
-            max_window, left, right, informative, half_window,
-            growing_window, comparison, length, left_count, right_count,
-            maximum_failures, &probability, &best_window, &maximum,
-            &top_left, &top_right, &top_left_position, &top_right_position,
-            scores.data(), const_cast<float*>(table.values.data()),
-            const_cast<int*>(table.map.data()));
+        if (inner_scan) {
+            MathFuncs::MyMathFuncs::GrowMChiWin2P2(
+                max_window, left, right, informative, half_window,
+                growing_window, comparison, length, left_count, right_count,
+                maximum_failures, &probability, &best_window, &maximum,
+                &top_left, &top_right, &top_left_position,
+                &top_right_position, scores.data(),
+                missing_map.data(),
+                const_cast<float*>(table.values.data()),
+                const_cast<int*>(table.map.data()));
+        } else {
+            MathFuncs::MyMathFuncs::GrowMChiWinP2(
+                max_window, left, right, informative, half_window,
+                growing_window, comparison, length, left_count, right_count,
+                maximum_failures, &probability, &best_window, &maximum,
+                &top_left, &top_right, &top_left_position, &top_right_position,
+                scores.data(), const_cast<float*>(table.values.data()),
+                const_cast<int*>(table.map.data()));
+        }
         probability = (maximum < 20000.0)
             ? MathFuncs::MyMathFuncs::ChiPVal2P(maximum) *
                 (static_cast<double>(informative) /
@@ -1997,17 +2055,19 @@ void run_rdp_maxchi_recheck(
                         event.beginning, event.ending, position_difference,
                         difference_position, length, informative,
                         settings.circular != 0);
-                    // The companion allocation can reallocate this row;
-                    // retain the polished primary record before allocating.
-                    auto reverse = event;
-                    const int reverse_slot = allocator.allocate(
-                        active[0], 3, probability);
-                    // MCXoverF does not apply TSXOver's rectangular-slot
-                    // guard here: it copies whenever UpdateXOList3 returns a
-                    // positive SIP, growing the second dimension as needed.
-                    if (reverse_slot > 0) {
-                        std::swap(reverse.beginning, reverse.ending);
-                        allocator.event(active[0], reverse_slot) = reverse;
+                    if (!inner_scan) {
+                        // The companion allocation can reallocate this row;
+                        // retain the polished primary record before allocating.
+                        auto reverse = event;
+                        const int reverse_slot = allocator.allocate(
+                            active[0], 3, probability);
+                        // MCXoverF does not apply TSXOver's rectangular-slot
+                        // guard here: it copies whenever UpdateXOList3 returns a
+                        // positive SIP, growing the second dimension as needed.
+                        if (reverse_slot > 0) {
+                            std::swap(reverse.beginning, reverse.ending);
+                            allocator.event(active[0], reverse_slot) = reverse;
+                        }
                     }
                 }
             }
