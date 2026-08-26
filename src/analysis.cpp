@@ -534,6 +534,84 @@ void append_legacy_optional_events(
     output.raw_candidate_count = static_cast<int>(output.events.size());
 }
 
+void apply_legacy_optional_rechecks(
+    RdpFullAnalysisResult& output,
+    const RdpScanState& scan_state,
+    const RdpInitialAnalysisOptions& options) {
+    if (!options.enable_bootscan_secondary && !options.enable_siscan_secondary) {
+        return;
+    }
+    const auto alignment = next_rdp_legacy_optional_bridge::make_alignment(scan_state);
+    const auto origins = [&] {
+        std::vector<std::uint32_t> values(alignment.sequence_count());
+        for (std::size_t index = 0; index < values.size(); ++index) {
+            values[index] = static_cast<std::uint32_t>(index);
+        }
+        return values;
+    }();
+    std::vector<std::uint8_t> disabled(alignment.sequence_count(), 0);
+    for (std::size_t index = 0;
+         index < disabled.size() && index < options.disabled_sequences.size();
+         ++index) {
+        disabled[index] = options.disabled_sequences[index] != 0 ? 1 : 0;
+    }
+    const std::uint64_t correction_tests = std::max<std::uint64_t>(
+        1, static_cast<std::uint64_t>(output.triplet_count));
+    next_rdp_legacy_optional::BootscanWorkspace bootscan_workspace;
+    next_rdp_legacy_optional::SiscanWorkspace siscan_workspace;
+    for (auto& event : output.events) {
+        std::array<std::uint32_t, 3> triplet{};
+        bool valid = true;
+        for (int role = 0; role < 3; ++role) {
+            const int sequence = event.representative_sequences[role];
+            if (sequence < 0 || sequence >= static_cast<int>(alignment.sequence_count())) {
+                valid = false;
+                break;
+            }
+            triplet[role] = static_cast<std::uint32_t>(sequence);
+        }
+        if (!valid) continue;
+        const auto missing = next_rdp_legacy_optional_bridge::triplet_missing_data(
+            alignment, triplet);
+        if (options.enable_bootscan_secondary) {
+            next_rdp_legacy_optional::BootscanRecheckOptions recheck;
+            recheck.circular = options.circular;
+            recheck.bonferroni = options.correction_bonferroni;
+            recheck.p_value_cutoff = options.p_value_cutoff;
+            recheck.correction_tests = correction_tests;
+            recheck.window_sites = std::max(5, options.bootscan_window_sites);
+            recheck.step_sites = std::max(1, options.bootscan_step_sites);
+            recheck.bootstrap_replicates = std::max(10, options.bootscan_bootstrap_replicates);
+            recheck.support_cutoff = options.bootscan_support_cutoff;
+            recheck.random_seed = options.bootscan_random_seed;
+            event.bootscan_recheck = next_rdp_legacy_optional::bootscan_recheck(
+                alignment, triplet, missing,
+                static_cast<std::size_t>(std::max(1, event.beginning)),
+                static_cast<std::size_t>(std::max(1, event.ending)), recheck,
+                bootscan_workspace);
+        }
+        if (options.enable_siscan_secondary) {
+            next_rdp_legacy_optional::SiscanOptions recheck;
+            recheck.circular = options.circular;
+            recheck.bonferroni = options.correction_bonferroni;
+            recheck.p_value_cutoff = options.p_value_cutoff;
+            recheck.correction_tests = correction_tests;
+            recheck.window_sites = std::max(5, options.siscan_window_sites);
+            recheck.step_sites = std::max(1, options.siscan_step_sites);
+            recheck.scan_permutations = std::max(10, options.siscan_scan_permutations);
+            recheck.p_value_permutations = std::max<std::size_t>(
+                recheck.scan_permutations,
+                static_cast<std::size_t>(std::max(1, options.siscan_p_value_permutations)));
+            recheck.random_seed = options.siscan_random_seed;
+            event.siscan_recheck = next_rdp_legacy_optional::siscan_recheck(
+                alignment, triplet, missing, origins, disabled,
+                static_cast<std::size_t>(std::max(1, event.beginning)),
+                static_cast<std::size_t>(std::max(1, event.ending)), recheck,
+                siscan_workspace);
+        }
+    }
+}
+
 RdpInitialAnalysisResult run_rdp_initial_analysis(
     RdpScanState scan_state, const RdpInitialAnalysisOptions& options) {
     if (options.p_value_cutoff <= 0.0 || options.p_value_cutoff > 1.0) {
@@ -846,6 +924,7 @@ RdpFullAnalysisResult run_rdp_full_analysis(
             }
         }
         append_legacy_optional_events(output, initial.alignment, options);
+        apply_legacy_optional_rechecks(output, initial.alignment, options);
         return output;
     }
 
@@ -915,6 +994,7 @@ RdpFullAnalysisResult run_rdp_full_analysis(
             done_sequence, done_row_upper_bound);
         if (!selection.found) {
             append_legacy_optional_events(output, initial.alignment, options);
+            apply_legacy_optional_rechecks(output, initial.alignment, options);
             return output;
         }
         if (selection.trace[0] < 0 ||

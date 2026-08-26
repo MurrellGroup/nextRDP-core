@@ -108,9 +108,11 @@ struct RdpFinalEvent {
     bool bootscan_available = false;
     next_rdp_legacy_optional::BootscanDiscoveryCandidate bootscan_discovery{};
     next_rdp_legacy_optional::BootscanPlotProfile bootscan_profile{};
+    next_rdp_legacy_optional::BootscanRecheckEvidence bootscan_recheck{};
     bool siscan_available = false;
     next_rdp_legacy_optional::SiscanDiscoveryCandidate siscan_discovery{};
     next_rdp_legacy_optional::SiscanPlotProfile siscan_profile{};
+    next_rdp_legacy_optional::SiscanRecheckEvidence siscan_recheck{};
 };
 
 struct RdpFullAnalysisResult {

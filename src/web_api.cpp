@@ -1060,6 +1060,60 @@ std::string full_json(const WebContext& context) {
                    << ",\"correctedPValue\":" << discovery.corrected_p_value
                    << '}';
         }
+        output << ",\"bootscanRecheck\":";
+        if (!event.bootscan_recheck.requested) {
+            output << "null";
+        } else {
+            const auto& recheck = event.bootscan_recheck;
+            output << "{\"status\":\"complete-active-unvalidated\",\"kernel\":\"BSXoverM-SEQBOOT2-FastBootDistIP-DrawBSPlotsIII\",\"eventDiscoveryApplied\":false,\"coordinateChanging\":false"
+                   << ",\"requested\":true,\"representativeSkipped\":" << (recheck.representative_skipped ? "true" : "false")
+                   << ",\"profileAvailable\":" << (recheck.profile_available ? "true" : "false")
+                   << ",\"sourceDistanceMode\":true,\"sourceBinomialProbability\":true,\"sourceCircularWindows\":true"
+                   << ",\"erasedWindowFilterApplied\":" << (recheck.erased_window_filter_applied ? "true" : "false")
+                   << ",\"bonferroniApplied\":" << (recheck.bonferroni_applied ? "true" : "false")
+                   << ",\"correctionTests\":" << recheck.correction_tests
+                   << ",\"windowSites\":" << recheck.window_sites << ",\"stepSites\":" << recheck.step_sites
+                   << ",\"bootstrapReplicates\":" << recheck.bootstrap_replicates << ",\"randomSeed\":" << recheck.random_seed
+                   << ",\"supportCutoff\":" << recheck.support_cutoff
+                   << ",\"windowsScanned\":" << recheck.windows_scanned << ",\"eventWindowsScored\":" << recheck.event_windows_scored
+                   << ",\"usableEventWindows\":" << recheck.usable_event_windows << ",\"informativeSites\":" << recheck.informative_sites
+                   << ",\"tractInformativeSites\":" << recheck.tract_informative_sites << ",\"tractPairMatches\":" << recheck.tract_pair_matches
+                   << ",\"outsidePairMatches\":" << recheck.outside_pair_matches
+                   << ",\"scoredPair\":" << static_cast<int>(recheck.scored_pair)
+                   << ",\"maximumPairSupport\":" << recheck.maximum_pair_support
+                   << ",\"meanScoredPairSupport\":" << recheck.mean_scored_pair_support
+                   << ",\"localPValue\":" << recheck.local_p_value << ",\"correctedPValue\":" << recheck.corrected_p_value
+                   << ",\"supportGatePassed\":" << (recheck.support_gate_passed ? "true" : "false")
+                   << ",\"sourceRecheckHit\":" << (recheck.source_recheck_hit ? "true" : "false") << '}';
+        }
+        output << ",\"siscanRecheck\":";
+        if (!event.siscan_recheck.requested) {
+            output << "null";
+        } else {
+            const auto& recheck = event.siscan_recheck;
+            output << "{\"status\":\"complete-active-unvalidated\",\"kernel\":\"GetSSOL-Get3Score-GetPScores2-DoPerms3P-MakeZValue2-DoSums\",\"eventDiscoveryApplied\":false,\"coordinateChanging\":false"
+                   << ",\"requested\":true,\"representativeSkipped\":" << (recheck.representative_skipped ? "true" : "false")
+                   << ",\"profileAvailable\":" << (recheck.profile_available ? "true" : "false")
+                   << ",\"outlierAvailable\":" << (recheck.outlier_available ? "true" : "false")
+                   << ",\"sourceNearestOutlier\":true,\"sourceGapStripping\":true,\"sourceVariablePatterns\":true"
+                   << ",\"bonferroniApplied\":" << (recheck.bonferroni_applied ? "true" : "false")
+                   << ",\"correctionTests\":" << recheck.correction_tests
+                   << ",\"outlierSequence\":" << recheck.outlier_sequence
+                   << ",\"informativeSites\":" << recheck.informative_sites << ",\"permutationDraws\":" << recheck.permutation_draws
+                   << ",\"globalPair\":" << static_cast<int>(recheck.global_pair)
+                   << ",\"scoredPair\":" << static_cast<int>(recheck.scored_pair)
+                   << ",\"selectedScore\":" << static_cast<int>(recheck.selected_score)
+                   << ",\"selectedScoreFamily\":\""
+                   << (recheck.selected_score_family == next_rdp_legacy_optional::SiscanScoreFamily::partition
+                       ? "partition" : recheck.selected_score_family == next_rdp_legacy_optional::SiscanScoreFamily::summed
+                       ? "summed" : "unavailable")
+                   << "\",\"maximumZ\":" << recheck.maximum_z
+                   << ",\"normalTailPValue\":" << recheck.normal_tail_p_value
+                   << ",\"regionLengthAdjustedPValue\":" << recheck.region_length_adjusted_p_value
+                   << ",\"windowAdjustedPValue\":" << recheck.window_adjusted_p_value
+                   << ",\"correctedPValue\":" << recheck.corrected_p_value
+                   << ",\"sourceRecheckHit\":" << (recheck.source_recheck_hit ? "true" : "false") << '}';
+        }
         output << "}";
     }
     output << "]}";
