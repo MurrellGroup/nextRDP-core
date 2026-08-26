@@ -1,6 +1,8 @@
 #pragma once
 
 #include "burt_state.hpp"
+#include "legacy_optional/bootscan.hpp"
+#include "legacy_optional/siscan.hpp"
 #include "scan_state.hpp"
 #include "round_state.hpp"
 #include "xover_state.hpp"
@@ -29,6 +31,26 @@ struct RdpInitialAnalysisOptions {
     bool enable_chimaera = false;
     int chimaera_window_sites = 60;
     bool enable_three_seq = false;
+    bool correction_bonferroni = true;
+    // Optional BootScan/SISCAN lanes are entered only when requested. Their
+    // implementations are isolated from the source-faithful RDP scheduler,
+    // so the default RDP path remains unchanged.
+    bool enable_bootscan = false;
+    bool enable_bootscan_secondary = false;
+    int bootscan_window_sites = 200;
+    int bootscan_step_sites = 20;
+    int bootscan_bootstrap_replicates = 100;
+    double bootscan_support_cutoff = 0.70;
+    unsigned int bootscan_random_seed = 3;
+    bool enable_siscan = false;
+    bool enable_siscan_secondary = false;
+    int siscan_window_sites = 200;
+    int siscan_step_sites = 20;
+    int siscan_scan_permutations = 100;
+    int siscan_p_value_permutations = 1000;
+    unsigned int siscan_random_seed = 3;
+    std::vector<unsigned char> masked_sequences;
+    std::vector<unsigned char> disabled_sequences;
     bool polish_breakpoints_with_burt = false;
 
     // Optional source call-order captures.  GENECONV now has a direct
@@ -83,6 +105,12 @@ struct RdpFinalEvent {
     bool burt_applied = false;
     RdpBurtResult burt{};
     RdpSlidingWindowProfile rdp_profile{};
+    bool bootscan_available = false;
+    next_rdp_legacy_optional::BootscanDiscoveryCandidate bootscan_discovery{};
+    next_rdp_legacy_optional::BootscanPlotProfile bootscan_profile{};
+    bool siscan_available = false;
+    next_rdp_legacy_optional::SiscanDiscoveryCandidate siscan_discovery{};
+    next_rdp_legacy_optional::SiscanPlotProfile siscan_profile{};
 };
 
 struct RdpFullAnalysisResult {

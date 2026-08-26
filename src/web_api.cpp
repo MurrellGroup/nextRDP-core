@@ -1,5 +1,8 @@
 #include "analysis.hpp"
 #include "legacy_method_state.hpp"
+#include "legacy_optional/bootscan.hpp"
+#include "legacy_optional/siscan.hpp"
+#include "legacy_optional_bridge.hpp"
 
 #include <algorithm>
 #include <array>
@@ -302,12 +305,18 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
     const char* method = program == 1 ? "GENECONV"
         : program == 3 ? "MAXCHI"
         : program == 4 ? "CHIMAERA"
+        : program == 5 ? "BOOTSCAN"
+        : program == 6 ? "SISCAN"
         : program == 8 ? "3SEQ" : "RDP";
     const char* metric = program == 1 ? "negative-log10-p-value"
         : program == 8 ? "random-walk-height"
+        : program == 5 ? "bootstrap-support"
+        : program == 6 ? "sister-scan-z-score"
         : program == 0 ? "pair-identity" : "chi-square";
     int requested_window = program == 3 ? context.options.maxchi_window_sites
         : program == 4 ? context.options.chimaera_window_sites
+        : program == 5 ? context.options.bootscan_window_sites
+        : program == 6 ? context.options.siscan_window_sites
         : context.options.window_sites;
     requested_window = std::max(2, requested_window);
     const int half_window = std::max(1, requested_window / 2);
@@ -319,10 +328,107 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
             event.rdp_profile.counts[1].size() &&
         event.rdp_profile.positions.size() ==
             event.rdp_profile.counts[2].size();
+    bool exact_bootscan_profile = false;
+    bool exact_siscan_profile = false;
+    std::vector<std::size_t> optional_coordinates;
+    std::array<std::vector<double>, 3> optional_values;
+    double optional_minimum = std::numeric_limits<double>::infinity();
+    double optional_maximum = -std::numeric_limits<double>::infinity();
+    if (program == 5 && event.bootscan_available) {
+        const auto optional_alignment =
+            next_rdp_legacy_optional_bridge::make_alignment(
+                context.alignment.sequences);
+        const std::array<std::uint32_t, 3> triplet{
+            static_cast<std::uint32_t>(event.representative_sequences[0]),
+            static_cast<std::uint32_t>(event.representative_sequences[1]),
+            static_cast<std::uint32_t>(event.representative_sequences[2])};
+        next_rdp_legacy_optional::BootscanDiscoveryOptions options;
+        options.circular = context.options.circular;
+        options.bonferroni = context.options.correction_bonferroni;
+        options.p_value_cutoff = context.options.p_value_cutoff;
+        options.correction_tests = std::max<std::uint64_t>(
+            1, static_cast<std::uint64_t>(context.full.triplet_count));
+        options.window_sites = std::max(5, context.options.bootscan_window_sites);
+        options.step_sites = std::max(1, context.options.bootscan_step_sites);
+        options.bootstrap_replicates = std::max(
+            10, context.options.bootscan_bootstrap_replicates);
+        options.support_cutoff = context.options.bootscan_support_cutoff;
+        options.random_seed = context.options.bootscan_random_seed;
+        next_rdp_legacy_optional::BootscanWorkspace workspace;
+        const auto profile = next_rdp_legacy_optional::bootscan_plot_profile(
+            optional_alignment, triplet,
+            std::vector<std::uint8_t>(optional_alignment.length, 0), options,
+            workspace);
+        if (profile.available) {
+            exact_bootscan_profile = true;
+            optional_coordinates = profile.coordinates;
+            options.window_sites = profile.window_sites;
+            for (int pair = 0; pair < 3; ++pair) {
+                optional_values[pair] = profile.pair_support[pair];
+                for (const double value : optional_values[pair]) {
+                    optional_minimum = std::min(optional_minimum, value);
+                    optional_maximum = std::max(optional_maximum, value);
+                }
+            }
+        }
+    } else if (program == 6 && event.siscan_available) {
+        const auto optional_alignment =
+            next_rdp_legacy_optional_bridge::make_alignment(
+                context.alignment.sequences);
+        const std::array<std::uint32_t, 3> triplet{
+            static_cast<std::uint32_t>(event.representative_sequences[0]),
+            static_cast<std::uint32_t>(event.representative_sequences[1]),
+            static_cast<std::uint32_t>(event.representative_sequences[2])};
+        std::vector<std::uint32_t> origins(optional_alignment.sequence_count());
+        for (std::size_t index = 0; index < origins.size(); ++index) {
+            origins[index] = static_cast<std::uint32_t>(index);
+        }
+        next_rdp_legacy_optional::SiscanOptions options;
+        options.circular = context.options.circular;
+        options.bonferroni = context.options.correction_bonferroni;
+        options.p_value_cutoff = context.options.p_value_cutoff;
+        options.correction_tests = std::max<std::uint64_t>(
+            1, static_cast<std::uint64_t>(context.full.triplet_count));
+        options.window_sites = std::max(5, context.options.siscan_window_sites);
+        options.step_sites = std::max(1, context.options.siscan_step_sites);
+        options.scan_permutations = std::max(
+            10, context.options.siscan_scan_permutations);
+        options.p_value_permutations = std::max<std::size_t>(
+            options.scan_permutations,
+            static_cast<std::size_t>(std::max(1, context.options.siscan_p_value_permutations)));
+        options.random_seed = context.options.siscan_random_seed;
+        next_rdp_legacy_optional::SiscanWorkspace workspace;
+        const auto profile = next_rdp_legacy_optional::siscan_plot_profile(
+            optional_alignment, triplet,
+            std::vector<std::uint8_t>(optional_alignment.length, 0), origins,
+            context.disabled, options, workspace,
+            static_cast<std::int64_t>(event.siscan_discovery.outlier_sequence));
+        if (profile.available) {
+            exact_siscan_profile = true;
+            optional_coordinates = profile.coordinates;
+            options.window_sites = profile.window_sites;
+            for (int pair = 0; pair < 3; ++pair) {
+                optional_values[pair] = profile.pair_z[pair];
+                for (const double value : optional_values[pair]) {
+                    optional_minimum = std::min(optional_minimum, value);
+                    optional_maximum = std::max(optional_maximum, value);
+                }
+            }
+        }
+    }
+    const bool exact_optional_profile =
+        exact_bootscan_profile || exact_siscan_profile;
+    const bool exact_detection_profile =
+        exact_rdp_profile || exact_optional_profile;
     const int stride = std::max(1, (length + 1999) / 2000);
     std::vector<int> coordinates;
     if (exact_rdp_profile) {
         coordinates = event.rdp_profile.positions;
+    } else if (exact_optional_profile) {
+        coordinates.reserve(optional_coordinates.size());
+        for (const auto coordinate : optional_coordinates) {
+            coordinates.push_back(static_cast<int>(coordinate));
+        }
     } else {
         for (int coordinate = 1; coordinate <= length; coordinate += stride) coordinates.push_back(coordinate);
         if (coordinates.empty() || coordinates.back() != length) coordinates.push_back(length);
@@ -354,6 +460,11 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
                 point[pair] = static_cast<double>(
                     event.rdp_profile.counts[pair][coordinate_index]) /
                     divisor;
+            }
+        } else if (exact_optional_profile &&
+                   coordinate_index < optional_coordinates.size()) {
+            for (int pair = 0; pair < 3; ++pair) {
+                point[pair] = optional_values[pair][coordinate_index];
             }
         } else if (program == 8) {
             for (int target = 0; target < 3; ++target) {
@@ -399,20 +510,26 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
     if (exact_rdp_profile) {
         minimum = event.rdp_profile.minimum;
         maximum = event.rdp_profile.maximum;
+    } else if (exact_optional_profile) {
+        minimum = optional_minimum;
+        maximum = optional_maximum;
     }
     if (!std::isfinite(minimum)) minimum = 0.0;
     if (!std::isfinite(maximum)) maximum = 0.0;
     std::ostringstream output;
     output << std::setprecision(17)
            << "{\"signalId\":" << signal_id
-           << ",\"windowSites\":" << (program == 8 ? 0 : requested_window)
+           << ",\"windowSites\":" << (program == 8 ? 0 : exact_bootscan_profile || exact_siscan_profile
+               ? (exact_bootscan_profile ? context.options.bootscan_window_sites
+                                         : context.options.siscan_window_sites)
+               : requested_window)
            << ",\"alignmentLength\":" << length
            << ",\"method\":\"" << method << "\",\"metric\":\"" << metric
            << "\",\"profileContext\":\""
-           << (exact_rdp_profile ? "detection-alignment" :
+           << (exact_detection_profile ? "detection-alignment" :
                "original-alignment-reconstruction") << "\""
            << ",\"detectionProfileExact\":"
-           << (exact_rdp_profile ? "true" : "false")
+           << (exact_detection_profile ? "true" : "false")
            << ",\"minimumValue\":" << minimum
            << ",\"maximumValue\":" << maximum << ",\"points\":[";
     for (std::size_t index = 0; index < coordinates.size(); ++index) {
@@ -837,6 +954,30 @@ std::string full_json(const WebContext& context) {
            << ",\"tripletCount\":" << result.triplet_count
            << ",\"rawCandidateCount\":" << result.raw_candidate_count
            << ",\"rdpEnabled\":" << (context.options.enable_rdp ? "true" : "false")
+           << ",\"geneconvEnabled\":" << (context.options.enable_geneconv ? "true" : "false")
+           << ",\"maxChiEnabled\":" << (context.options.enable_maxchi ? "true" : "false")
+           << ",\"chimaeraEnabled\":" << (context.options.enable_chimaera ? "true" : "false")
+           << ",\"threeSeqEnabled\":" << (context.options.enable_three_seq ? "true" : "false")
+           << ",\"bootscanPrimaryEnabled\":" << (context.options.enable_bootscan ? "true" : "false")
+           << ",\"bootscanSecondaryEnabled\":" << (context.options.enable_bootscan_secondary ? "true" : "false")
+           << ",\"siscanPrimaryEnabled\":" << (context.options.enable_siscan ? "true" : "false")
+           << ",\"siscanSecondaryEnabled\":" << (context.options.enable_siscan_secondary ? "true" : "false")
+           << ",\"enabledMethods\":[";
+    bool first_method = true;
+    const auto append_method = [&](const char* name, bool enabled) {
+        if (!enabled) return;
+        if (!first_method) output << ',';
+        first_method = false;
+        output << '"' << name << '"';
+    };
+    append_method("RDP", context.options.enable_rdp);
+    append_method("GENECONV", context.options.enable_geneconv);
+    append_method("MAXCHI", context.options.enable_maxchi);
+    append_method("CHIMAERA", context.options.enable_chimaera);
+    append_method("3SEQ", context.options.enable_three_seq);
+    append_method("BOOTSCAN", context.options.enable_bootscan);
+    append_method("SISCAN", context.options.enable_siscan);
+    output << ']'
            << ",\"events\":[";
     for (std::size_t index = 0; index < result.events.size(); ++index) {
         if (index != 0) output << ',';
@@ -872,7 +1013,54 @@ std::string full_json(const WebContext& context) {
             if (confidence != 0) output << ',';
             output << event.burt.confidence[confidence];
         }
-        output << "]}";
+        output << "]"
+               << ",\"bootscanDiscovery\":";
+        if (!event.bootscan_available) {
+            output << "null";
+        } else {
+            const auto& discovery = event.bootscan_discovery;
+            output << "{\"status\":\"source-shaped-active-unvalidated\",\"kernel\":\"BSXoverR-SEQBOOT2-FastBootDist-GetPltVal-ScanBSPlots-MakeBSEvent\",\"mode\":\"jukes-cantor-distance\",\"probabilityModel\":\"MakeScoresBS-binomial\",\"strictClosestPairVoting\":true"
+                   << ",\"supportedPair\":" << static_cast<int>(discovery.supported_pair)
+                   << ",\"windowsScored\":" << discovery.windows_scored
+                   << ",\"usableWindows\":" << discovery.usable_windows
+                   << ",\"informativeSites\":" << discovery.informative_sites
+                   << ",\"tractInformativeSites\":" << discovery.tract_informative_sites
+                   << ",\"tractPairMatches\":" << discovery.tract_pair_matches
+                   << ",\"outsidePairMatches\":" << discovery.outside_pair_matches
+                   << ",\"maximumPairSupport\":" << discovery.maximum_pair_support
+                   << ",\"meanPairSupport\":" << discovery.mean_pair_support
+                   << ",\"bootstrapPValue\":" << discovery.bootstrap_p_value
+                   << ",\"rawPValue\":" << discovery.raw_p_value
+                   << ",\"correctedPValue\":" << discovery.corrected_p_value
+                   << ",\"erasedWindowFilterApplied\":"
+                   << (discovery.erased_window_filter_applied ? "true" : "false")
+                   << '}';
+        }
+        output << ",\"siscanDiscovery\":";
+        if (!event.siscan_available) {
+            output << "null";
+        } else {
+            const auto& discovery = event.siscan_discovery;
+            output << "{\"status\":\"source-shaped-active-unvalidated\",\"kernel\":\"SSXoverC-GetSSOL-Get3Score-GetPScores2-DoPerms3-MakeZValue2-DoSums-FindMaxZ-ShrinkRegionC\",\"outlierMode\":\"nearest-source-wpgma\",\"permutationGenerator\":\"microsoft-crt-flat-prefix\",\"gapMode\":\"strip\",\"variablePatternMode\":\"one-two-three-variable\",\"sourceFastWindowQuirk\":true"
+                   << ",\"globalPair\":" << static_cast<int>(discovery.global_pair)
+                   << ",\"candidatePair\":" << static_cast<int>(discovery.candidate_pair)
+                   << ",\"outlierSequence\":" << discovery.outlier_sequence
+                   << ",\"windowsInRegion\":" << discovery.windows_in_region
+                   << ",\"informativeSites\":" << discovery.informative_sites
+                   << ",\"permutationDraws\":" << discovery.permutation_draws
+                   << ",\"selectedScore\":" << static_cast<int>(discovery.selected_score)
+                   << ",\"selectedScoreFamily\":\""
+                   << (discovery.selected_score_family == next_rdp_legacy_optional::SiscanScoreFamily::partition
+                       ? "partition" : discovery.selected_score_family == next_rdp_legacy_optional::SiscanScoreFamily::summed
+                       ? "summed" : "unavailable")
+                   << "\",\"maximumZ\":" << discovery.maximum_z
+                   << ",\"normalTailPValue\":" << discovery.normal_tail_p_value
+                   << ",\"regionLengthAdjustedPValue\":" << discovery.region_length_adjusted_p_value
+                   << ",\"windowAdjustedPValue\":" << discovery.window_adjusted_p_value
+                   << ",\"correctedPValue\":" << discovery.corrected_p_value
+                   << '}';
+        }
+        output << "}";
     }
     output << "]}";
     return output.str();
@@ -1010,20 +1198,20 @@ NEXT_RDP_KEEPALIVE const char* rdp_get_summary_json(const std::uint32_t handle) 
 }
 
 NEXT_RDP_KEEPALIVE int rdp_scan_begin(
-    const std::uint32_t handle, const int circular, const int /*correction_mode*/,
+    const std::uint32_t handle, const int circular, const int correction_mode,
     const double p_value_cutoff, const std::uint32_t window_sites,
     const int rdp_enabled,
     const int maxchi_enabled, const std::uint32_t maxchi_window_sites,
     const int chimaera_enabled, const std::uint32_t chimaera_window_sites,
     const int geneconv_enabled, const std::uint32_t geneconv_mismatch_scale,
     const std::uint32_t geneconv_max_overlaps, const int threeseq_enabled,
-    const int /*bootscan_primary_enabled*/, const int /*bootscan_secondary_enabled*/,
-    const std::uint32_t /*bootscan_window_sites*/, const std::uint32_t /*bootscan_step_sites*/,
-    const std::uint32_t /*bootscan_bootstrap_replicates*/, const double /*bootscan_support_cutoff*/,
-    const std::uint32_t /*bootscan_random_seed*/, const int /*siscan_primary_enabled*/,
-    const int /*siscan_secondary_enabled*/, const std::uint32_t /*siscan_window_sites*/,
-    const std::uint32_t /*siscan_step_sites*/, const std::uint32_t /*siscan_scan_permutations*/,
-    const std::uint32_t /*siscan_p_value_permutations*/, const std::uint32_t /*siscan_random_seed*/,
+    const int bootscan_primary_enabled, const int bootscan_secondary_enabled,
+    const std::uint32_t bootscan_window_sites, const std::uint32_t bootscan_step_sites,
+    const std::uint32_t bootscan_bootstrap_replicates, const double bootscan_support_cutoff,
+    const std::uint32_t bootscan_random_seed, const int siscan_primary_enabled,
+    const int siscan_secondary_enabled, const std::uint32_t siscan_window_sites,
+    const std::uint32_t siscan_step_sites, const std::uint32_t siscan_scan_permutations,
+    const std::uint32_t siscan_p_value_permutations, const std::uint32_t siscan_random_seed,
     const int polish_breakpoints, const int /*query_reference_mode*/,
     const std::uint32_t* /*reference_groups*/, const std::size_t /*reference_group_count*/,
     const std::uint8_t* masked_sequences, const std::size_t mask_length,
@@ -1038,6 +1226,7 @@ NEXT_RDP_KEEPALIVE int rdp_scan_begin(
     }
     RdpInitialAnalysisOptions options;
     options.circular = circular != 0;
+    options.correction_bonferroni = correction_mode == 0;
     options.p_value_cutoff = p_value_cutoff;
     options.window_sites = static_cast<int>(window_sites);
     options.enable_rdp = rdp_enabled != 0;
@@ -1049,10 +1238,25 @@ NEXT_RDP_KEEPALIVE int rdp_scan_begin(
     options.enable_chimaera = chimaera_enabled != 0;
     options.chimaera_window_sites = static_cast<int>(chimaera_window_sites);
     options.enable_three_seq = threeseq_enabled != 0;
+    options.enable_bootscan = bootscan_primary_enabled != 0;
+    options.enable_bootscan_secondary = bootscan_secondary_enabled != 0;
+    options.bootscan_window_sites = static_cast<int>(bootscan_window_sites);
+    options.bootscan_step_sites = static_cast<int>(bootscan_step_sites);
+    options.bootscan_bootstrap_replicates = static_cast<int>(bootscan_bootstrap_replicates);
+    options.bootscan_support_cutoff = bootscan_support_cutoff;
+    options.bootscan_random_seed = bootscan_random_seed;
+    options.enable_siscan = siscan_primary_enabled != 0;
+    options.enable_siscan_secondary = siscan_secondary_enabled != 0;
+    options.siscan_window_sites = static_cast<int>(siscan_window_sites);
+    options.siscan_step_sites = static_cast<int>(siscan_step_sites);
+    options.siscan_scan_permutations = static_cast<int>(siscan_scan_permutations);
+    options.siscan_p_value_permutations = static_cast<int>(siscan_p_value_permutations);
+    options.siscan_random_seed = siscan_random_seed;
     options.polish_breakpoints_with_burt = polish_breakpoints != 0;
     if (!options.enable_rdp && !options.enable_geneconv &&
         !options.enable_maxchi && !options.enable_chimaera &&
-        !options.enable_three_seq) {
+        !options.enable_three_seq && !options.enable_bootscan &&
+        !options.enable_siscan) {
         context->error = "Select RDP or at least one other discovery method.";
         return 0;
     }
@@ -1061,6 +1265,8 @@ NEXT_RDP_KEEPALIVE int rdp_scan_begin(
     context->options = std::move(options);
     context->masked.assign(masked_sequences, masked_sequences + mask_length);
     context->disabled.assign(disabled_sequences, disabled_sequences + disabled_length);
+    options.masked_sequences = context->masked;
+    options.disabled_sequences = context->disabled;
     context->started = true;
     context->finished = false;
     context->progress_phase = 0;

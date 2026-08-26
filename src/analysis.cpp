@@ -4,6 +4,9 @@
 #include "burt_state.hpp"
 #include "distance_state.hpp"
 #include "legacy_method_state.hpp"
+#include "legacy_optional/bootscan.hpp"
+#include "legacy_optional/siscan.hpp"
+#include "legacy_optional_bridge.hpp"
 #include "mutation_state.hpp"
 #include "rescan_schedule.hpp"
 #include "selection_state.hpp"
@@ -403,6 +406,134 @@ Dna5XoverApi xover_api() {
     };
 }
 
+void append_legacy_optional_events(
+    RdpFullAnalysisResult& output,
+    const RdpScanState& scan_state,
+    const RdpInitialAnalysisOptions& options) {
+    if (!options.enable_bootscan && !options.enable_siscan) return;
+    const auto alignment = next_rdp_legacy_optional_bridge::make_alignment(
+        scan_state);
+    const std::size_t count = alignment.sequence_count();
+    const std::vector<std::uint32_t> origins = [&] {
+        std::vector<std::uint32_t> values(count);
+        for (std::size_t index = 0; index < count; ++index) {
+            values[index] = static_cast<std::uint32_t>(index);
+        }
+        return values;
+    }();
+    std::vector<std::uint8_t> disabled(count, 0);
+    for (std::size_t index = 0;
+         index < count && index < options.disabled_sequences.size(); ++index) {
+        disabled[index] = options.disabled_sequences[index] != 0 ? 1 : 0;
+    }
+    std::vector<std::uint8_t> missing;
+    next_rdp_legacy_optional::BootscanWorkspace bootscan_workspace;
+    next_rdp_legacy_optional::SiscanWorkspace siscan_workspace;
+    const std::uint64_t correction_tests = std::max<std::uint64_t>(
+        1, static_cast<std::uint64_t>(output.triplet_count));
+    const int list_last = scan_state.analysis_list_last;
+    for (int index = 0; index <= list_last; ++index) {
+        const std::array<std::uint32_t, 3> triplet{
+            static_cast<std::uint32_t>(scan_state.analysis_list[index * 3]),
+            static_cast<std::uint32_t>(scan_state.analysis_list[index * 3 + 1]),
+            static_cast<std::uint32_t>(scan_state.analysis_list[index * 3 + 2])};
+        bool skip = false;
+        for (const auto sequence : triplet) {
+            if (sequence >= options.disabled_sequences.size()) continue;
+            if (options.disabled_sequences[sequence] != 0 ||
+                (sequence < options.masked_sequences.size() &&
+                 options.masked_sequences[sequence] != 0)) {
+                skip = true;
+                break;
+            }
+        }
+        if (skip) continue;
+        const auto similarities =
+            next_rdp_legacy_optional_bridge::pair_similarity(alignment, triplet);
+        missing = next_rdp_legacy_optional_bridge::triplet_missing_data(
+            alignment, triplet);
+
+        if (options.enable_bootscan) {
+            next_rdp_legacy_optional::BootscanDiscoveryOptions discovery;
+            discovery.circular = options.circular;
+            discovery.bonferroni = options.correction_bonferroni;
+            discovery.p_value_cutoff = options.p_value_cutoff;
+            discovery.correction_tests = correction_tests;
+            discovery.window_sites = std::max(5, options.bootscan_window_sites);
+            discovery.step_sites = std::max(1, options.bootscan_step_sites);
+            discovery.bootstrap_replicates = std::max(
+                10, options.bootscan_bootstrap_replicates);
+            discovery.support_cutoff = options.bootscan_support_cutoff;
+            discovery.random_seed = options.bootscan_random_seed;
+            std::vector<next_rdp_legacy_optional::BootscanDiscoveryCandidate> candidates;
+            (void)next_rdp_legacy_optional::bootscan_discover(
+                alignment, triplet, missing, similarities, discovery,
+                bootscan_workspace, candidates);
+            for (const auto& candidate : candidates) {
+                RdpFinalEvent event;
+                event.event_number = static_cast<int>(output.events.size()) + 1;
+                event.program = 5;
+                event.winning_role = 0;
+                event.probability = candidate.corrected_p_value;
+                event.beginning = static_cast<int>(candidate.beginning);
+                event.ending = static_cast<int>(candidate.ending);
+                event.representative_sequences = {
+                    static_cast<int>(triplet[candidate.recombinant_local]),
+                    static_cast<int>(triplet[candidate.major_parent_local]),
+                    static_cast<int>(triplet[candidate.minor_parent_local])};
+                for (int role = 0; role < 3; ++role) {
+                    event.sequence_groups[role].push_back(
+                        event.representative_sequences[role]);
+                }
+                event.bootscan_available = true;
+                event.bootscan_discovery = candidate;
+                output.events.push_back(std::move(event));
+            }
+        }
+
+        if (options.enable_siscan) {
+            next_rdp_legacy_optional::SiscanOptions discovery;
+            discovery.circular = options.circular;
+            discovery.bonferroni = options.correction_bonferroni;
+            discovery.p_value_cutoff = options.p_value_cutoff;
+            discovery.correction_tests = correction_tests;
+            discovery.window_sites = std::max(5, options.siscan_window_sites);
+            discovery.step_sites = std::max(1, options.siscan_step_sites);
+            discovery.scan_permutations = std::max(
+                10, options.siscan_scan_permutations);
+            discovery.p_value_permutations = std::max<std::size_t>(
+                discovery.scan_permutations,
+                static_cast<std::size_t>(std::max(1, options.siscan_p_value_permutations)));
+            discovery.random_seed = options.siscan_random_seed;
+            std::vector<next_rdp_legacy_optional::SiscanDiscoveryCandidate> candidates;
+            (void)next_rdp_legacy_optional::siscan_discover(
+                alignment, triplet, missing, similarities, origins, disabled,
+                discovery, siscan_workspace, candidates);
+            for (const auto& candidate : candidates) {
+                RdpFinalEvent event;
+                event.event_number = static_cast<int>(output.events.size()) + 1;
+                event.program = 6;
+                event.winning_role = 0;
+                event.probability = candidate.corrected_p_value;
+                event.beginning = static_cast<int>(candidate.beginning);
+                event.ending = static_cast<int>(candidate.ending);
+                event.representative_sequences = {
+                    static_cast<int>(triplet[candidate.recombinant_local]),
+                    static_cast<int>(triplet[candidate.major_parent_local]),
+                    static_cast<int>(triplet[candidate.minor_parent_local])};
+                for (int role = 0; role < 3; ++role) {
+                    event.sequence_groups[role].push_back(
+                        event.representative_sequences[role]);
+                }
+                event.siscan_available = true;
+                event.siscan_discovery = candidate;
+                output.events.push_back(std::move(event));
+            }
+        }
+    }
+    output.raw_candidate_count = static_cast<int>(output.events.size());
+}
+
 RdpInitialAnalysisResult run_rdp_initial_analysis(
     RdpScanState scan_state, const RdpInitialAnalysisOptions& options) {
     if (options.p_value_cutoff <= 0.0 || options.p_value_cutoff > 1.0) {
@@ -714,6 +845,7 @@ RdpFullAnalysisResult run_rdp_full_analysis(
                 output.events.push_back(std::move(event));
             }
         }
+        append_legacy_optional_events(output, initial.alignment, options);
         return output;
     }
 
@@ -781,7 +913,10 @@ RdpFullAnalysisResult run_rdp_full_analysis(
         auto selection = select_rdp_best_event(
             events, scan_state.next_no, options.p_value_cutoff,
             done_sequence, done_row_upper_bound);
-        if (!selection.found) return output;
+        if (!selection.found) {
+            append_legacy_optional_events(output, initial.alignment, options);
+            return output;
+        }
         if (selection.trace[0] < 0 ||
             selection.trace[0] >= static_cast<int>(events.xover_list.size()) ||
             selection.trace[1] < 1 ||

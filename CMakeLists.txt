@@ -53,6 +53,9 @@ add_library(next_rdp_core STATIC
     src/distance_state.cpp
     src/identification_state.cpp
     src/legacy_method_state.cpp
+    src/legacy_optional_bridge.cpp
+    src/legacy_optional/bootscan.cpp
+    src/legacy_optional/siscan.cpp
     src/mutation_state.cpp
     src/rescan_schedule.cpp
     src/round_state.cpp
@@ -116,6 +119,7 @@ if(EMSCRIPTEN)
     target_link_libraries(next-rdp-core-web PRIVATE next_rdp_core)
     target_compile_options(next-rdp-core-web PRIVATE
         "-ffp-eval-method=extended"
+        $<$<BOOL:${NEXT_RDP_ENABLE_MANUAL_THREADS}>:-pthread>
     )
     set_target_properties(next-rdp-core-web PROPERTIES SUFFIX ".mjs")
     target_link_options(next-rdp-core-web PRIVATE

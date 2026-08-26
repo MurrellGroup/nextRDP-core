@@ -79,3 +79,22 @@ we may want to expose to users.
   `XDiffPos(0)` is replaced with `XDiffPos(1)` when it is still the zero
   sentinel.  Replacing this with raw alignment identities makes the plot look
   smooth/high and is visibly unlike the original RDP plot.
+
+- BootScan's automated `BSXoverR` screen counts only strict, unique closest-pair
+  votes. A window tied for the closest distance is not a vote for either pair;
+  treating ties as a shared vote inflates support and can create a false tract.
+  The review curve must use the same strict rule as discovery.
+
+- SISCAN's fast `QuickCheckB` window pass deliberately uses the source's
+  one-site-short window bound before the full `ShrinkRegionC` pass. It also
+  consumes a single seeded flat `MakeVRand` prefix across windows and triplets.
+  Recomputing a fresh random stream per window or changing the bound to an
+  inclusive window silently changes both the selected sister pair and its
+  permutation P values.
+
+- The browser's initial BootScan/SISCAN implementation emits their direct
+  source-kernel discoveries after the shared initial triplet screen. They do
+  not seed the RDP cyclic tract-erasure scheduler yet; enabling RDP therefore
+  preserves the RDP event order and appends optional-lane records separately.
+  This is an integration boundary, not permission to infer RDP events from an
+  optional method.
