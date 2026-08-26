@@ -154,7 +154,9 @@ void run_rdp_chimaera_recheck(
     const std::vector<double>& store_lpv, int store_lpv_ub,
     const RdpProbabilitySettings& settings,
     RdpLegacyEventAllocator& allocator, int event_beginning, int event_ending,
-    bool initial_scan = false, int* shared_xdiffpos0 = nullptr);
+    bool initial_scan = false, int* shared_xdiffpos0 = nullptr,
+    bool inner_scan = false,
+    const std::vector<unsigned char>* missing_data = nullptr);
 
 // Literal allocation/order portion of Module3.TSXOver(1).  The two tested
 // excursions are emitted in source order and each accepted event requests

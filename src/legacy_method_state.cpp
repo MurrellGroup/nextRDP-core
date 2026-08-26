@@ -2104,7 +2104,8 @@ void run_rdp_chimaera_recheck(
     const RdpProbabilitySettings& settings,
     RdpLegacyEventAllocator& allocator, const int event_beginning,
     const int event_ending, const bool initial_scan,
-    int* const shared_xdiffpos0) {
+    int* const shared_xdiffpos0, const bool inner_scan,
+    const std::vector<unsigned char>* missing_data) {
     constexpr int window_size = 60;
     const int length = scan_state.sequence_length;
     int half_window = vb_clng(window_size / 2.0);
@@ -2141,7 +2142,40 @@ void run_rdp_chimaera_recheck(
     std::vector<int> window_scores(win_upper + 1, 0);
     std::vector<double> chi_values(sequence_stride, 0.0);
     std::vector<double> smooth(sequence_stride, 0.0);
+    std::vector<int> banned_windows(length + half_window * 2 + 2, 0);
     std::vector<unsigned char> missing_map(length + 3, 0);
+    if (inner_scan) {
+        // CXoverA's FindallFlag=0/S event-number>0 path rebuilds the
+        // informative-coordinate missing-data map before CalcChiVals5 and
+        // GrowMChiWin2P.  Pass the same XPosDiff/XDiffPos orientation as the
+        // DNA5 MakeBanWinP routine; raw alignment coordinates are not valid
+        // indices for MDMap.
+        if (missing_data != nullptr &&
+            missing_data->size() >=
+                static_cast<std::size_t>(length + 1) *
+                    static_cast<std::size_t>(scan_state.next_no + 1)) {
+            MathFuncs::MyMathFuncs::MakeBanWinP(
+                length + half_window * 2, sequences[0], sequences[1],
+                sequences[2], half_window, length, informative,
+                banned_windows.data(), missing_map.data(),
+                const_cast<unsigned char*>(missing_data->data()),
+                position_difference.data(), difference_position.data());
+        } else {
+            std::fill(banned_windows.begin(), banned_windows.end(), 0);
+            std::fill(missing_map.begin(), missing_map.end(), 0);
+        }
+    }
+    if (inner_scan && settings.circular == 0) {
+        missing_map[1] = 1;
+        missing_map[informative] = 1;
+        for (int position = informative - half_window + 2;
+             position <= informative; ++position) {
+            if (position >= 0 &&
+                position < static_cast<int>(banned_windows.size())) {
+                banned_windows[position] = 1;
+            }
+        }
+    }
     const int score_goon = initial_scan
         ? MathFuncs::MyMathFuncs::WinScoreCalc4P2(
               critical, half_window, informative, length + 1, sequences[0],
@@ -2158,6 +2192,10 @@ void run_rdp_chimaera_recheck(
         ? MathFuncs::MyMathFuncs::CalcChiVals3P(
               critical, half_window, informative, length,
               window_scores.data(), chi_values.data())
+        : inner_scan
+        ? MathFuncs::MyMathFuncs::CalcChiVals5P(
+              critical, half_window, informative, length,
+              window_scores.data(), chi_values.data(), banned_windows.data())
         : legacy_calc_chi_vals3(
               critical, half_window, informative, length, window_scores,
               chi_values);
@@ -2229,11 +2267,20 @@ void run_rdp_chimaera_recheck(
         int right = maximum_position + growing_window;
         if (right >= informative * 2) right -= informative * 2;
         if (right >= informative) right -= informative;
-        MathFuncs::MyMathFuncs::GrowMChiWinP(
-            left, right, informative, half_window, growing_window, 0, length,
-            left_count, right_count, maximum_failures, &probability,
-            &best_window, &maximum, &top_left, &top_right,
-            &top_left_position, &top_right_position, scores.data());
+        if (inner_scan) {
+            MathFuncs::MyMathFuncs::GrowMChiWin2P(
+                left, right, informative, half_window, growing_window, 0,
+                length, left_count, right_count, maximum_failures,
+                &probability, &best_window, &maximum, &top_left, &top_right,
+                &top_left_position, &top_right_position, scores.data(),
+                missing_map.data());
+        } else {
+            MathFuncs::MyMathFuncs::GrowMChiWinP(
+                left, right, informative, half_window, growing_window, 0,
+                length, left_count, right_count, maximum_failures,
+                &probability, &best_window, &maximum, &top_left, &top_right,
+                &top_left_position, &top_right_position, scores.data());
+        }
         if (maximum < 0) maximum = chi_values[original_maximum];
         probability = (maximum < 20000.0)
             ? MathFuncs::MyMathFuncs::ChiPVal2P(maximum) *

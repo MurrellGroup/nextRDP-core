@@ -18,6 +18,11 @@ we may want to expose to users.
   that branch; the fallback then decides the orientation.  This differs from
   the superficially similar inclusive comparisons in some VB helper routines,
   and must not be normalized without checking the complete caller state.
+- Inner MaxChi and Chimaera scans rebuild `MDMap`/`BanWin` with `MakeBanWinP`
+  in informative-site coordinates after a mutation.  Passing raw alignment
+  coordinates, or using the unmasked `CalcChiVals3` path, changes the source
+  `CalcChiVals5`/`GrowMChiWin2` window decisions.  The port preserves this
+  source ordering even when a demo alignment has no missing sites.
 - The source can enter round-prefix identification with every sequence marked
   for redo.  In that state it has no NJ panel; passing a negative local upper
   bound into `MakeNJTreesP2` is an underflow/crash in the port.  The compatible

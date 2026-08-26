@@ -1454,7 +1454,8 @@ RdpFullAnalysisResult run_rdp_full_analysis(
                                 initial.store_lpv_upper_bound,
                                 probability_settings, inner_method_events,
                                 0, 0, false,
-                                rotation < 2 ? &shared_xdiffpos0 : nullptr);
+                                rotation < 2 ? &shared_xdiffpos0 : nullptr,
+                                true, &mutation.missing_data);
                         }
                     }
                 } else if (program == 6) {
