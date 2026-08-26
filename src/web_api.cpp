@@ -437,7 +437,7 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
         coordinate = std::clamp(coordinate, 1, length);
         coordinates.push_back(coordinate);
     };
-    if (!exact_rdp_profile) {
+    if (!exact_detection_profile) {
         add_coordinate(event.beginning);
         add_coordinate(event.ending);
         std::sort(coordinates.begin(), coordinates.end());
@@ -532,8 +532,16 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
            << (exact_detection_profile ? "true" : "false")
            << ",\"minimumValue\":" << minimum
            << ",\"maximumValue\":" << maximum << ",\"points\":[";
-    for (std::size_t index = 0; index < coordinates.size(); ++index) {
-        if (index != 0) output << ',';
+    // DrawPlots allocates an x=0 sentinel (and repairs its coordinate), but
+    // RedrawPlotAA starts at index 1.  Keep that source bookkeeping out of
+    // the browser path; otherwise the first displayed segment would be an
+    // artificial vertical drop to zero at XDiffPos(1).
+    const std::size_t first_display_index = exact_rdp_profile &&
+        coordinates.size() > 1 ? 1 : 0;
+    bool first_point = true;
+    for (std::size_t index = first_display_index; index < coordinates.size(); ++index) {
+        if (!first_point) output << ',';
+        first_point = false;
         output << "{\"alignmentPosition\":" << coordinates[index]
                << ",\"pair12\":" << values[index][0]
                << ",\"pair13\":" << values[index][1]
@@ -1465,8 +1473,58 @@ NEXT_RDP_KEEPALIVE int rdp_set_event_review_state(const std::uint32_t handle, co
     return 1;
 }
 
-NEXT_RDP_KEEPALIVE int rdp_update_event(const std::uint32_t, const std::uint32_t, const std::uint32_t, const std::uint32_t, const std::uint32_t, const std::uint32_t, const std::uint32_t) { return 1; }
-NEXT_RDP_KEEPALIVE int rdp_update_event_group(const std::uint32_t, const std::uint32_t, const std::uint32_t*, const std::size_t, const int) { return 1; }
+NEXT_RDP_KEEPALIVE int rdp_update_event(
+    const std::uint32_t handle, const std::uint32_t event_id,
+    const std::uint32_t recombinant, const std::uint32_t major_parent,
+    const std::uint32_t minor_parent, const std::uint32_t beginning,
+    const std::uint32_t ending) {
+    auto* context = web_context(handle);
+    if (context == nullptr || event_id >= context->full.events.size()) return 0;
+    auto& event = context->full.events[event_id];
+    const auto count = context->alignment.names.size();
+    if (recombinant >= count || major_parent >= count || minor_parent >= count ||
+        recombinant == major_parent || recombinant == minor_parent ||
+        major_parent == minor_parent || beginning == 0 || ending == 0 ||
+        beginning > context->alignment.sequences.front().size() ||
+        ending > context->alignment.sequences.front().size()) {
+        context->error = "The edited event contains an invalid role or breakpoint.";
+        return 0;
+    }
+    const int winner = std::clamp(event.winning_role, 0, 2);
+    event.representative_sequences[winner] = static_cast<int>(recombinant);
+    event.representative_sequences[(winner + 1) % 3] = static_cast<int>(major_parent);
+    event.representative_sequences[(winner + 2) % 3] = static_cast<int>(minor_parent);
+    event.beginning = static_cast<int>(beginning);
+    event.ending = static_cast<int>(ending);
+    context->cache.clear();
+    context->error.clear();
+    return 1;
+}
+NEXT_RDP_KEEPALIVE int rdp_update_event_group(
+    const std::uint32_t handle, const std::uint32_t event_id,
+    const std::uint32_t* sequence_indices, const std::size_t sequence_count,
+    const int manual_override) {
+    auto* context = web_context(handle);
+    if (context == nullptr || event_id >= context->full.events.size()) return 0;
+    if (sequence_count > 0 && sequence_indices == nullptr) return 0;
+    const auto count = context->alignment.names.size();
+    auto& event = context->full.events[event_id];
+    const int winner = std::clamp(event.winning_role, 0, 2);
+    auto& group = event.sequence_groups[winner];
+    group.clear();
+    for (std::size_t index = 0; index < sequence_count; ++index) {
+        if (sequence_indices[index] >= count) {
+            context->error = "The edited co-recombinant group contains an invalid sequence.";
+            return 0;
+        }
+        group.push_back(static_cast<int>(sequence_indices[index]));
+    }
+    if (group.empty()) group.push_back(event.representative_sequences[winner]);
+    (void)manual_override;
+    context->cache.clear();
+    context->error.clear();
+    return 1;
+}
 NEXT_RDP_KEEPALIVE int rdp_reconcile_after(const std::uint32_t handle, const std::uint32_t) { return web_context(handle) == nullptr ? 0 : 1; }
 
 NEXT_RDP_KEEPALIVE const char* rdp_export_csv(const std::uint32_t handle) {
@@ -1484,6 +1542,79 @@ NEXT_RDP_KEEPALIVE const char* rdp_export_csv(const std::uint32_t handle) {
     return cached(*context, output.str());
 }
 
+void write_fasta_record(
+    std::ostringstream& output, const std::string& name,
+    const std::string& sequence) {
+    output << '>' << name << '\n';
+    constexpr std::size_t width = 80;
+    for (std::size_t offset = 0; offset < sequence.size(); offset += width) {
+        output << sequence.substr(offset, std::min(width, sequence.size() - offset)) << '\n';
+    }
+}
+
+std::string curated_fasta(
+    const WebContext& context,
+    const std::vector<std::uint8_t>& masked,
+    const std::vector<std::uint8_t>& disabled,
+    const bool include_enabled) {
+    std::ostringstream output;
+    for (std::size_t index = 0; index < context.alignment.names.size(); ++index) {
+        const bool is_masked = index < masked.size() && masked[index] != 0;
+        const bool is_disabled = index < disabled.size() && disabled[index] != 0;
+        if (include_enabled ? (is_masked || is_disabled) : (!is_masked && !is_disabled)) {
+            continue;
+        }
+        write_fasta_record(output, context.alignment.names[index],
+                           context.alignment.sequences[index]);
+    }
+    return output.str();
+}
+
+bool coordinate_in_tract(
+    const std::size_t coordinate, const std::size_t beginning,
+    const std::size_t ending, const bool wraps_origin) {
+    if (beginning == 0 || ending == 0) return false;
+    // ModSeqNumY's wrapped branch treats BPos == EPos as a full circular
+    // tract, rather than a one-column interval.
+    if (beginning == ending) return true;
+    return wraps_origin ? coordinate >= beginning || coordinate <= ending
+                        : coordinate >= beginning && coordinate <= ending;
+}
+
+bool event_accepted(const WebContext& context, const std::size_t index) {
+    return index < context.review_states.size() &&
+        context.review_states[index] == 1;
+}
+
+bool final_alignment_ready(const WebContext& context) {
+    if (!context.finished) return false;
+    for (std::size_t index = 0; index < context.full.events.size(); ++index) {
+        if (index >= context.review_states.size() ||
+            context.review_states[index] == 0) return false;
+    }
+    return true;
+}
+
+std::vector<std::uint8_t> accepted_sequence_mask(const WebContext& context) {
+    std::vector<std::uint8_t> removed(context.alignment.sequences.size(), 0);
+    for (std::size_t index = 0; index < context.full.events.size(); ++index) {
+        if (!event_accepted(context, index)) continue;
+        const auto& event = context.full.events[index];
+        if (event.winning_role >= 0 && event.winning_role < 3) {
+            const int recombinant = event.representative_sequences[event.winning_role];
+            if (recombinant >= 0 && recombinant < static_cast<int>(removed.size())) {
+                removed[static_cast<std::size_t>(recombinant)] = 1;
+            }
+            for (const int sequence : event.sequence_groups[event.winning_role]) {
+                if (sequence >= 0 && sequence < static_cast<int>(removed.size())) {
+                    removed[static_cast<std::size_t>(sequence)] = 1;
+                }
+            }
+        }
+    }
+    return removed;
+}
+
 std::string export_fasta(const WebContext& context) {
     std::ostringstream output;
     for (std::size_t index = 0; index < context.alignment.names.size(); ++index) {
@@ -1492,15 +1623,133 @@ std::string export_fasta(const WebContext& context) {
     return output.str();
 }
 
-NEXT_RDP_KEEPALIVE const char* rdp_export_enabled_sequences_fasta(const std::uint32_t handle, const std::uint8_t*, const std::size_t, const std::uint8_t*, const std::size_t) {
+NEXT_RDP_KEEPALIVE const char* rdp_export_enabled_sequences_fasta(
+    const std::uint32_t handle, const std::uint8_t* masked_sequences,
+    const std::size_t mask_length, const std::uint8_t* disabled_sequences,
+    const std::size_t disabled_length) {
     auto* context = web_context(handle);
-    return context == nullptr ? "" : cached(*context, export_fasta(*context));
+    if (context == nullptr || !context->loaded) return "";
+    if (masked_sequences == nullptr || disabled_sequences == nullptr ||
+        mask_length != context->alignment.names.size() ||
+        disabled_length != context->alignment.names.size()) {
+        context->error = "The sequence curation state does not match the loaded alignment.";
+        return "";
+    }
+    const std::vector<std::uint8_t> masked(masked_sequences, masked_sequences + mask_length);
+    const std::vector<std::uint8_t> disabled(disabled_sequences, disabled_sequences + disabled_length);
+    return cached(*context, curated_fasta(*context, masked, disabled, true));
 }
-NEXT_RDP_KEEPALIVE const char* rdp_export_masked_or_disabled_sequences_fasta(const std::uint32_t handle, const std::uint8_t*, const std::size_t, const std::uint8_t*, const std::size_t) { return rdp_export_enabled_sequences_fasta(handle, nullptr, 0, nullptr, 0); }
-NEXT_RDP_KEEPALIVE const char* rdp_export_recombinant_sequences_removed_fasta(const std::uint32_t handle) { return rdp_export_enabled_sequences_fasta(handle, nullptr, 0, nullptr, 0); }
-NEXT_RDP_KEEPALIVE const char* rdp_export_recombinant_columns_removed_fasta(const std::uint32_t handle) { return rdp_export_enabled_sequences_fasta(handle, nullptr, 0, nullptr, 0); }
-NEXT_RDP_KEEPALIVE const char* rdp_export_recombination_free_fasta(const std::uint32_t handle) { return rdp_export_enabled_sequences_fasta(handle, nullptr, 0, nullptr, 0); }
-NEXT_RDP_KEEPALIVE const char* rdp_export_fragmented_fasta(const std::uint32_t handle) { return rdp_export_enabled_sequences_fasta(handle, nullptr, 0, nullptr, 0); }
+NEXT_RDP_KEEPALIVE const char* rdp_export_masked_or_disabled_sequences_fasta(
+    const std::uint32_t handle, const std::uint8_t* masked_sequences,
+    const std::size_t mask_length, const std::uint8_t* disabled_sequences,
+    const std::size_t disabled_length) {
+    auto* context = web_context(handle);
+    if (context == nullptr || !context->loaded) return "";
+    if (masked_sequences == nullptr || disabled_sequences == nullptr ||
+        mask_length != context->alignment.names.size() ||
+        disabled_length != context->alignment.names.size()) {
+        context->error = "The sequence curation state does not match the loaded alignment.";
+        return "";
+    }
+    const std::vector<std::uint8_t> masked(masked_sequences, masked_sequences + mask_length);
+    const std::vector<std::uint8_t> disabled(disabled_sequences, disabled_sequences + disabled_length);
+    return cached(*context, curated_fasta(*context, masked, disabled, false));
+}
+NEXT_RDP_KEEPALIVE const char* rdp_export_recombinant_sequences_removed_fasta(const std::uint32_t handle) {
+    auto* context = web_context(handle);
+    if (context == nullptr || !final_alignment_ready(*context)) return "";
+    const auto removed = accepted_sequence_mask(*context);
+    std::ostringstream output;
+    for (std::size_t index = 0; index < context->alignment.names.size(); ++index) {
+        if (removed[index] == 0) write_fasta_record(output, context->alignment.names[index], context->alignment.sequences[index]);
+    }
+    return cached(*context, output.str());
+}
+NEXT_RDP_KEEPALIVE const char* rdp_export_recombinant_columns_removed_fasta(const std::uint32_t handle) {
+    auto* context = web_context(handle);
+    if (context == nullptr || !final_alignment_ready(*context)) return "";
+    const std::size_t length = context->alignment.sequences.front().size();
+    std::vector<std::uint8_t> removed(length + 1, 0);
+    for (std::size_t index = 0; index < context->full.events.size(); ++index) {
+        if (!event_accepted(*context, index)) continue;
+        const auto& event = context->full.events[index];
+        const std::size_t beginning = static_cast<std::size_t>(std::clamp(event.beginning, 1, static_cast<int>(length)));
+        const std::size_t ending = static_cast<std::size_t>(std::clamp(event.ending, 1, static_cast<int>(length)));
+        const bool wraps = beginning > ending;
+        for (std::size_t coordinate = 1; coordinate <= length; ++coordinate) {
+            if (coordinate_in_tract(coordinate, beginning, ending, wraps)) removed[coordinate] = 1;
+        }
+    }
+    std::ostringstream output;
+    for (std::size_t sequence = 0; sequence < context->alignment.names.size(); ++sequence) {
+        std::string retained;
+        for (std::size_t coordinate = 1; coordinate <= length; ++coordinate) {
+            if (removed[coordinate] == 0) retained.push_back(context->alignment.sequences[sequence][coordinate - 1]);
+        }
+        if (!retained.empty()) write_fasta_record(output, context->alignment.names[sequence], retained);
+    }
+    return cached(*context, output.str());
+}
+NEXT_RDP_KEEPALIVE const char* rdp_export_recombination_free_fasta(const std::uint32_t handle) {
+    auto* context = web_context(handle);
+    if (context == nullptr || !final_alignment_ready(*context)) return "";
+    auto sequences = context->alignment.sequences;
+    for (std::size_t index = 0; index < context->full.events.size(); ++index) {
+        if (!event_accepted(*context, index)) continue;
+        const auto& event = context->full.events[index];
+        std::vector<int> affected = event.sequence_groups[event.winning_role];
+        affected.push_back(event.representative_sequences[event.winning_role]);
+        for (const int sequence : affected) {
+            if (sequence < 0 || sequence >= static_cast<int>(sequences.size())) continue;
+            const std::size_t beginning = static_cast<std::size_t>(std::clamp(event.beginning, 1, static_cast<int>(sequences[sequence].size())));
+            const std::size_t ending = static_cast<std::size_t>(std::clamp(event.ending, 1, static_cast<int>(sequences[sequence].size())));
+            const bool wraps = beginning > ending;
+            for (std::size_t coordinate = 1; coordinate <= sequences[sequence].size(); ++coordinate) {
+                if (coordinate_in_tract(coordinate, beginning, ending, wraps)) sequences[sequence][coordinate - 1] = '-';
+            }
+        }
+    }
+    std::ostringstream output;
+    for (std::size_t index = 0; index < sequences.size(); ++index) write_fasta_record(output, context->alignment.names[index], sequences[index]);
+    return cached(*context, output.str());
+}
+NEXT_RDP_KEEPALIVE const char* rdp_export_fragmented_fasta(const std::uint32_t handle) {
+    auto* context = web_context(handle);
+    if (context == nullptr || !final_alignment_ready(*context)) return "";
+    struct Fragment { std::string name; std::string sequence; };
+    auto remainder = context->alignment.sequences;
+    std::vector<Fragment> fragments;
+    for (std::size_t index = 0; index < context->full.events.size(); ++index) {
+        if (!event_accepted(*context, index)) continue;
+        const auto& event = context->full.events[index];
+        std::vector<int> affected = event.sequence_groups[event.winning_role];
+        affected.push_back(event.representative_sequences[event.winning_role]);
+        for (const int sequence : affected) {
+            if (sequence < 0 || sequence >= static_cast<int>(remainder.size())) continue;
+            const std::size_t beginning = static_cast<std::size_t>(std::clamp(event.beginning, 1, static_cast<int>(remainder[sequence].size())));
+            const std::size_t ending = static_cast<std::size_t>(std::clamp(event.ending, 1, static_cast<int>(remainder[sequence].size())));
+            const bool wraps = beginning > ending;
+            std::string fragment(remainder[sequence].size(), '-');
+            bool copied = false;
+            for (std::size_t coordinate = 1; coordinate <= remainder[sequence].size(); ++coordinate) {
+                if (!coordinate_in_tract(coordinate, beginning, ending, wraps)) continue;
+                fragment[coordinate - 1] = remainder[sequence][coordinate - 1];
+                remainder[sequence][coordinate - 1] = '-';
+                copied = true;
+            }
+            if (!copied) continue;
+            std::ostringstream name;
+            name << context->alignment.names[sequence] << "|RDP_event_" << index + 1
+                 << "|bp_" << event.beginning << '_' << event.ending;
+            if (wraps) name << "|circular";
+            fragments.push_back({name.str(), std::move(fragment)});
+        }
+    }
+    std::ostringstream output;
+    for (std::size_t index = 0; index < remainder.size(); ++index) write_fasta_record(output, context->alignment.names[index], remainder[index]);
+    for (const auto& fragment : fragments) write_fasta_record(output, fragment.name, fragment.sequence);
+    return cached(*context, output.str());
+}
 
 NEXT_RDP_KEEPALIVE const char* rdp_export_project_json(const std::uint32_t handle) {
     auto* context = web_context(handle);

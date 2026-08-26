@@ -77,8 +77,10 @@ we may want to expose to users.
   width `2 * Int(XOverWindowX / 2) + 1` even when gaps or invalid bases mean
   fewer sites were compared.  The x-axis is `XDiffPos` in the full alignment;
   `XDiffPos(0)` is replaced with `XDiffPos(1)` when it is still the zero
-  sentinel.  Replacing this with raw alignment identities makes the plot look
-  smooth/high and is visibly unlike the original RDP plot.
+  sentinel.  The plotting loop nevertheless starts at index 1, so that
+  repaired index-0 sentinel is not itself a displayed point.  Replacing this
+  with raw alignment identities makes the plot look smooth/high and is
+  visibly unlike the original RDP plot.
 
 - BootScan's automated `BSXoverR` screen counts only strict, unique closest-pair
   votes. A window tied for the closest distance is not a vote for either pair;
