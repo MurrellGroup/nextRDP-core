@@ -346,7 +346,7 @@ RdpInitialAnalysisResult run_rdp_initial_analysis(
     // source tree pass invalid (notably MaxChi on Dataset2).  The retained
     // implementation below is kept as a fixture-only reference for the
     // earlier call-order experiments; the live path is the scheduler below.
-    if (false && selected_method_count > 1) {
+    if (selected_method_count > 1) {
         const bool has_geneconv_order =
             !options.geneconv_call_order_path.empty() &&
             !options.geneconv_call_count_path.empty();
@@ -584,8 +584,7 @@ RdpFullAnalysisResult run_rdp_full_analysis(
         }
         auto& selected_slot = events.xover_list[
             selection.trace[0]][selection.trace[1] - 1];
-        if (selected_slot.program_flag != 0 ||
-            selected_slot.daughter == selected_slot.minor_parent ||
+        if (selected_slot.daughter == selected_slot.minor_parent ||
             selected_slot.daughter == selected_slot.major_parent ||
             selected_slot.minor_parent == selected_slot.major_parent) {
             selected_slot.probability = 1.0;
