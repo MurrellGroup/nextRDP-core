@@ -368,10 +368,10 @@ NEXT_RDP_KEEPALIVE const char* rdp_get_summary_json(const std::uint32_t handle) 
 NEXT_RDP_KEEPALIVE int rdp_scan_begin(
     const std::uint32_t handle, const int circular, const int /*correction_mode*/,
     const double p_value_cutoff, const std::uint32_t window_sites,
-    const int /*maxchi_enabled*/, const std::uint32_t /*maxchi_window_sites*/,
-    const int /*chimaera_enabled*/, const std::uint32_t /*chimaera_window_sites*/,
-    const int /*geneconv_enabled*/, const std::uint32_t /*geneconv_mismatch_scale*/,
-    const std::uint32_t /*geneconv_max_overlaps*/, const int /*threeseq_enabled*/,
+    const int maxchi_enabled, const std::uint32_t /*maxchi_window_sites*/,
+    const int chimaera_enabled, const std::uint32_t /*chimaera_window_sites*/,
+    const int geneconv_enabled, const std::uint32_t /*geneconv_mismatch_scale*/,
+    const std::uint32_t /*geneconv_max_overlaps*/, const int threeseq_enabled,
     const int /*bootscan_primary_enabled*/, const int /*bootscan_secondary_enabled*/,
     const std::uint32_t /*bootscan_window_sites*/, const std::uint32_t /*bootscan_step_sites*/,
     const std::uint32_t /*bootscan_bootstrap_replicates*/, const double /*bootscan_support_cutoff*/,
@@ -379,7 +379,7 @@ NEXT_RDP_KEEPALIVE int rdp_scan_begin(
     const int /*siscan_secondary_enabled*/, const std::uint32_t /*siscan_window_sites*/,
     const std::uint32_t /*siscan_step_sites*/, const std::uint32_t /*siscan_scan_permutations*/,
     const std::uint32_t /*siscan_p_value_permutations*/, const std::uint32_t /*siscan_random_seed*/,
-    const int /*polish_breakpoints*/, const int /*query_reference_mode*/,
+    const int polish_breakpoints, const int /*query_reference_mode*/,
     const std::uint32_t* /*reference_groups*/, const std::size_t /*reference_group_count*/,
     const std::uint8_t* masked_sequences, const std::size_t mask_length,
     const std::uint8_t* disabled_sequences, const std::size_t disabled_length) {
@@ -391,7 +391,16 @@ NEXT_RDP_KEEPALIVE int rdp_scan_begin(
         context->error = "The scan's sequence-role buffers do not match the loaded alignment.";
         return 0;
     }
-    context->options = {circular != 0, p_value_cutoff, static_cast<int>(window_sites)};
+    RdpInitialAnalysisOptions options;
+    options.circular = circular != 0;
+    options.p_value_cutoff = p_value_cutoff;
+    options.window_sites = static_cast<int>(window_sites);
+    options.enable_geneconv = geneconv_enabled != 0;
+    options.enable_maxchi = maxchi_enabled != 0;
+    options.enable_chimaera = chimaera_enabled != 0;
+    options.enable_three_seq = threeseq_enabled != 0;
+    options.polish_breakpoints_with_burt = polish_breakpoints != 0;
+    context->options = std::move(options);
     context->masked.assign(masked_sequences, masked_sequences + mask_length);
     context->disabled.assign(disabled_sequences, disabled_sequences + disabled_length);
     context->started = true;
