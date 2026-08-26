@@ -353,8 +353,10 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
                 plot_pair_identity(sequences, coordinate, 0, 2, half_window, context.options.circular),
                 plot_pair_identity(sequences, coordinate, 1, 2, half_window, context.options.circular)};
             if (program == 1) {
-                for (int pair = 0; pair < 3; ++pair)
-                    point[pair] = -std::log10(std::max(1.0e-6, 1.0 - identity[pair]));
+                for (int pair = 0; pair < 3; ++pair) {
+                    const double tail = 1.0 - identity[pair];
+                    point[pair] = -std::log10(tail < 1.0e-6 ? 1.0e-6 : tail);
+                }
             } else if (program == 3 || program == 4) {
                 for (int pair = 0; pair < 3; ++pair) {
                     const double other = (identity[(pair + 1) % 3] + identity[(pair + 2) % 3]) / 2.0;
