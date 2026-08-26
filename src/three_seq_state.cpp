@@ -125,12 +125,12 @@ double siegmund_discrete(const int m, const int n, const int k) {
 double get_ts_pvalue(const int m, const int n, const int k,
                      const std::vector<float>& table,
                      const int table_bound) {
+    // Module3b.GetTSPVal never switches to the Siegmund approximation when
+    // a lookup table is present.  It first rescales an out-of-range tuple,
+    // looks up that tuple, and raises the table value by the resulting PVM.
+    // The old port's direct Siegmund shortcut changed the ordering of
+    // otherwise identical 3Seq candidates (especially at the table edge).
     if (table_bound < 1) return siegmund_discrete(m, n, k);
-    if (m >= table_bound - 1 || n >= table_bound - 1 ||
-        k >= table_bound - 1) {
-        const double direct = siegmund_discrete(m, n, k);
-        if (direct > 0.0 && direct < 1.0) return direct;
-    }
     int sm = m;
     int sn = n;
     int sk = k;

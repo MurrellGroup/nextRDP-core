@@ -166,4 +166,4 @@ void run_rdp_three_seq_recheck(
     const std::vector<double>& store_lpv, int store_lpv_ub,
     const RdpProbabilitySettings& settings,
     const std::vector<float>& probability_table, int table_bound,
-    RdpLegacyEventAllocator& allocator);
+    RdpLegacyEventAllocator& allocator, bool use_ts2 = true);

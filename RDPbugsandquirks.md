@@ -28,6 +28,10 @@ we may want to expose to users.
   bound into `MakeNJTreesP2` is an underflow/crash in the port.  The compatible
   path skips the NJ call for an empty panel and keeps a neutral one-cell state
   for downstream code.
+- 3Seq `GetTSPVal` always uses the configured lookup table.  At or beyond the
+  table boundary it rescales `(nM,nN,nK)`, truncates with VB `Int`, then raises
+  the looked-up value by the rescale factor; it does not switch to a direct
+  Siegmund approximation when a table lookup is available.
 - `StripUnfound2` in the DNA5 path uses the legacy informative-site bounds and
   can leave the final informative site out of the strip loop.  Do not “fix” the
   bound while reproducing RDP; record it here instead.

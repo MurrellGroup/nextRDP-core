@@ -2475,11 +2475,11 @@ void run_rdp_three_seq_recheck(
     const std::vector<double>& store_lpv, const int store_lpv_ub,
     const RdpProbabilitySettings& settings,
     const std::vector<float>& probability_table, const int table_bound,
-    RdpLegacyEventAllocator& allocator) {
+    RdpLegacyEventAllocator& allocator, const bool use_ts2) {
     auto result = evaluate_rdp_three_seq(
         scan_state, sequences, settings.circular != 0, settings.mc_flag,
         settings.mc_correction, settings.lowest_probability,
-        probability_table, table_bound, true);
+        probability_table, table_bound, use_ts2);
     const int informative = result.informative_last + 1;
     std::vector<int> difference_position(
         static_cast<std::size_t>(informative + 1), 0);
