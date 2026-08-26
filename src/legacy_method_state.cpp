@@ -44,32 +44,16 @@ std::array<int, 3> choose_active(
     const int first = sequences[0];
     const int second = sequences[1];
     const int third = sequences[2];
-    // GCXoverD/CXoverA/TSXOver use inclusive comparisons, while MCXoverF
-    // retains the older strict-comparison branch.  Keep that source quirk
-    // keyed by program rather than normalizing all optional methods.
-    const bool inclusive_counts = program != 3;
-    const auto first_wins = inclusive_counts
-        ? allocator.count(first) <= allocator.count(second) &&
-              allocator.count(first) <= allocator.count(third)
-        : allocator.count(first) < allocator.count(second) &&
-              allocator.count(first) < allocator.count(third);
-    const auto second_wins = inclusive_counts
-        ? allocator.count(second) <= allocator.count(first) &&
-              allocator.count(second) <= allocator.count(third)
-        : allocator.count(second) < allocator.count(first) &&
-              allocator.count(second) < allocator.count(third);
-    const auto third_wins = inclusive_counts
-        ? allocator.count(third) <= allocator.count(first) &&
-              allocator.count(third) <= allocator.count(second)
-        : allocator.count(third) < allocator.count(first) &&
-              allocator.count(third) < allocator.count(second);
-    if (first_wins) {
+    if (allocator.count(first) < allocator.count(second) &&
+        allocator.count(first) < allocator.count(third)) {
         return {first, second, third};
     }
-    if (second_wins) {
+    if (allocator.count(second) < allocator.count(first) &&
+        allocator.count(second) < allocator.count(third)) {
         return {second, first, third};
     }
-    if (third_wins) {
+    if (allocator.count(third) < allocator.count(first) &&
+        allocator.count(third) < allocator.count(second)) {
         return {third, first, second};
     }
     const double first_p = store_probability(
@@ -1685,7 +1669,8 @@ void run_rdp_maxchi_recheck(
     const RdpProbabilitySettings& settings,
     RdpLegacyEventAllocator& allocator, const int event_beginning,
     const int event_ending, const bool initial_scan,
-    std::vector<MaxchiPeakTrace>* trace, const bool inner_scan) {
+    std::vector<MaxchiPeakTrace>* trace, const bool inner_scan,
+    const std::vector<unsigned char>* missing_data) {
     constexpr int window_size = 70;
     constexpr int max_window = ChiLookupTable::max_window;
     const int length = scan_state.sequence_length;
@@ -1757,13 +1742,36 @@ void run_rdp_maxchi_recheck(
         static_cast<std::size_t>(sequence_stride) * 3, 0.0);
     std::vector<double> smooth(
         static_cast<std::size_t>(sequence_stride) * 3, 0.0);
-    std::vector<int> banned_windows(length + 2, 0);
+    // MCXoverF allocates BanWin through the full alignment length plus both
+    // half-window extensions.  The extension is accessed by CalcChiVals4P3
+    // even when only the informative prefix is populated.
+    std::vector<int> banned_windows(length + half_window * 2 + 2, 0);
     std::vector<unsigned char> missing_map(length + 3, 0);
+    if (inner_scan) {
+        // InnerScan2 calls MCXoverF with SEventNumber > 0 and FindAllFlag=0.
+        // Its source rebuilds the informative-coordinate missing-data map on
+        // every call; this is not equivalent to marking raw alignment sites.
+        // MakeBanWinP consumes XPosDiff (informative -> alignment) and
+        // XDiffPos (alignment -> informative), exactly as FindSubSeqCP fills
+        // them above.
+        if (missing_data != nullptr &&
+            missing_data->size() >=
+                static_cast<std::size_t>(length + 1) *
+                    static_cast<std::size_t>(scan_state.next_no + 1)) {
+            MathFuncs::MyMathFuncs::MakeBanWinP(
+                length + half_window * 2, sequences[0], sequences[1],
+                sequences[2], half_window, length, informative,
+                banned_windows.data(), missing_map.data(),
+                const_cast<unsigned char*>(missing_data->data()),
+                position_difference.data(), difference_position.data());
+        } else {
+            std::fill(banned_windows.begin(), banned_windows.end(), 0);
+            std::fill(missing_map.begin(), missing_map.end(), 0);
+        }
+    }
     if (inner_scan && settings.circular == 0) {
-        // MCXoverF's FindAllFlag=0 branch always excludes windows crossing
-        // the ends of a linear alignment.  The compiled DLL's current DNA5
-        // source clears MDMap/BanWin, then applies precisely these sentinels
-        // (its missing-data MakeBanWin call is commented out in this build).
+        // MCXoverF also excludes windows crossing the ends of a linear
+        // alignment after the missing-data map has been prepared.
         missing_map[1] = 1;
         missing_map[informative] = 1;
         for (int position = informative - half_window + 2;

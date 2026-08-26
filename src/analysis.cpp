@@ -1423,7 +1423,8 @@ RdpFullAnalysisResult run_rdp_full_analysis(
                         run_rdp_maxchi_recheck(
                             inner_scan_state, candidate, initial.store_lpv,
                             initial.store_lpv_upper_bound, probability_settings,
-                            inner_method_events, 0, 0, false, nullptr, true);
+                            inner_method_events, 0, 0, false, nullptr, true,
+                            &mutation.missing_data);
                     }
                 } else if (program == 4) {
                     const auto screened = screen_rdp_chimaera_candidates(

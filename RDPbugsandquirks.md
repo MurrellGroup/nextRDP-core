@@ -13,10 +13,11 @@ we may want to expose to users.
   filtering.  It is not equivalent to iterating the permanent analysis list
   directly; `Worthwhilescan`, `ProgBinRead`, `TraceSub`, `DoPairs`, and the
   `ProbDo` sampling state all affect which triplets are called.
-- In the long-winded GENECONV/MaxChi role selector, sequence-count ties are
-  resolved with inclusive comparisons (`<=`), so the first tied sequence wins
-  before any StoreLPV fallback.  This is observable in daughter/parent
-  orientation and is not a mathematical tie-break that can be normalized.
+- The optional-method role allocator has a strict-count branch before its
+  StoreLPV fallback.  Equal sequence counts therefore do not select a role in
+  that branch; the fallback then decides the orientation.  This differs from
+  the superficially similar inclusive comparisons in some VB helper routines,
+  and must not be normalized without checking the complete caller state.
 - The source can enter round-prefix identification with every sequence marked
   for redo.  In that state it has no NJ panel; passing a negative local upper
   bound into `MakeNJTreesP2` is an underflow/crash in the port.  The compatible
@@ -25,4 +26,3 @@ we may want to expose to users.
 - `StripUnfound2` in the DNA5 path uses the legacy informative-site bounds and
   can leave the final informative site out of the strip loop.  Do not “fix” the
   bound while reproducing RDP; record it here instead.
-
