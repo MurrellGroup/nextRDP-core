@@ -95,6 +95,11 @@ struct RdpFinalEvent {
     int event_number = 0;
     int program = 0;
     int winning_role = 0;
+    // For target-specific optional methods (currently CHIMAERA), retain the
+    // selected method's candidate role separately from the later consensus
+    // winner.  The browser plotter uses this to draw the same one-target
+    // trace that the source method inspected.
+    int method_target_role = -1;
     double probability = 1.0;
     int beginning = 0;
     int ending = 0;

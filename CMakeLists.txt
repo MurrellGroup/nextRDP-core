@@ -54,6 +54,9 @@ add_library(next_rdp_core STATIC
     src/identification_state.cpp
     src/legacy_method_state.cpp
     src/legacy_optional_bridge.cpp
+    src/legacy_optional/maxchi.cpp
+    src/legacy_optional/geneconv.cpp
+    src/legacy_optional/threeseq.cpp
     src/legacy_optional/bootscan.cpp
     src/legacy_optional/siscan.cpp
     src/mutation_state.cpp
@@ -65,6 +68,17 @@ add_library(next_rdp_core STATIC
     src/three_seq_state.cpp
     src/xover_state.cpp
 )
+if(EMSCRIPTEN)
+    # These standalone review kernels are source-shaped ports of the old
+    # browser implementation.  Keep their ordinary double expressions at
+    # their declared type; the source-faithful orchestration below retains
+    # the extended-evaluation ABI separately.
+    set_source_files_properties(
+        src/legacy_optional/maxchi.cpp
+        src/legacy_optional/geneconv.cpp
+        src/legacy_optional/threeseq.cpp
+        PROPERTIES COMPILE_OPTIONS "-ffp-eval-method=source")
+endif()
 target_include_directories(next_rdp_core
     PUBLIC src
     PRIVATE include vendor/dna5

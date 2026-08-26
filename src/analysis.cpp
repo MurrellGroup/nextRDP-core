@@ -905,6 +905,7 @@ RdpFullAnalysisResult run_rdp_full_analysis(
                 event.ending = raw.ending;
                 event.representative_sequences = {
                     raw.daughter, raw.major_parent, raw.minor_parent};
+                event.method_target_role = 0;
                 for (int role = 0; role < 3; ++role) {
                     event.sequence_groups[role].push_back(
                         event.representative_sequences[role]);
@@ -1206,6 +1207,14 @@ RdpFullAnalysisResult run_rdp_full_analysis(
                 final_event.sequence_groups[role].push_back(
                     sequence < static_cast<int>(trace_sub.size())
                     ? trace_sub[sequence] : sequence);
+            }
+        }
+        if (selected.program_flag == 4) {
+            for (int role = 0; role < 3; ++role) {
+                if (final_event.representative_sequences[role] == selected.daughter) {
+                    final_event.method_target_role = role;
+                    break;
+                }
             }
         }
         output.events.push_back(std::move(final_event));

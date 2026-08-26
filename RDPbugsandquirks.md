@@ -100,3 +100,22 @@ we may want to expose to users.
   preserves the RDP event order and appends optional-lane records separately.
   This is an integration boundary, not permission to infer RDP events from an
   optional method.
+
+- PHYLPRO's intended profile is indexed by polymorphic alignment columns, not
+  by every nucleotide coordinate.  Each target keeps rolling mismatch counts
+  against the non-disabled context rows on the two sides of a moving partition;
+  Pearson is then computed after excluding the target's own context row unless
+  the explicit self option is enabled.  The source uses VB CInt half-window
+  rounding, circular wrap-around, and source-default correlation `1` for
+  degenerate rows.  A browser plot may downsample the returned points, but it
+  must retain both breakpoint-nearest points and each role's global minimum.
+
+- Final event records retain representative sequences in discovery order while
+  `winningRole` identifies the source's selected recombinant row.  Review plots,
+  alignments, trees, and PHYLPRO must rotate that prefix to recombinant/major/
+  minor before assigning labels; using the stored prefix directly silently
+  relabels evidence whenever the winning role is not zero.
+
+- The browser tree endpoint is a source-shaped display reconstruction.  Its
+  neighbor-joining edges are useful for review, but they are not a persisted
+  RDP5 tree and must not be interpreted as source tree-parity evidence.
