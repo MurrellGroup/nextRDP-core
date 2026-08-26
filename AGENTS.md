@@ -10,4 +10,6 @@
   validating dataset/oracle evidence in that ledger; do not hide a compatibility quirk in a
   dataset-specific workaround.
 - Keep generated traces, fixtures under construction, and runtime output in this project's `sandbox/` directory.
-- Do not add UI or web integration until the command-line core reaches parity.
+- Keep the command-line core authoritative; web integration may consume it when the
+  user explicitly requests interface functionality, but must not introduce separate
+  algorithmic behavior.
