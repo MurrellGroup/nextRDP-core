@@ -2475,7 +2475,8 @@ void run_rdp_three_seq_recheck(
     const std::vector<double>& store_lpv, const int store_lpv_ub,
     const RdpProbabilitySettings& settings,
     const std::vector<float>& probability_table, const int table_bound,
-    RdpLegacyEventAllocator& allocator, const bool use_ts2) {
+    RdpLegacyEventAllocator& allocator, const bool use_ts2,
+    const bool find_all) {
     auto result = evaluate_rdp_three_seq(
         scan_state, sequences, settings.circular != 0, settings.mc_flag,
         settings.mc_correction, settings.lowest_probability,
@@ -2493,7 +2494,9 @@ void run_rdp_three_seq_recheck(
             beginning, ending, position_difference, difference_position,
             scan_state.sequence_length, informative, settings.circular != 0);
     };
-    for (const auto& side : result.sides) {
+    const int side_count = find_all ? 2 : 1;
+    for (int side_index = 0; side_index < side_count; ++side_index) {
+        const auto& side = result.sides[static_cast<std::size_t>(side_index)];
         if (!side.significant) continue;
         const auto active = choose_active(
             sequences, 8, store_lpv, store_lpv_ub, allocator);

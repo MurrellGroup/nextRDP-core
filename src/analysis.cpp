@@ -1093,7 +1093,7 @@ RdpFullAnalysisResult run_rdp_full_analysis(
                             three_seq_table,
                             configured_three_seq_table != nullptr
                                 ? configured_three_seq_table_bound : 45,
-                            legacy_events);
+                            legacy_events, false, false);
                         rotated = {rotated[1], rotated[2], rotated[0]};
                     }
                 }

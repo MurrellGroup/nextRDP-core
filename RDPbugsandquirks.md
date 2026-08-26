@@ -32,6 +32,11 @@ we may want to expose to users.
   table boundary it rescales `(nM,nN,nK)`, truncates with VB `Int`, then raises
   the looked-up value by the rescale factor; it does not switch to a direct
   Siegmund approximation when a table lookup is available.
+- 3Seq has two source call modes: the first analysis pass calls `TSXOver(0)`
+  (`FindSubSeqTS`, one selected excursion), while post-event rechecks call
+  `TSXOver(1)` (`FindSubSeqTS2`, allowing the reverse excursion).  Treating
+  every call as the latter changes event order even when the walk itself is
+  identical.
 - `StripUnfound2` in the DNA5 path uses the legacy informative-site bounds and
   can leave the final informative site out of the strip loop.  Do not “fix” the
   bound while reproducing RDP; record it here instead.
