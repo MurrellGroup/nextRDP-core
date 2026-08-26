@@ -372,6 +372,9 @@ RdpInitialAnalysisResult run_rdp_initial_analysis(
             RdpFactorialTables::three_way_upper_bound,
             factorials.three_way.data(), factorials.factorial.data());
     };
+    // AlistRDP4 supplies the shared StoreLPV screening table used by the
+    // optional source methods even when RDP itself is not selected.  The
+    // actual RDP XOver walk is skipped for an optional-method-only scan.
     run_initial_rdp_ranges(triplet_count, run_alist_rdp4);
     report_progress(options, 0, 1, 0, triplet_count, 0);
 
@@ -391,15 +394,23 @@ RdpInitialAnalysisResult run_rdp_initial_analysis(
         RdpFactorialTables::three_way_upper_bound,
         options.p_value_cutoff,
     };
-    auto events = scan_rdp_redo_triplets(
-        scan_state, distance_state, tree_state, redo, fss_rdp, store_lpv,
-        store_lpv_upper_bound, fss_upper_bound, half_window, full_window,
-        xover_settings, probability_settings, probability_estimate,
-        factorials.three_way, factorials.factorial, xover_api(), 0, nullptr,
-        nullptr, 0, nullptr, false, nullptr, options.progress_callback,
-        options.progress_user, 0, 1);
+    RdpRawEventState events;
+    if (options.enable_rdp) {
+        events = scan_rdp_redo_triplets(
+            scan_state, distance_state, tree_state, redo, fss_rdp, store_lpv,
+            store_lpv_upper_bound, fss_upper_bound, half_window, full_window,
+            xover_settings, probability_settings, probability_estimate,
+            factorials.three_way, factorials.factorial, xover_api(), 0, nullptr,
+            nullptr, 0, nullptr, false, nullptr, options.progress_callback,
+            options.progress_user, 0, 1);
+    } else {
+        events.current_xover.assign(scan_state.next_no + 1, 0);
+        events.xover_list.resize(scan_state.next_no + 1);
+        events.triplets_with_events.assign(static_cast<std::size_t>(triplet_count), 0);
+    }
     const int selected_method_count =
-        1 + static_cast<int>(options.enable_geneconv) +
+        static_cast<int>(options.enable_rdp) +
+        static_cast<int>(options.enable_geneconv) +
         static_cast<int>(options.enable_maxchi) +
         static_cast<int>(options.enable_chimaera) +
         static_cast<int>(options.enable_three_seq);
@@ -410,7 +421,7 @@ RdpInitialAnalysisResult run_rdp_initial_analysis(
     // source tree pass invalid (notably MaxChi on Dataset2).  The retained
     // implementation below is kept as a fixture-only reference for the
     // earlier call-order experiments; the live path is the scheduler below.
-    if (selected_method_count > 1) {
+    if (selected_method_count > static_cast<int>(options.enable_rdp)) {
         const bool has_geneconv_order =
             !options.geneconv_call_order_path.empty() &&
             !options.geneconv_call_count_path.empty();
@@ -588,6 +599,44 @@ RdpFullAnalysisResult run_rdp_full_analysis(
         output.raw_candidate_count += static_cast<int>(row.size());
     }
 
+    if (!options.enable_rdp) {
+        // Optional-method-only scans use the shared initial alignment and
+        // method screening tables, but do not seed the RDP cyclic
+        // tract-erasure scheduler. Preserve each selected method's source
+        // emission order as a directly reviewable event.
+        for (const auto& row : initial.events.xover_list) {
+            for (const auto& raw : row) {
+                if (raw.program_flag == 0) continue;
+                RdpFinalEvent event;
+                event.event_number = static_cast<int>(output.events.size()) + 1;
+                event.program = static_cast<int>(raw.program_flag);
+                event.winning_role = 0;
+                event.probability = raw.probability;
+                event.beginning = raw.beginning;
+                event.ending = raw.ending;
+                event.representative_sequences = {
+                    raw.daughter, raw.major_parent, raw.minor_parent};
+                for (int role = 0; role < 3; ++role) {
+                    event.sequence_groups[role].push_back(
+                        event.representative_sequences[role]);
+                }
+                if (options.polish_breakpoints_with_burt) {
+                    event.burt = run_rdp_burt(
+                        initial.alignment, event.representative_sequences,
+                        event.beginning, event.ending, options.circular, 20, 0);
+                    event.burt_attempted = event.burt.attempted;
+                    event.burt_applied = event.burt.trained;
+                    if (event.burt.trained) {
+                        event.beginning = event.burt.polished_beginning;
+                        event.ending = event.burt.polished_ending;
+                    }
+                }
+                output.events.push_back(std::move(event));
+            }
+        }
+        return output;
+    }
+
     const int permanent_next_no = initial.alignment.next_no;
     const auto permanent_analysis_scan = initial.alignment;
     // RDP derives MinSeqSize from the alignment length (VB CLng rounds the
@@ -731,20 +780,21 @@ RdpFullAnalysisResult run_rdp_full_analysis(
             }
             std::cerr << '\n';
         }
+        RdpBurtResult burt_result;
         if (options.polish_breakpoints_with_burt) {
             // RDP calls PolishBP(20, 0, ...): the HMM iteration count is a
             // fixed 20, independent of MinSeqSize.  MinSeqSize is only the
             // sequence-size gate used by the surrounding NJ/rescan logic.
             // Passing minimum_sequence_size here accidentally made long
             // alignments run dozens (or hundreds) of extra HMM cycles.
-            const auto burt = run_rdp_burt(
+            burt_result = run_rdp_burt(
                 scan_state, round.prefix.sequences, selected.beginning,
                 selected.ending, options.circular, 20, 0);
-            if (burt.trained) {
+            if (burt_result.trained) {
                 selected.beginning = static_cast<std::int16_t>(
-                    burt.polished_beginning);
+                    burt_result.polished_beginning);
                 selected.ending = static_cast<std::int16_t>(
-                    burt.polished_ending);
+                    burt_result.polished_ending);
             }
         }
         if (analysis_trace != nullptr) {
@@ -821,11 +871,15 @@ RdpFullAnalysisResult run_rdp_full_analysis(
 
         RdpFinalEvent final_event;
         final_event.event_number = static_cast<int>(output.events.size()) + 1;
+        final_event.program = static_cast<int>(selected.program_flag);
         final_event.winning_role = winner;
         final_event.probability = selected.probability;
         final_event.beginning = selected.beginning;
         final_event.ending = selected.ending;
         final_event.consensus = round.consensus.consensus;
+        final_event.burt = std::move(burt_result);
+        final_event.burt_attempted = final_event.burt.attempted;
+        final_event.burt_applied = final_event.burt.trained;
         for (int role = 0; role < 3; ++role) {
             const int representative = round.prefix.sequences[role];
             final_event.representative_sequences[role] =

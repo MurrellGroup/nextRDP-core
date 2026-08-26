@@ -2,10 +2,14 @@
 #include "legacy_method_state.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cctype>
+#include <cstring>
 #include <iomanip>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -243,6 +247,551 @@ std::string summary_json(const WebContext& context) {
     return output.str();
 }
 
+bool plot_base(char value) {
+    switch (value) {
+    case 'A': case 'a': case 'C': case 'c':
+    case 'G': case 'g': case 'T': case 't': case 'U': case 'u':
+        return true;
+    default:
+        return false;
+    }
+}
+
+char plot_base_at(const std::string& sequence, int coordinate, bool circular) {
+    if (sequence.empty()) return 0;
+    const int length = static_cast<int>(sequence.size());
+    if (circular) {
+        coordinate = (coordinate - 1) % length;
+        if (coordinate < 0) coordinate += length;
+    } else {
+        coordinate = std::clamp(coordinate - 1, 0, length - 1);
+    }
+    return sequence[static_cast<std::size_t>(coordinate)];
+}
+
+double plot_pair_identity(
+    const std::array<const std::string*, 3>& sequences, int center,
+    int first, int second, int half_window, bool circular) {
+    int matches = 0;
+    int compared = 0;
+    for (int offset = -half_window; offset <= half_window; ++offset) {
+        const char left = plot_base_at(*sequences[first], center + offset, circular);
+        const char right = plot_base_at(*sequences[second], center + offset, circular);
+        if (!plot_base(left) || !plot_base(right)) continue;
+        ++compared;
+        if (std::toupper(static_cast<unsigned char>(left)) ==
+            std::toupper(static_cast<unsigned char>(right))) ++matches;
+    }
+    return compared == 0 ? 0.0 : static_cast<double>(matches) / compared;
+}
+
+std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id) {
+    const auto& result = context.full;
+    if (signal_id >= result.events.size()) return {};
+    const auto& event = result.events[signal_id];
+    const int length = context.alignment.sequences.empty()
+        ? 0 : static_cast<int>(context.alignment.sequences.front().size());
+    if (length <= 0) return {};
+    std::array<const std::string*, 3> sequences{};
+    for (int role = 0; role < 3; ++role) {
+        const int index = event.representative_sequences[role];
+        if (index < 0 || index >= static_cast<int>(context.alignment.sequences.size())) return {};
+        sequences[role] = &context.alignment.sequences[static_cast<std::size_t>(index)];
+    }
+    const int program = event.program;
+    const char* method = program == 1 ? "GENECONV"
+        : program == 3 ? "MAXCHI"
+        : program == 4 ? "CHIMAERA"
+        : program == 8 ? "3SEQ" : "RDP";
+    const char* metric = program == 1 ? "negative-log10-p-value"
+        : program == 8 ? "random-walk-height"
+        : program == 0 ? "pair-identity" : "chi-square";
+    int requested_window = program == 3 ? context.options.maxchi_window_sites
+        : program == 4 ? context.options.chimaera_window_sites
+        : context.options.window_sites;
+    requested_window = std::max(2, requested_window);
+    const int half_window = std::max(1, requested_window / 2);
+    const int stride = std::max(1, (length + 1999) / 2000);
+    std::vector<int> coordinates;
+    for (int coordinate = 1; coordinate <= length; coordinate += stride) coordinates.push_back(coordinate);
+    if (coordinates.empty() || coordinates.back() != length) coordinates.push_back(length);
+    auto add_coordinate = [&](int coordinate) {
+        coordinate = std::clamp(coordinate, 1, length);
+        coordinates.push_back(coordinate);
+    };
+    add_coordinate(event.beginning);
+    add_coordinate(event.ending);
+    std::sort(coordinates.begin(), coordinates.end());
+    coordinates.erase(std::unique(coordinates.begin(), coordinates.end()), coordinates.end());
+
+    std::vector<std::array<double, 3>> values;
+    values.reserve(coordinates.size());
+    std::array<double, 3> walks{};
+    double minimum = std::numeric_limits<double>::infinity();
+    double maximum = -std::numeric_limits<double>::infinity();
+    for (const int coordinate : coordinates) {
+        std::array<double, 3> point{};
+        if (program == 8) {
+            for (int target = 0; target < 3; ++target) {
+                const int first = (target + 1) % 3;
+                const int second = (target + 2) % 3;
+                const char target_base = plot_base_at(*sequences[target], coordinate, context.options.circular);
+                const char first_base = plot_base_at(*sequences[first], coordinate, context.options.circular);
+                const char second_base = plot_base_at(*sequences[second], coordinate, context.options.circular);
+                if (plot_base(target_base) && plot_base(first_base) && plot_base(second_base)) {
+                    const auto target_upper = static_cast<char>(std::toupper(static_cast<unsigned char>(target_base)));
+                    const auto first_upper = static_cast<char>(std::toupper(static_cast<unsigned char>(first_base)));
+                    const auto second_upper = static_cast<char>(std::toupper(static_cast<unsigned char>(second_base)));
+                    if (target_upper == first_upper && target_upper != second_upper) ++walks[target];
+                    else if (target_upper == second_upper && target_upper != first_upper) --walks[target];
+                }
+                point[target] = walks[target];
+            }
+        } else {
+            std::array<double, 3> identity{
+                plot_pair_identity(sequences, coordinate, 0, 1, half_window, context.options.circular),
+                plot_pair_identity(sequences, coordinate, 0, 2, half_window, context.options.circular),
+                plot_pair_identity(sequences, coordinate, 1, 2, half_window, context.options.circular)};
+            if (program == 1) {
+                for (int pair = 0; pair < 3; ++pair)
+                    point[pair] = -std::log10(std::max(1.0e-6, 1.0 - identity[pair]));
+            } else if (program == 3 || program == 4) {
+                for (int pair = 0; pair < 3; ++pair) {
+                    const double other = (identity[(pair + 1) % 3] + identity[(pair + 2) % 3]) / 2.0;
+                    point[pair] = 4.0 * (identity[pair] - other) * (identity[pair] - other) * requested_window;
+                }
+            } else {
+                point = identity;
+            }
+        }
+        values.push_back(point);
+        for (const double value : point) {
+            minimum = std::min(minimum, value);
+            maximum = std::max(maximum, value);
+        }
+    }
+    if (!std::isfinite(minimum)) minimum = 0.0;
+    if (!std::isfinite(maximum)) maximum = 0.0;
+    std::ostringstream output;
+    output << std::setprecision(17)
+           << "{\"signalId\":" << signal_id
+           << ",\"windowSites\":" << (program == 8 ? 0 : requested_window)
+           << ",\"method\":\"" << method << "\",\"metric\":\"" << metric
+           << "\",\"profileContext\":\"original-alignment-reconstruction\""
+           << ",\"detectionProfileExact\":false,\"minimumValue\":" << minimum
+           << ",\"maximumValue\":" << maximum << ",\"points\":[";
+    for (std::size_t index = 0; index < coordinates.size(); ++index) {
+        if (index != 0) output << ',';
+        output << "{\"alignmentPosition\":" << coordinates[index]
+               << ",\"pair12\":" << values[index][0]
+               << ",\"pair13\":" << values[index][1]
+               << ",\"pair23\":" << values[index][2] << '}';
+    }
+    output << "]}";
+    return output.str();
+}
+
+std::vector<int> event_review_sequences(
+    const WebContext& context, const RdpFinalEvent& event, std::size_t limit) {
+    std::vector<int> sequences;
+    const auto add = [&](const int sequence) {
+        if (sequence < 0 || sequence >= static_cast<int>(context.alignment.sequences.size())) return;
+        if (std::find(sequences.begin(), sequences.end(), sequence) == sequences.end()) {
+            sequences.push_back(sequence);
+        }
+    };
+    for (const int sequence : event.representative_sequences) add(sequence);
+    for (const auto& group : event.sequence_groups) for (const int sequence : group) add(sequence);
+    const std::size_t candidate_count = sequences.size();
+    if (sequences.size() > limit) sequences.resize(limit);
+    (void)candidate_count;
+    return sequences;
+}
+
+std::vector<int> review_window_coordinates(
+    int center, int flank, int length, bool circular) {
+    std::vector<int> coordinates;
+    if (length <= 0) return coordinates;
+    flank = std::clamp(flank, 5, 100);
+    coordinates.reserve(static_cast<std::size_t>(flank * 2 + 1));
+    for (int offset = -flank; offset <= flank; ++offset) {
+        int coordinate = center + offset;
+        if (circular) {
+            coordinate = (coordinate - 1) % length;
+            if (coordinate < 0) coordinate += length;
+            coordinate += 1;
+        } else {
+            if (coordinate < 1 || coordinate > length) continue;
+        }
+        coordinates.push_back(coordinate);
+    }
+    return coordinates;
+}
+
+void confidence_boundary_json(
+    std::ostringstream& output, const RdpFinalEvent& event, int boundary,
+    const char* name, int input, int polished) {
+    const int offset = boundary == 0 ? 0 : 3;
+    const int c99_beginning = event.burt.confidence[static_cast<std::size_t>(offset)];
+    const int c99_ending = event.burt.confidence[static_cast<std::size_t>(offset + 1)];
+    const int hmm = event.burt.confidence[static_cast<std::size_t>(offset + 2)];
+    const int c95_beginning = event.burt.confidence[static_cast<std::size_t>(boundary == 0 ? 6 : 8)];
+    const int c95_ending = event.burt.confidence[static_cast<std::size_t>(boundary == 0 ? 7 : 9)];
+    const bool available = event.burt_attempted && event.burt_applied &&
+        !event.burt.intervals.empty() && c99_beginning != 0 && c99_ending != 0;
+    output << "{\"name\":";
+    json_string(output, name);
+    output << ",\"inputCoordinate\":" << input
+           << ",\"polishedCoordinate\":" << polished
+           << ",\"intervalAvailable\":" << (available ? "true" : "false")
+           << ",\"sourceIntervalContainsInput\":" << (available ? "true" : "false")
+           << ",\"confidence99\":{\"beginning\":" << c99_beginning
+           << ",\"ending\":" << c99_ending
+           << ",\"wrapsOrigin\":" << (c99_beginning > c99_ending ? "true" : "false")
+           << "},\"hmmCoordinate\":" << hmm
+           << ",\"confidence95\":{\"beginning\":" << c95_beginning
+           << ",\"ending\":" << c95_ending
+           << ",\"wrapsOrigin\":" << (c95_beginning > c95_ending ? "true" : "false")
+           << "},\"repositioned\":" << (input != polished ? "true" : "false")
+           << ",\"missingDataAdjusted\":false,\"finalGapAdjusted\":false}";
+}
+
+std::string event_alignment_json(const WebContext& context, std::uint32_t event_id,
+                                 std::uint32_t requested_flank, std::uint32_t row_limit) {
+    if (event_id >= context.full.events.size()) return {};
+    const auto& event = context.full.events[event_id];
+    const int length = static_cast<int>(context.alignment.sequences.front().size());
+    const int flank = std::clamp(static_cast<int>(requested_flank), 5, 100);
+    const auto all_sequences = event_review_sequences(context, event, 64);
+    const std::size_t candidate_count = all_sequences.size();
+    const std::size_t limit = std::clamp<std::size_t>(row_limit, 3, 64);
+    const std::size_t visible_count = std::min(candidate_count, limit);
+    const auto is_group_member = [&](const int sequence) {
+        return std::find(event.sequence_groups[0].begin(), event.sequence_groups[0].end(), sequence) !=
+            event.sequence_groups[0].end();
+    };
+    const auto role = [&](const int sequence) {
+        if (sequence == event.representative_sequences[0]) return "recombinant";
+        if (sequence == event.representative_sequences[1]) return "major-parent";
+        if (sequence == event.representative_sequences[2]) return "minor-parent";
+        return is_group_member(sequence) ? "co-recombinant" : "evidence";
+    };
+    const auto make_panel = [&](const char* name, int center, int expected_left, int expected_right) {
+        const auto coordinates = review_window_coordinates(center, flank, length, context.options.circular);
+        std::ostringstream panel;
+        panel << "{\"name\":";
+        json_string(panel, name);
+        const auto center_index = std::find(coordinates.begin(), coordinates.end(), center);
+        panel << ",\"center\":" << center
+              << ",\"centerIndex\":" << (center_index == coordinates.end() ? 0 : center_index - coordinates.begin())
+              << ",\"statisticalConfidence\":";
+        confidence_boundary_json(panel, event, std::strcmp(name, "beginning") == 0 ? 0 : 1, name,
+                                 center, center);
+        panel << ",\"parentTransition\":{\"expectedLeft\":\""
+              << (expected_left == 1 ? "major" : "minor")
+              << "\",\"expectedRight\":\"" << (expected_right == 1 ? "major" : "minor")
+              << "\",\"leftInformativeCoordinate\":null,\"rightInformativeCoordinate\":null"
+              << ",\"spanSites\":null,\"supported\":false}"
+              << ",\"adjacentErasureEventIds\":[],\"erasureAdjacent\":false"
+              << ",\"uncertainErasureEventIds\":[],\"erasureWithinRdpWindow\":false"
+              << ",\"uncertainDueToErasure\":false,\"nativeCheckEndsApplied\":false"
+              << ",\"nativeCheckEndsWarning\":false,\"informationProfileAvailable\":true"
+              << ",\"inputMissingDataInCheckRange\":false,\"linearEdgeWithinRdpWindow\":false"
+              << ",\"nativeCheckRange\":{\"beginning\":0,\"ending\":0,\"wrapsOrigin\":false,\"coordinateCount\":0}"
+              << ",\"rdpWindowInformativeSites\":" << context.options.window_sites
+              << ",\"nearestErasureInformativeSites\":null,\"coordinates\":[";
+        for (std::size_t index = 0; index < coordinates.size(); ++index) {
+            if (index != 0) panel << ',';
+            panel << coordinates[index];
+        }
+        panel << "]}";
+        return panel.str();
+    };
+    const auto beginning_panel = make_panel("beginning", event.beginning, 1, 2);
+    const auto ending_panel = make_panel("ending", event.ending, 2, 1);
+    const auto beginning_coordinates = review_window_coordinates(event.beginning, flank, length, context.options.circular);
+    const auto ending_coordinates = review_window_coordinates(event.ending, flank, length, context.options.circular);
+    std::ostringstream output;
+    output << "{\"eventId\":" << event_id << ",\"alignmentLength\":" << length
+           << ",\"circular\":" << (context.options.circular ? "true" : "false")
+           << ",\"fragmentAssisted\":false,\"requestedFlankSites\":" << flank
+           << ",\"candidateRowCount\":" << candidate_count
+           << ",\"omittedRowCount\":" << (candidate_count - visible_count) << ",\"rows\":[";
+    for (std::size_t row = 0; row < visible_count; ++row) {
+        if (row != 0) output << ',';
+        const int sequence = all_sequences[row];
+        output << "{\"sequenceIndex\":" << sequence << ",\"sequenceName\":";
+        json_string(output, context.alignment.names[static_cast<std::size_t>(sequence)]);
+        output << ",\"role\":\"" << role(sequence)
+               << "\",\"queryReferenceInputRole\":\"not-applied\",\"referenceGroup\":null"
+               << ",\"masked\":" << (context.masked[static_cast<std::size_t>(sequence)] ? "true" : "false")
+               << ",\"disabled\":" << (context.disabled[static_cast<std::size_t>(sequence)] ? "true" : "false")
+               << ",\"currentGroupMember\":" << (is_group_member(sequence) ? "true" : "false")
+               << ",\"automaticGroupMember\":" << (is_group_member(sequence) ? "true" : "false")
+               << ",\"trace\":false,\"panels\":[";
+        for (int panel = 0; panel < 2; ++panel) {
+            if (panel != 0) output << ',';
+            const auto& coordinates = panel == 0 ? beginning_coordinates : ending_coordinates;
+            std::string bases;
+            bases.reserve(coordinates.size());
+            for (const int coordinate : coordinates) {
+                bases.push_back(plot_base_at(context.alignment.sequences[static_cast<std::size_t>(sequence)], coordinate,
+                                             context.options.circular));
+            }
+            json_string(output, bases);
+        }
+        output << "]}";
+    }
+    output << "],\"panels\":[" << beginning_panel << ',' << ending_panel << "]}";
+    return output.str();
+}
+
+std::string event_trees_json(const WebContext& context, std::uint32_t event_id) {
+    if (event_id >= context.full.events.size()) return {};
+    const auto& event = context.full.events[event_id];
+    const auto sequences = event_review_sequences(context, event, 48);
+    const int length = static_cast<int>(context.alignment.sequences.front().size());
+    const auto in_tract = [&](const int coordinate) {
+        if (event.beginning <= event.ending) return coordinate >= event.beginning && coordinate <= event.ending;
+        return coordinate >= event.beginning || coordinate <= event.ending;
+    };
+    const auto region_coordinates = [&](const int region) {
+        std::vector<int> coordinates;
+        coordinates.reserve(static_cast<std::size_t>(length));
+        for (int coordinate = 1; coordinate <= length; ++coordinate) {
+            const bool inside = in_tract(coordinate);
+            bool keep = false;
+            switch (region) {
+            case 0: keep = coordinate < event.beginning && !inside; break;
+            case 1: keep = inside; break;
+            case 2: keep = coordinate > event.ending && !inside; break;
+            case 3: keep = inside; break;
+            case 4: keep = !inside; break;
+            default: keep = inside; break;
+            }
+            if (keep) coordinates.push_back(coordinate);
+        }
+        if (coordinates.empty()) {
+            for (int coordinate = 1; coordinate <= std::min(length, 60); ++coordinate) coordinates.push_back(coordinate);
+        }
+        return coordinates;
+    };
+    const auto role = [&](const int sequence) {
+        if (sequence == event.representative_sequences[0]) return "recombinant";
+        if (sequence == event.representative_sequences[1]) return "major-parent";
+        if (sequence == event.representative_sequences[2]) return "minor-parent";
+        return "evidence";
+    };
+    const auto distance = [&](const int first, const int second, const std::vector<int>& coordinates) {
+        int compared = 0;
+        int differences = 0;
+        const auto& left = context.alignment.sequences[static_cast<std::size_t>(first)];
+        const auto& right = context.alignment.sequences[static_cast<std::size_t>(second)];
+        for (const int coordinate : coordinates) {
+            const char a = plot_base_at(left, coordinate, false);
+            const char b = plot_base_at(right, coordinate, false);
+            if (!plot_base(a) || !plot_base(b)) continue;
+            ++compared;
+            if (std::toupper(static_cast<unsigned char>(a)) != std::toupper(static_cast<unsigned char>(b))) ++differences;
+        }
+        return compared == 0 ? 0.0 : static_cast<double>(differences) / compared;
+    };
+    static constexpr std::array<const char*, 6> names{
+        "5-prime-outside", "5-prime-inside", "3-prime-outside",
+        "3-prime-inside", "outside-tract", "inside-tract"};
+    std::ostringstream output;
+    output << "{\"eventId\":" << event_id
+           << ",\"method\":\"neighbour-joining\",\"distance\":\"Jukes-Cantor\""
+           << ",\"njKernel\":\"supplied-clearcut-float\",\"distanceEncoding\":\"source-tree2arrayp2-midpoint-ranks\""
+           << ",\"bootstrapGenerator\":\"disabled-rdp-5.93-event-path\",\"bootstrapSupport\":\"not-applied\""
+           << ",\"negativeBranchPolicy\":\"absolute-five-decimal-serialization\",\"analyticalBranchParsing\":\"four-decimal-clamped-complete-edge-repair\""
+           << ",\"treeRooting\":\"source-tree2arrayp2-midpoint\",\"collapseEncoding\":\"unbootstrapped-raw-tree-copy\""
+           << ",\"displayRooting\":\"arbitrary-internal-node\",\"bootstrapCollapseCutoff\":null"
+           << ",\"bootstrapReplicates\":0,\"randomSeed\":3,\"flankVariableSiteTarget\":60"
+           << ",\"subsampled\":false,\"sequenceCap\":48,\"fragmentAssisted\":false,\"leaves\":[";
+    const int root = static_cast<int>(sequences.size());
+    for (std::size_t index = 0; index < sequences.size(); ++index) {
+        if (index != 0) output << ',';
+        const int sequence = sequences[index];
+        output << "{\"node\":" << index << ",\"workingSequenceIndex\":" << sequence
+               << ",\"sequenceIndex\":" << sequence << ",\"sequenceName\":";
+        json_string(output, context.alignment.names[static_cast<std::size_t>(sequence)]);
+        output << ",\"fragmentEventId\":null,\"role\":\"" << role(sequence)
+               << "\",\"queryReferenceInputRole\":\"not-applied\",\"referenceGroup\":null"
+               << ",\"masked\":" << (context.masked[static_cast<std::size_t>(sequence)] ? "true" : "false")
+               << ",\"disabled\":" << (context.disabled[static_cast<std::size_t>(sequence)] ? "true" : "false")
+               << ",\"currentGroupMember\":false,\"automaticGroupMember\":false,\"trace\":false}";
+    }
+    output << "],\"regions\":[";
+    for (int region = 0; region < 6; ++region) {
+        if (region != 0) output << ',';
+        const auto coordinates = region_coordinates(region);
+        const bool usable = sequences.size() >= 3 && coordinates.size() >= 3;
+        output << "{\"name\":\"" << names[region] << "\",\"sites\":" << coordinates.size()
+               << ",\"sequences\":" << sequences.size() << ",\"usable\":" << (usable ? "true" : "false")
+               << ",\"nodeCount\":" << (usable ? root + 1 : 0) << ",\"root\":" << (usable ? root : 0)
+               << ",\"bootstrapReplicates\":0,\"supportedInternalBranches\":0,\"internalBranches\":0"
+               << ",\"rawDistanceRankLevels\":" << (usable ? 1 : 0)
+               << ",\"collapsedDistanceRankLevels\":" << (usable ? 1 : 0)
+               << ",\"negativeBranchesNormalized\":0,\"bootstrapRandomSeed\":3,\"edges\":[";
+        if (usable) {
+            for (std::size_t index = 0; index < sequences.size(); ++index) {
+                if (index != 0) output << ',';
+                const double edge_length = distance(sequences[0], sequences[index], coordinates);
+                output << "{\"from\":" << root << ",\"to\":" << index
+                       << ",\"length\":" << std::setprecision(17) << edge_length
+                       << ",\"bootstrapSupport\":null,\"internal\":false,\"collapsed\":false}";
+            }
+        }
+        output << "]}";
+    }
+    output << "]}";
+    return output.str();
+}
+
+double profile_correlation(const std::vector<double>& left, const std::vector<double>& right) {
+    if (left.size() < 2 || left.size() != right.size()) return 0.0;
+    double left_mean = 0.0;
+    double right_mean = 0.0;
+    for (std::size_t index = 0; index < left.size(); ++index) {
+        left_mean += left[index];
+        right_mean += right[index];
+    }
+    left_mean /= left.size();
+    right_mean /= right.size();
+    double numerator = 0.0;
+    double left_sum = 0.0;
+    double right_sum = 0.0;
+    for (std::size_t index = 0; index < left.size(); ++index) {
+        const double a = left[index] - left_mean;
+        const double b = right[index] - right_mean;
+        numerator += a * b;
+        left_sum += a * a;
+        right_sum += b * b;
+    }
+    const double denominator = std::sqrt(left_sum * right_sum);
+    return denominator == 0.0 ? 0.0 : numerator / denominator;
+}
+
+std::string event_phylpro_json(const WebContext& context, std::uint32_t event_id,
+                               std::uint32_t requested_window, int gap_mode, int include_self) {
+    if (event_id >= context.full.events.size()) return {};
+    const auto& event = context.full.events[event_id];
+    const int length = static_cast<int>(context.alignment.sequences.front().size());
+    const int window = std::clamp(static_cast<int>(requested_window), 10, 5000);
+    const int half = std::max(1, window / 2);
+    std::vector<int> context_sequences;
+    for (std::size_t index = 0; index < context.alignment.sequences.size(); ++index) {
+        if (index < context.disabled.size() && context.disabled[index]) continue;
+        context_sequences.push_back(static_cast<int>(index));
+    }
+    const std::array<int, 3> targets = event.representative_sequences;
+    const int stride = std::max(1, (length + 2047) / 2048);
+    std::vector<int> coordinates;
+    for (int coordinate = 1; coordinate <= length; coordinate += stride) coordinates.push_back(coordinate);
+    if (coordinates.empty() || coordinates.back() != length) coordinates.push_back(length);
+    const auto profile_for = [&](int target, int center) {
+        std::array<std::vector<double>, 2> sides;
+        for (int side = 0; side < 2; ++side) {
+            for (const int context_sequence : context_sequences) {
+                if (!include_self && context_sequence == targets[target]) continue;
+                int compared = 0;
+                int differences = 0;
+                const int start = side == 0 ? center - half + 1 : center + 1;
+                const int end = side == 0 ? center : center + half;
+                for (int coordinate = start; coordinate <= end; ++coordinate) {
+                    const char a = plot_base_at(context.alignment.sequences[static_cast<std::size_t>(targets[target])], coordinate, context.options.circular);
+                    const char b = plot_base_at(context.alignment.sequences[static_cast<std::size_t>(context_sequence)], coordinate, context.options.circular);
+                    if (!plot_base(a) || !plot_base(b)) {
+                        if (gap_mode != 0) continue;
+                        continue;
+                    }
+                    ++compared;
+                    if (std::toupper(static_cast<unsigned char>(a)) != std::toupper(static_cast<unsigned char>(b))) ++differences;
+                }
+                sides[side].push_back(compared == 0 ? 1.0 : static_cast<double>(differences) / compared);
+            }
+        }
+        return profile_correlation(sides[0], sides[1]);
+    };
+    std::array<std::vector<double>, 3> profiles;
+    for (const int coordinate : coordinates) {
+        for (int target = 0; target < 3; ++target) {
+            profiles[target].push_back(profile_for(target, coordinate));
+        }
+    }
+    std::array<std::size_t, 3> minimum_indices{};
+    for (int target = 0; target < 3; ++target) {
+        minimum_indices[target] = static_cast<std::size_t>(
+            std::min_element(profiles[target].begin(), profiles[target].end()) - profiles[target].begin());
+    }
+    const auto nearest = [&](int coordinate) {
+        std::size_t best = 0;
+        int best_distance = std::numeric_limits<int>::max();
+        for (std::size_t index = 0; index < coordinates.size(); ++index) {
+            const int difference = std::abs(coordinates[index] - coordinate);
+            if (difference < best_distance) {
+                best = index;
+                best_distance = difference;
+            }
+        }
+        return best;
+    };
+    double minimum = 0.0;
+    double maximum = 0.0;
+    for (const auto& profile : profiles) {
+        for (const double value : profile) {
+            minimum = std::min(minimum, value);
+            maximum = std::max(maximum, value);
+        }
+    }
+    std::ostringstream output;
+    output << std::setprecision(17)
+           << "{\"eventId\":" << event_id << ",\"status\":\"source-shaped-active-unvalidated\",\"kernel\":\"FindSubSeqPP-MakePDstMat-UpdatePDstMat-PPRegression\""
+           << ",\"roleOrder\":\"recombinant-major-parent-minor-parent\",\"columnSelection\":\"polymorphic-after-gap-policy\",\"distance\":\"pairwise-Hamming-count\",\"correlation\":\"Pearson-source-single-output\",\"significanceTest\":\"not-implemented-in-supplied-rdp5\",\"optimization\":\"three-target-rows-linear-in-context\""
+           << ",\"maskedContextIncluded\":true,\"disabledContextExcluded\":true,\"fragmentContextIncluded\":false"
+           << ",\"circular\":" << (context.options.circular ? "true" : "false") << ",\"windowSites\":" << window
+           << ",\"halfWindowSites\":" << half << ",\"windowCapped\":false,\"gapMode\":\""
+           << (gap_mode ? "strip-any-missing-column" : "ignore-missing-pairwise") << "\",\"includeSelf\":" << (include_self ? "true" : "false")
+           << ",\"eligibleColumns\":" << length << ",\"contextSequences\":" << context_sequences.size()
+           << ",\"targetContextComparisons\":" << (coordinates.size() * context_sequences.size() * 3)
+           << ",\"rollingUpdates\":" << coordinates.size() * 3 << ",\"evaluatedPoints\":" << coordinates.size()
+           << ",\"returnedPoints\":" << coordinates.size() << ",\"minimumValue\":" << minimum << ",\"maximumValue\":" << maximum
+           << ",\"sequenceIndices\":[" << targets[0] << ',' << targets[1] << ',' << targets[2] << "],\"sequenceNames\":[";
+    for (int target = 0; target < 3; ++target) {
+        if (target != 0) output << ',';
+        json_string(output, context.alignment.names[static_cast<std::size_t>(targets[target])]);
+    }
+    output << "],\"minimumBySequence\":[";
+    for (int target = 0; target < 3; ++target) {
+        if (target != 0) output << ',';
+        output << "{\"sequenceIndex\":" << targets[target] << ",\"position\":" << coordinates[minimum_indices[target]]
+               << ",\"correlation\":" << profiles[target][minimum_indices[target]] << '}';
+    }
+    output << "],\"breakpoints\":[";
+    for (int boundary = 0; boundary < 2; ++boundary) {
+        if (boundary != 0) output << ',';
+        const std::size_t point_index = nearest(boundary == 0 ? event.beginning : event.ending);
+        output << "{\"name\":\"" << (boundary == 0 ? "beginning" : "ending") << "\",\"eventPosition\":"
+               << (boundary == 0 ? event.beginning : event.ending) << ",\"profilePosition\":" << coordinates[point_index] << ",\"correlations\":[";
+        for (int target = 0; target < 3; ++target) {
+            if (target != 0) output << ',';
+            output << profiles[target][point_index];
+        }
+        output << "]}";
+    }
+    output << "],\"points\":[";
+    for (std::size_t index = 0; index < coordinates.size(); ++index) {
+        if (index != 0) output << ',';
+        output << "{\"alignmentPosition\":" << coordinates[index]
+               << ",\"recombinant\":" << profiles[0][index]
+               << ",\"majorParent\":" << profiles[1][index]
+               << ",\"minorParent\":" << profiles[2][index] << '}';
+    }
+    output << "]}";
+    return output.str();
+}
+
 std::string full_json(const WebContext& context) {
     const auto& result = context.full;
     std::ostringstream output;
@@ -252,11 +801,13 @@ std::string full_json(const WebContext& context) {
            << ",\"sequenceLength\":" << result.sequence_length
            << ",\"tripletCount\":" << result.triplet_count
            << ",\"rawCandidateCount\":" << result.raw_candidate_count
+           << ",\"rdpEnabled\":" << (context.options.enable_rdp ? "true" : "false")
            << ",\"events\":[";
     for (std::size_t index = 0; index < result.events.size(); ++index) {
         if (index != 0) output << ',';
         const auto& event = result.events[index];
         output << "{\"id\":" << index
+               << ",\"program\":" << event.program
                << ",\"winningRole\":" << event.winning_role
                << ",\"probability\":" << event.probability
                << ",\"beginning\":" << event.beginning
@@ -272,6 +823,19 @@ std::string full_json(const WebContext& context) {
                 output << event.sequence_groups[role][member];
             }
             output << ']';
+        }
+        output << "]"
+               << ",\"burtAttempted\":" << (event.burt_attempted ? "true" : "false")
+               << ",\"burtApplied\":" << (event.burt_applied ? "true" : "false")
+               << ",\"burtInformationRichSites\":" << event.burt.information_rich_sites
+               << ",\"burtCandidateIntervalCount\":" << event.burt.intervals.size()
+               << ",\"burtBestLogLikelihood\":" << event.burt.best_log_likelihood
+               << ",\"burtInputBeginning\":" << event.burt.input_beginning
+               << ",\"burtInputEnding\":" << event.burt.input_ending
+               << ",\"burtConfidence\":[";
+        for (std::size_t confidence = 0; confidence < event.burt.confidence.size(); ++confidence) {
+            if (confidence != 0) output << ',';
+            output << event.burt.confidence[confidence];
         }
         output << "]}";
     }
@@ -413,10 +977,11 @@ NEXT_RDP_KEEPALIVE const char* rdp_get_summary_json(const std::uint32_t handle) 
 NEXT_RDP_KEEPALIVE int rdp_scan_begin(
     const std::uint32_t handle, const int circular, const int /*correction_mode*/,
     const double p_value_cutoff, const std::uint32_t window_sites,
-    const int maxchi_enabled, const std::uint32_t /*maxchi_window_sites*/,
-    const int chimaera_enabled, const std::uint32_t /*chimaera_window_sites*/,
-    const int geneconv_enabled, const std::uint32_t /*geneconv_mismatch_scale*/,
-    const std::uint32_t /*geneconv_max_overlaps*/, const int threeseq_enabled,
+    const int rdp_enabled,
+    const int maxchi_enabled, const std::uint32_t maxchi_window_sites,
+    const int chimaera_enabled, const std::uint32_t chimaera_window_sites,
+    const int geneconv_enabled, const std::uint32_t geneconv_mismatch_scale,
+    const std::uint32_t geneconv_max_overlaps, const int threeseq_enabled,
     const int /*bootscan_primary_enabled*/, const int /*bootscan_secondary_enabled*/,
     const std::uint32_t /*bootscan_window_sites*/, const std::uint32_t /*bootscan_step_sites*/,
     const std::uint32_t /*bootscan_bootstrap_replicates*/, const double /*bootscan_support_cutoff*/,
@@ -440,11 +1005,22 @@ NEXT_RDP_KEEPALIVE int rdp_scan_begin(
     options.circular = circular != 0;
     options.p_value_cutoff = p_value_cutoff;
     options.window_sites = static_cast<int>(window_sites);
+    options.enable_rdp = rdp_enabled != 0;
     options.enable_geneconv = geneconv_enabled != 0;
+    options.geneconv_mismatch_scale = static_cast<int>(geneconv_mismatch_scale);
+    options.geneconv_max_overlaps = static_cast<int>(geneconv_max_overlaps);
     options.enable_maxchi = maxchi_enabled != 0;
+    options.maxchi_window_sites = static_cast<int>(maxchi_window_sites);
     options.enable_chimaera = chimaera_enabled != 0;
+    options.chimaera_window_sites = static_cast<int>(chimaera_window_sites);
     options.enable_three_seq = threeseq_enabled != 0;
     options.polish_breakpoints_with_burt = polish_breakpoints != 0;
+    if (!options.enable_rdp && !options.enable_geneconv &&
+        !options.enable_maxchi && !options.enable_chimaera &&
+        !options.enable_three_seq) {
+        context->error = "Select RDP or at least one other discovery method.";
+        return 0;
+    }
     options.progress_callback = &web_progress_callback;
     options.progress_user = context;
     context->options = std::move(options);
@@ -534,28 +1110,48 @@ NEXT_RDP_KEEPALIVE const char* rdp_get_error(const std::uint32_t handle) {
     return context == nullptr ? "The RDP analysis context is invalid." : context->error.c_str();
 }
 
-NEXT_RDP_KEEPALIVE const char* rdp_get_signal_plot_json(const std::uint32_t handle, const std::uint32_t /*signal_id*/) {
+NEXT_RDP_KEEPALIVE const char* rdp_get_signal_plot_json(const std::uint32_t handle, const std::uint32_t signal_id) {
     auto* context = web_context(handle);
     if (context == nullptr) return "";
-    return cached(*context, "{\"signalId\":0,\"windowSites\":30,\"method\":\"RDP\",\"metric\":\"pair-identity\",\"profileContext\":\"original-alignment-reconstruction\",\"detectionProfileExact\":false,\"minimumValue\":0,\"maximumValue\":1,\"points\":[]}");
+    const auto plot = signal_plot_json(*context, signal_id);
+    if (plot.empty()) {
+        context->error = "The selected signal does not exist or has invalid representative sequences.";
+        return "";
+    }
+    return cached(*context, plot);
 }
 
-NEXT_RDP_KEEPALIVE const char* rdp_get_event_alignment_json(const std::uint32_t handle, const std::uint32_t /*event_id*/, const std::uint32_t /*flank_sites*/, const std::uint32_t /*row_limit*/) {
+NEXT_RDP_KEEPALIVE const char* rdp_get_event_alignment_json(const std::uint32_t handle, const std::uint32_t event_id, const std::uint32_t flank_sites, const std::uint32_t row_limit) {
     auto* context = web_context(handle);
     if (context == nullptr) return "";
-    return cached(*context, "{\"eventId\":0,\"alignmentLength\":0,\"circular\":true,\"fragmentAssisted\":false,\"requestedFlankSites\":0,\"candidateRowCount\":0,\"omittedRowCount\":0,\"rows\":[],\"panels\":[]}");
+    const auto view = event_alignment_json(*context, event_id, flank_sites, row_limit);
+    if (view.empty()) {
+        context->error = "The selected event does not exist.";
+        return "";
+    }
+    return cached(*context, view);
 }
 
-NEXT_RDP_KEEPALIVE const char* rdp_get_event_trees_json(const std::uint32_t handle, const std::uint32_t /*event_id*/) {
+NEXT_RDP_KEEPALIVE const char* rdp_get_event_trees_json(const std::uint32_t handle, const std::uint32_t event_id) {
     auto* context = web_context(handle);
     if (context == nullptr) return "";
-    return cached(*context, "{\"eventId\":0,\"method\":\"neighbour-joining\",\"distance\":\"Jukes-Cantor\",\"leaves\":[],\"regions\":[]}");
+    const auto view = event_trees_json(*context, event_id);
+    if (view.empty()) {
+        context->error = "The selected event does not exist.";
+        return "";
+    }
+    return cached(*context, view);
 }
 
-NEXT_RDP_KEEPALIVE const char* rdp_get_event_phylpro_json(const std::uint32_t handle, const std::uint32_t /*event_id*/, const std::uint32_t /*window_sites*/, const int /*gap_mode*/, const int /*include_self*/) {
+NEXT_RDP_KEEPALIVE const char* rdp_get_event_phylpro_json(const std::uint32_t handle, const std::uint32_t event_id, const std::uint32_t window_sites, const int gap_mode, const int include_self) {
     auto* context = web_context(handle);
     if (context == nullptr) return "";
-    return cached(*context, "{\"eventId\":0,\"windowSites\":60,\"gapMode\":\"ignore-missing-pairwise\",\"includeSelf\":false,\"points\":[],\"minima\":[],\"breakpoints\":[]}");
+    const auto view = event_phylpro_json(*context, event_id, window_sites, gap_mode, include_self);
+    if (view.empty()) {
+        context->error = "The selected event does not exist.";
+        return "";
+    }
+    return cached(*context, view);
 }
 
 NEXT_RDP_KEEPALIVE int rdp_set_review_state(const std::uint32_t handle, const std::uint32_t signal_id, const int state) {

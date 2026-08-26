@@ -1,5 +1,6 @@
 #pragma once
 
+#include "burt_state.hpp"
 #include "scan_state.hpp"
 #include "round_state.hpp"
 #include "xover_state.hpp"
@@ -16,9 +17,17 @@ struct RdpInitialAnalysisOptions {
     bool circular = true;
     double p_value_cutoff = 0.05;
     int window_sites = 30;
+    // RDP is the default primary method, but the source UI permits an
+    // optional-method-only scan.  Keep this independent from the optional
+    // method switches so callers can request (for example) MaxChi alone.
+    bool enable_rdp = true;
     bool enable_geneconv = false;
+    int geneconv_mismatch_scale = 1;
+    int geneconv_max_overlaps = 1;
     bool enable_maxchi = false;
+    int maxchi_window_sites = 70;
     bool enable_chimaera = false;
+    int chimaera_window_sites = 60;
     bool enable_three_seq = false;
     bool polish_breakpoints_with_burt = false;
 
@@ -48,6 +57,7 @@ struct RdpInitialAnalysisResult {
 
 struct RdpFinalEvent {
     int event_number = 0;
+    int program = 0;
     int winning_role = 0;
     double probability = 1.0;
     int beginning = 0;
@@ -55,6 +65,9 @@ struct RdpFinalEvent {
     std::array<int, 3> representative_sequences{};
     std::array<std::vector<int>, 3> sequence_groups;
     std::array<double, 3> consensus{};
+    bool burt_attempted = false;
+    bool burt_applied = false;
+    RdpBurtResult burt{};
 };
 
 struct RdpFullAnalysisResult {

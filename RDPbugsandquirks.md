@@ -62,3 +62,10 @@ we may want to expose to users.
   ranges; native OpenMP builds invoke the vendored routine once so its own
   source workshare is retained.  The resulting `Redo` bytes and downstream
   event order are unchanged.
+
+- RDP's optional methods can be selected without the RDP method.  The source
+  still builds the shared StoreLPV screening table, but it does not run the
+  RDP XOver walk or the cyclic tract-erasure scheduler in that mode.  The
+  compatibility path therefore emits the selected GENECONV/MaxChi/CHIMAERA/
+  3SEQ records directly in their source method order; enabling RDP must not
+  be inferred merely because an optional method was selected.
