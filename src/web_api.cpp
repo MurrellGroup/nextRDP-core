@@ -1855,7 +1855,42 @@ NEXT_RDP_KEEPALIVE const char* rdp_get_progress_json(const std::uint32_t handle)
     auto* context = web_context(handle);
     if (context == nullptr) return "";
     const auto count = context->alignment.names.size();
-    const auto total = count < 3 ? 0 : count * (count - 1) * (count - 2) / 6;
+    // The query/reference scheme replaces MakeAListP2's exploratory total
+    // with reference-group pairs × query origins.  Recomputing choose-three
+    // here made the live monitor report the wrong denominator even though
+    // rdp_scan_begin had already calculated the constrained work list.
+    std::size_t total = count < 3 ? 0 : count * (count - 1) * (count - 2) / 6;
+    if (context->options.query_reference_mode) {
+        std::size_t queries = 0;
+        std::size_t pairs = 0;
+        for (std::size_t index = 0; index < count; ++index) {
+            if (index < context->masked.size() && context->masked[index]) continue;
+            if (index < context->disabled.size() && context->disabled[index]) continue;
+            if (index < context->reference_groups.size() &&
+                context->reference_groups[index] == 0) {
+                ++queries;
+            }
+        }
+        for (std::size_t first = 0; first < count; ++first) {
+            if (first >= context->reference_groups.size() ||
+                context->reference_groups[first] == 0 ||
+                (first < context->masked.size() && context->masked[first]) ||
+                (first < context->disabled.size() && context->disabled[first])) {
+                continue;
+            }
+            for (std::size_t second = first + 1; second < count; ++second) {
+                if (second >= context->reference_groups.size() ||
+                    context->reference_groups[second] == 0 ||
+                    context->reference_groups[first] == context->reference_groups[second] ||
+                    (second < context->masked.size() && context->masked[second]) ||
+                    (second < context->disabled.size() && context->disabled[second])) {
+                    continue;
+                }
+                ++pairs;
+            }
+        }
+        total = pairs * queries;
+    }
     const int phase = context->finished ? 2 : context->progress_phase;
     const char* phase_name = phase == 1 ? "cyclic-rescan"
         : phase == 2 ? "complete" : "primary";
@@ -1865,6 +1900,26 @@ NEXT_RDP_KEEPALIVE const char* rdp_get_progress_json(const std::uint32_t handle)
     const auto event_count = context->finished
         ? context->full.events.size()
         : static_cast<std::size_t>(std::max(0, context->progress_event_count));
+    std::size_t query_count = 0;
+    std::size_t reference_count = 0;
+    std::size_t reference_group_count = 0;
+    if (context->options.query_reference_mode) {
+        std::vector<unsigned int> groups;
+        for (std::size_t index = 0; index < count; ++index) {
+            if (index < context->masked.size() && context->masked[index]) continue;
+            if (index < context->disabled.size() && context->disabled[index]) continue;
+            const unsigned int group = index < context->reference_groups.size()
+                ? context->reference_groups[index] : 0U;
+            if (group == 0U) ++query_count;
+            else {
+                ++reference_count;
+                groups.push_back(group);
+            }
+        }
+        std::sort(groups.begin(), groups.end());
+        groups.erase(std::unique(groups.begin(), groups.end()), groups.end());
+        reference_group_count = groups.size();
+    }
     std::ostringstream output;
     output << "{\"state\":\"" << (context->finished ? "done" : context->started ? "running" : "idle")
            << "\",\"phase\":\"" << phase_name
@@ -1872,8 +1927,10 @@ NEXT_RDP_KEEPALIVE const char* rdp_get_progress_json(const std::uint32_t handle)
            << ",\"totalTriplets\":" << total
            << ",\"correctionTests\":" << total
            << ",\"activeWorkingSequenceCount\":" << count
-           << ",\"queryWorkingSequenceCount\":0,\"referenceWorkingSequenceCount\":0"
-           << ",\"activeReferenceGroupCount\":0,\"cumulativeTriplets\":" << processed
+           << ",\"queryWorkingSequenceCount\":" << query_count
+           << ",\"referenceWorkingSequenceCount\":" << reference_count
+           << ",\"activeReferenceGroupCount\":" << reference_group_count
+           << ",\"cumulativeTriplets\":" << processed
            << ",\"tripletKernelEvaluations\":" << processed
            << ",\"tripletSummariesReused\":0,\"cleanTripletsPruned\":0,\"cachedSignalsReused\":0"
            << ",\"methodScansSkipped\":0,\"invalidScheduleTripletsSkipped\":0,\"pairShortlistTripletsSkipped\":0"
