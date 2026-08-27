@@ -481,6 +481,10 @@ void append_legacy_optional_events(
                     static_cast<int>(triplet[candidate.recombinant_local]),
                     static_cast<int>(triplet[candidate.major_parent_local]),
                     static_cast<int>(triplet[candidate.minor_parent_local])};
+                event.profile_sequences = {
+                    static_cast<int>(triplet[0]), static_cast<int>(triplet[1]),
+                    static_cast<int>(triplet[2])};
+                event.profile_sequences_available = true;
                 for (int role = 0; role < 3; ++role) {
                     event.sequence_groups[role].push_back(
                         event.representative_sequences[role]);
@@ -521,6 +525,10 @@ void append_legacy_optional_events(
                     static_cast<int>(triplet[candidate.recombinant_local]),
                     static_cast<int>(triplet[candidate.major_parent_local]),
                     static_cast<int>(triplet[candidate.minor_parent_local])};
+                event.profile_sequences = {
+                    static_cast<int>(triplet[0]), static_cast<int>(triplet[1]),
+                    static_cast<int>(triplet[2])};
+                event.profile_sequences_available = true;
                 for (int role = 0; role < 3; ++role) {
                     event.sequence_groups[role].push_back(
                         event.representative_sequences[role]);
@@ -905,6 +913,14 @@ RdpFullAnalysisResult run_rdp_full_analysis(
                 event.ending = raw.ending;
                 event.representative_sequences = {
                     raw.daughter, raw.major_parent, raw.minor_parent};
+                if (raw.profile_available != 0) {
+                    for (int role = 0; role < 3; ++role) {
+                        event.profile_sequences[role] = raw.profile_sequences[role];
+                    }
+                    event.profile_sequences_available = true;
+                } else {
+                    event.profile_sequences = event.representative_sequences;
+                }
                 event.method_target_role = 0;
                 for (int role = 0; role < 3; ++role) {
                     event.sequence_groups[role].push_back(
@@ -1194,6 +1210,29 @@ RdpFullAnalysisResult run_rdp_full_analysis(
             final_event.rdp_profile = make_rdp_sliding_window_profile(
                 scan_state, distance_state, tree_state, plot_event,
                 options.window_sites, fss_rdp, xover_api());
+            if (plot_event.profile_available != 0) {
+                final_event.profile_sequences = {
+                    plot_event.profile_sequences[0] < static_cast<int>(trace_sub.size())
+                        ? trace_sub[plot_event.profile_sequences[0]]
+                        : static_cast<int>(plot_event.profile_sequences[0]),
+                    plot_event.profile_sequences[1] < static_cast<int>(trace_sub.size())
+                        ? trace_sub[plot_event.profile_sequences[1]]
+                        : static_cast<int>(plot_event.profile_sequences[1]),
+                    plot_event.profile_sequences[2] < static_cast<int>(trace_sub.size())
+                        ? trace_sub[plot_event.profile_sequences[2]]
+                        : static_cast<int>(plot_event.profile_sequences[2])};
+                final_event.profile_sequences_available = true;
+            }
+        }
+        if (!final_event.profile_sequences_available &&
+            selected.profile_available != 0) {
+            for (int role = 0; role < 3; ++role) {
+                const int working = selected.profile_sequences[role];
+                final_event.profile_sequences[role] =
+                    working >= 0 && working < static_cast<int>(trace_sub.size())
+                        ? trace_sub[working] : working;
+            }
+            final_event.profile_sequences_available = true;
         }
         for (int role = 0; role < 3; ++role) {
             const int representative = round.prefix.sequences[role];
@@ -1208,6 +1247,9 @@ RdpFullAnalysisResult run_rdp_full_analysis(
                     sequence < static_cast<int>(trace_sub.size())
                     ? trace_sub[sequence] : sequence);
             }
+        }
+        if (!final_event.profile_sequences_available) {
+            final_event.profile_sequences = final_event.representative_sequences;
         }
         if (selected.program_flag == 4) {
             for (int role = 0; role < 3; ++role) {

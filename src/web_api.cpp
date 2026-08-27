@@ -328,9 +328,18 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
         ? 0 : static_cast<int>(context.alignment.sequences.front().size());
     if (length <= 0) return {};
     const auto role_sequences = event_role_sequences(event);
+    // The old review page plots the selected signal's discovery triplet, not
+    // the reconciled event's winner-rotated role triplet.  Keep this order
+    // deterministic (the source AnalysisList is canonical sequence order)
+    // while leaving event/alignment/tree views in recombinant/parent order.
+    std::array<int, 3> plot_sequences = role_sequences;
+    if (event.profile_sequences_available) {
+        plot_sequences = event.profile_sequences;
+    }
+    std::sort(plot_sequences.begin(), plot_sequences.end());
     std::array<const std::string*, 3> sequences{};
     for (int role = 0; role < 3; ++role) {
-        const int index = role_sequences[role];
+        const int index = plot_sequences[role];
         if (index < 0 || index >= static_cast<int>(context.alignment.sequences.size())) return {};
         sequences[role] = &context.alignment.sequences[static_cast<std::size_t>(index)];
     }
@@ -386,9 +395,9 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
     const std::vector<std::uint8_t> no_missing(
         static_cast<std::size_t>(length), 0);
     const std::array<std::uint32_t, 3> role_triplet{
-        static_cast<std::uint32_t>(role_sequences[0]),
-        static_cast<std::uint32_t>(role_sequences[1]),
-        static_cast<std::uint32_t>(role_sequences[2])};
+        static_cast<std::uint32_t>(plot_sequences[0]),
+        static_cast<std::uint32_t>(plot_sequences[1]),
+        static_cast<std::uint32_t>(plot_sequences[2])};
     if (program == 1 && optional_alignment) {
         next_rdp_legacy_optional::GeneconvDiscoveryOptions options;
         options.circular = context.options.circular;
@@ -435,8 +444,17 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
             }
         }
     } else if (program == 4 && optional_alignment) {
-        optional_target_local = event.method_target_role >= 0
-            ? event.method_target_role : std::clamp(event.winning_role, 0, 2);
+        const int source_target = event.method_target_role >= 0 &&
+            event.method_target_role < 3
+            ? event.representative_sequences[event.method_target_role]
+            : role_sequences[0];
+        optional_target_local = 0;
+        for (int role = 0; role < 3; ++role) {
+            if (plot_sequences[role] == source_target) {
+                optional_target_local = role;
+                break;
+            }
+        }
         next_rdp_legacy_optional::MaxChiWorkspace variable_workspace;
         next_rdp_legacy_optional::MaxChiWorkspace target_workspace;
         const auto profile = next_rdp_legacy_optional::chimaera_plot_profile(
@@ -600,12 +618,22 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
         if (exact_rdp_profile) {
             const double divisor = static_cast<double>(
                 std::max(1, event.rdp_profile.divisor));
+            const auto profile_order = event.profile_sequences_available
+                ? event.profile_sequences : role_sequences;
             for (int pair = 0; pair < 3; ++pair) {
-                const int first_role = pair == 2 ? 1 : 0;
-                const int second_role = pair == 0 ? 1 : 2;
-                const int original_pair = pair_slot(
-                    event_role_original_index(event, first_role),
-                    event_role_original_index(event, second_role));
+                const int first_sequence = plot_sequences[pair == 2 ? 1 : 0];
+                const int second_sequence = plot_sequences[pair == 0 ? 1 : 2];
+                int first_profile_role = 0;
+                int second_profile_role = 0;
+                for (int role = 0; role < 3; ++role) {
+                    if (profile_order[role] == first_sequence) {
+                        first_profile_role = role;
+                    }
+                    if (profile_order[role] == second_sequence) {
+                        second_profile_role = role;
+                    }
+                }
+                const int original_pair = pair_slot(first_profile_role, second_profile_role);
                 point[pair] = static_cast<double>(
                     event.rdp_profile.counts[original_pair][coordinate_index]) /
                     divisor;
@@ -714,6 +742,15 @@ std::vector<int> event_review_sequences(
     };
     for (const int sequence : event.representative_sequences) add(sequence);
     for (const auto& group : event.sequence_groups) for (const int sequence : group) add(sequence);
+    // The source review panel keeps the broader alignment context available
+    // even when the compact core result has no serialized correlation lists.
+    // Append the remaining input rows as neutral evidence rows; this is a
+    // display fallback only and does not turn them into event support.
+    for (int sequence = 0;
+         sequence < static_cast<int>(context.alignment.sequences.size());
+         ++sequence) {
+        add(sequence);
+    }
     const std::size_t candidate_count = sequences.size();
     if (sequences.size() > limit) sequences.resize(limit);
     (void)candidate_count;
@@ -1347,7 +1384,15 @@ std::string full_json(const WebContext& context) {
                << ",\"ending\":" << event.ending << ",\"representativeSequences\":["
                << event.representative_sequences[0] << ','
                << event.representative_sequences[1] << ','
-               << event.representative_sequences[2] << "],\"sequenceGroups\":[";
+               << event.representative_sequences[2] << "],\"profileSequences\":";
+        if (!event.profile_sequences_available) {
+            output << "null";
+        } else {
+            output << '[' << event.profile_sequences[0] << ','
+                   << event.profile_sequences[1] << ','
+                   << event.profile_sequences[2] << ']';
+        }
+        output << ",\"sequenceGroups\":[";
         for (int role = 0; role < 3; ++role) {
             if (role != 0) output << ',';
             output << '[';

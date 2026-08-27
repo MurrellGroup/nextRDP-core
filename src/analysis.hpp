@@ -104,6 +104,11 @@ struct RdpFinalEvent {
     int beginning = 0;
     int ending = 0;
     std::array<int, 3> representative_sequences{};
+    // The source review plot is keyed to the discovery triplet, which is
+    // independent from the later consensus winner/role rotation. Keep that
+    // triplet so the browser can draw and label pair traces in source order.
+    std::array<int, 3> profile_sequences{};
+    bool profile_sequences_available = false;
     std::array<std::vector<int>, 3> sequence_groups;
     std::array<double, 3> consensus{};
     bool burt_attempted = false;

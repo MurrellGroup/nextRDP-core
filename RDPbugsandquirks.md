@@ -111,10 +111,17 @@ we may want to expose to users.
   must retain both breakpoint-nearest points and each role's global minimum.
 
 - Final event records retain representative sequences in discovery order while
-  `winningRole` identifies the source's selected recombinant row.  Review plots,
+  `winningRole` identifies the source's selected recombinant row.  Event
   alignments, trees, and PHYLPRO must rotate that prefix to recombinant/major/
   minor before assigning labels; using the stored prefix directly silently
   relabels evidence whenever the winning role is not zero.
+
+- The old review page has two deliberately different triplet contracts.  The
+  event alignment/tree/PHYLPRO panels use the reconciled recombinant/major/
+  minor roles, but the signal plot is keyed to the original canonical
+  discovery triplet and its pair slots.  Reusing the winner-rotated event
+  roles for the plot swaps coloured traces (especially when the winner is
+  slot 1 or 2), even though the underlying pairwise counts are unchanged.
 
 - The browser tree endpoint is a source-shaped display reconstruction.  Its
   neighbor-joining edges are useful for review, but they are not a persisted
