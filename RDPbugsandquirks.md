@@ -126,3 +126,10 @@ we may want to expose to users.
 - The browser tree endpoint is a source-shaped display reconstruction.  Its
   neighbor-joining edges are useful for review, but they are not a persisted
   RDP5 tree and must not be interpreted as source tree-parity evidence.
+
+- `MakeAnalysisListQvR` is not an ordinary exploratory triplet filter. It
+  preserves input order, emits every group-0 query for each unordered pair of
+  enabled references from different positive groups, and omits same-group
+  reference pairs entirely. The desktop correction bookkeeping still derives
+  its opportunity count from reference-group pairs × queries, which can differ
+  from the number of emitted triplets when groups have uneven sizes.
