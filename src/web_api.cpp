@@ -320,6 +320,36 @@ int pair_slot(const int first, const int second) {
     return 2;
 }
 
+void write_maxchi_discovery_json(
+    std::ostringstream& output,
+    const next_rdp_legacy_optional::MaxChiDiscoveryCandidate& discovery);
+void write_chimaera_discovery_json(
+    std::ostringstream& output,
+    const next_rdp_legacy_optional::ChimaeraDiscoveryCandidate& discovery);
+void write_geneconv_discovery_json(
+    std::ostringstream& output,
+    const next_rdp_legacy_optional::GeneconvDiscoveryCandidate& discovery);
+void write_threeseq_discovery_json(
+    std::ostringstream& output,
+    const next_rdp_legacy_optional::ThreeSeqDiscoveryCandidate& discovery);
+
+template <typename Candidate>
+const Candidate* nearest_discovery_candidate(
+    const std::vector<Candidate>& candidates, const RdpFinalEvent& event) {
+    if (candidates.empty()) return nullptr;
+    const auto distance = [&event](const Candidate& candidate) {
+        const auto begin = static_cast<std::int64_t>(candidate.beginning);
+        const auto end = static_cast<std::int64_t>(candidate.ending);
+        return std::llabs(begin - static_cast<std::int64_t>(event.beginning)) +
+            std::llabs(end - static_cast<std::int64_t>(event.ending));
+    };
+    return &*std::min_element(
+        candidates.begin(), candidates.end(),
+        [&](const Candidate& first, const Candidate& second) {
+            return distance(first) < distance(second);
+        });
+}
+
 std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id) {
     const auto& result = context.full;
     if (signal_id >= result.events.size()) return {};
@@ -381,6 +411,10 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
     bool exact_maxchi_profile = false;
     bool exact_chimaera_profile = false;
     bool exact_threeseq_profile = false;
+    std::string maxchi_discovery_json = "null";
+    std::string chimaera_discovery_json = "null";
+    std::string geneconv_discovery_json = "null";
+    std::string threeseq_discovery_json = "null";
     int optional_target_local = -1;
     int optional_window_sites = requested_window;
     std::vector<std::size_t> optional_coordinates;
@@ -403,6 +437,12 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
         static_cast<std::uint32_t>(plot_sequences[0]),
         static_cast<std::uint32_t>(plot_sequences[1]),
         static_cast<std::uint32_t>(plot_sequences[2])};
+    const auto optional_missing = std::vector<std::uint8_t>(
+        static_cast<std::size_t>(length), 0);
+    const auto optional_similarities = optional_alignment
+        ? next_rdp_legacy_optional_bridge::pair_similarity(
+            *optional_alignment, role_triplet)
+        : std::array<double, 3>{};
     if (program == 1 && optional_alignment) {
         next_rdp_legacy_optional::GeneconvDiscoveryOptions options;
         options.circular = context.options.circular;
@@ -415,6 +455,25 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
         options.maximum_overlapping_fragments = static_cast<std::size_t>(std::max(
             1, context.options.geneconv_max_overlaps));
         next_rdp_legacy_optional::GeneconvWorkspace workspace;
+        next_rdp_legacy_optional::MaxChiWorkspace variable_workspace;
+        next_rdp_legacy_optional::MaxChiRecheckOptions variable_options;
+        variable_options.circular = context.options.circular;
+        variable_options.bonferroni = context.options.correction_bonferroni;
+        variable_options.p_value_cutoff = context.options.p_value_cutoff;
+        variable_options.correction_tests = options.correction_tests;
+        (void)next_rdp_legacy_optional::maxchi_recheck(
+            *optional_alignment, role_triplet, optional_missing,
+            variable_options, variable_workspace);
+        std::vector<next_rdp_legacy_optional::GeneconvDiscoveryCandidate> candidates;
+        (void)next_rdp_legacy_optional::geneconv_discover_prepared(
+            variable_workspace, optional_similarities, options, workspace,
+            candidates);
+        if (const auto* selected = nearest_discovery_candidate(candidates, event);
+            selected != nullptr) {
+            std::ostringstream discovery;
+            write_geneconv_discovery_json(discovery, *selected);
+            geneconv_discovery_json = discovery.str();
+        }
         const auto profile = next_rdp_legacy_optional::geneconv_plot_profile(
             *optional_alignment, role_triplet, options, workspace);
         if (profile.available) {
@@ -430,7 +489,25 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
             }
         }
     } else if (program == 3 && optional_alignment) {
+        next_rdp_legacy_optional::MaxChiDiscoveryOptions discovery_options;
+        discovery_options.circular = context.options.circular;
+        discovery_options.bonferroni = context.options.correction_bonferroni;
+        discovery_options.p_value_cutoff = context.options.p_value_cutoff;
+        discovery_options.correction_tests = std::max<std::uint64_t>(
+            1, static_cast<std::uint64_t>(context.full.triplet_count));
+        discovery_options.fixed_window_sites = std::max<std::size_t>(
+            2, static_cast<std::size_t>(context.options.maxchi_window_sites));
+        std::vector<next_rdp_legacy_optional::MaxChiDiscoveryCandidate> candidates;
         next_rdp_legacy_optional::MaxChiWorkspace workspace;
+        (void)next_rdp_legacy_optional::maxchi_discover(
+            *optional_alignment, role_triplet, optional_missing,
+            discovery_options, workspace, candidates);
+        if (const auto* selected = nearest_discovery_candidate(candidates, event);
+            selected != nullptr) {
+            std::ostringstream discovery;
+            write_maxchi_discovery_json(discovery, *selected);
+            maxchi_discovery_json = discovery.str();
+        }
         const auto profile = next_rdp_legacy_optional::maxchi_plot_profile(
             *optional_alignment, role_triplet, no_missing,
             context.options.circular,
@@ -462,6 +539,32 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
         }
         next_rdp_legacy_optional::MaxChiWorkspace variable_workspace;
         next_rdp_legacy_optional::MaxChiWorkspace target_workspace;
+        next_rdp_legacy_optional::MaxChiRecheckOptions variable_options;
+        variable_options.circular = context.options.circular;
+        variable_options.bonferroni = context.options.correction_bonferroni;
+        variable_options.p_value_cutoff = context.options.p_value_cutoff;
+        variable_options.correction_tests = std::max<std::uint64_t>(
+            1, static_cast<std::uint64_t>(context.full.triplet_count));
+        (void)next_rdp_legacy_optional::maxchi_recheck(
+            *optional_alignment, role_triplet, optional_missing,
+            variable_options, variable_workspace);
+        next_rdp_legacy_optional::ChimaeraDiscoveryOptions discovery_options;
+        discovery_options.circular = context.options.circular;
+        discovery_options.bonferroni = context.options.correction_bonferroni;
+        discovery_options.p_value_cutoff = context.options.p_value_cutoff;
+        discovery_options.correction_tests = variable_options.correction_tests;
+        discovery_options.fixed_window_sites = std::max<std::size_t>(
+            2, static_cast<std::size_t>(context.options.chimaera_window_sites));
+        std::vector<next_rdp_legacy_optional::ChimaeraDiscoveryCandidate> candidates;
+        (void)next_rdp_legacy_optional::chimaera_discover_prepared(
+            variable_workspace, optional_missing, optional_similarities,
+            discovery_options, target_workspace, candidates);
+        if (const auto* selected = nearest_discovery_candidate(candidates, event);
+            selected != nullptr) {
+            std::ostringstream discovery;
+            write_chimaera_discovery_json(discovery, *selected);
+            chimaera_discovery_json = discovery.str();
+        }
         const auto profile = next_rdp_legacy_optional::chimaera_plot_profile(
             *optional_alignment, role_triplet,
             static_cast<std::uint8_t>(optional_target_local), no_missing,
@@ -484,6 +587,30 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
     } else if (program == 8 && optional_alignment) {
         next_rdp_legacy_optional::ThreeSeqWorkspace workspace;
         next_rdp_legacy_optional::MaxChiWorkspace variable_workspace;
+        next_rdp_legacy_optional::MaxChiRecheckOptions variable_options;
+        variable_options.circular = context.options.circular;
+        variable_options.bonferroni = context.options.correction_bonferroni;
+        variable_options.p_value_cutoff = context.options.p_value_cutoff;
+        variable_options.correction_tests = std::max<std::uint64_t>(
+            1, static_cast<std::uint64_t>(context.full.triplet_count));
+        (void)next_rdp_legacy_optional::maxchi_recheck(
+            *optional_alignment, role_triplet, optional_missing,
+            variable_options, variable_workspace);
+        next_rdp_legacy_optional::ThreeSeqDiscoveryOptions discovery_options;
+        discovery_options.circular = context.options.circular;
+        discovery_options.correction_enabled = context.options.correction_bonferroni;
+        discovery_options.p_value_cutoff = context.options.p_value_cutoff;
+        discovery_options.correction_tests = variable_options.correction_tests;
+        std::vector<next_rdp_legacy_optional::ThreeSeqDiscoveryCandidate> candidates;
+        (void)next_rdp_legacy_optional::threeseq_discover_prepared(
+            variable_workspace, optional_missing, optional_similarities,
+            discovery_options, workspace, candidates);
+        if (const auto* selected = nearest_discovery_candidate(candidates, event);
+            selected != nullptr) {
+            std::ostringstream discovery;
+            write_threeseq_discovery_json(discovery, *selected);
+            threeseq_discovery_json = discovery.str();
+        }
         const auto profile = next_rdp_legacy_optional::threeseq_plot_profile(
             *optional_alignment, role_triplet, workspace, variable_workspace);
         if (profile.available) {
@@ -713,6 +840,10 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
     if (optional_target_local < 0) output << "null";
     else output << optional_target_local;
     output
+           << ",\"maxChiDiscovery\":" << maxchi_discovery_json
+           << ",\"chimaeraDiscovery\":" << chimaera_discovery_json
+           << ",\"geneconvDiscovery\":" << geneconv_discovery_json
+           << ",\"threeSeqDiscovery\":" << threeseq_discovery_json
            << ",\"profileContext\":\""
            << (exact_detection_profile ? "detection-alignment" :
                "original-alignment-reconstruction") << "\""
