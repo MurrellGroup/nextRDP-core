@@ -2,7 +2,11 @@
 
 #include "burt_state.hpp"
 #include "legacy_optional/bootscan.hpp"
+#include "legacy_optional/chimaera.hpp"
+#include "legacy_optional/geneconv.hpp"
+#include "legacy_optional/maxchi.hpp"
 #include "legacy_optional/siscan.hpp"
+#include "legacy_optional/threeseq.hpp"
 #include "scan_state.hpp"
 #include "round_state.hpp"
 #include "xover_state.hpp"
@@ -123,6 +127,14 @@ struct RdpFinalEvent {
     bool burt_applied = false;
     RdpBurtResult burt{};
     RdpSlidingWindowProfile rdp_profile{};
+    bool maxchi_available = false;
+    next_rdp_legacy_optional::MaxChiDiscoveryCandidate maxchi_discovery{};
+    bool chimaera_available = false;
+    next_rdp_legacy_optional::ChimaeraDiscoveryCandidate chimaera_discovery{};
+    bool geneconv_available = false;
+    next_rdp_legacy_optional::GeneconvDiscoveryCandidate geneconv_discovery{};
+    bool three_seq_available = false;
+    next_rdp_legacy_optional::ThreeSeqDiscoveryCandidate three_seq_discovery{};
     bool bootscan_available = false;
     next_rdp_legacy_optional::BootscanDiscoveryCandidate bootscan_discovery{};
     next_rdp_legacy_optional::BootscanPlotProfile bootscan_profile{};

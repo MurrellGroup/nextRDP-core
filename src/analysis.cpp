@@ -5,7 +5,11 @@
 #include "distance_state.hpp"
 #include "legacy_method_state.hpp"
 #include "legacy_optional/bootscan.hpp"
+#include "legacy_optional/chimaera.hpp"
+#include "legacy_optional/geneconv.hpp"
+#include "legacy_optional/maxchi.hpp"
 #include "legacy_optional/siscan.hpp"
+#include "legacy_optional/threeseq.hpp"
 #include "legacy_optional_bridge.hpp"
 #include "mutation_state.hpp"
 #include "rescan_schedule.hpp"
@@ -359,6 +363,145 @@ thread_local int configured_three_seq_table_bound = 45;
 const std::vector<float>& active_three_seq_table() {
     return configured_three_seq_table != nullptr
         ? *configured_three_seq_table : shared_three_seq_table();
+}
+
+template <typename Candidate>
+const Candidate* nearest_optional_candidate(
+    const std::vector<Candidate>& candidates, const RdpFinalEvent& event) {
+    if (candidates.empty()) return nullptr;
+    const auto distance = [&event](const Candidate& candidate) {
+        const auto begin = static_cast<std::int64_t>(candidate.beginning);
+        const auto end = static_cast<std::int64_t>(candidate.ending);
+        const auto event_begin = static_cast<std::int64_t>(event.beginning);
+        const auto event_end = static_cast<std::int64_t>(event.ending);
+        return std::llabs(begin - event_begin) + std::llabs(end - event_end);
+    };
+    return &*std::min_element(
+        candidates.begin(), candidates.end(),
+        [&](const Candidate& first, const Candidate& second) {
+            return distance(first) < distance(second);
+        });
+}
+
+// Attach the source optional-method discovery record to the corresponding
+// event.  The old browser carried this record beside each method signal; the
+// source-faithful core initially retained only the event coordinates, which
+// left the method-specific review cards blank even though the kernels had
+// already run.  Reuse the existing optional kernels here and serialize the
+// selected candidate verbatim rather than manufacturing review values.
+void attach_optional_discovery(
+    RdpFinalEvent& event,
+    const next_rdp_legacy_optional::Alignment& alignment,
+    const RdpInitialAnalysisOptions& options,
+    const int correction_tests) {
+    if (event.program != 1 && event.program != 3 && event.program != 4 &&
+        event.program != 8) {
+        return;
+    }
+    const std::array<std::uint32_t, 3> triplet{
+        static_cast<std::uint32_t>(event.profile_sequences[0]),
+        static_cast<std::uint32_t>(event.profile_sequences[1]),
+        static_cast<std::uint32_t>(event.profile_sequences[2])};
+    for (const auto sequence : triplet) {
+        if (sequence >= alignment.sequence_count()) return;
+    }
+    const auto missing = next_rdp_legacy_optional_bridge::triplet_missing_data(
+        alignment, triplet);
+    const auto similarities = next_rdp_legacy_optional_bridge::pair_similarity(
+        alignment, triplet);
+    const std::uint64_t tests = std::max<std::uint64_t>(
+        1, static_cast<std::uint64_t>(correction_tests));
+
+    next_rdp_legacy_optional::MaxChiWorkspace variable_workspace;
+    const auto prepare_variable_workspace = [&] {
+        next_rdp_legacy_optional::MaxChiDiscoveryOptions prepare;
+        prepare.circular = options.circular;
+        prepare.bonferroni = options.correction_bonferroni;
+        prepare.p_value_cutoff = options.p_value_cutoff;
+        prepare.correction_tests = tests;
+        prepare.fixed_window_sites = std::max(
+            2, options.maxchi_window_sites);
+        std::vector<next_rdp_legacy_optional::MaxChiDiscoveryCandidate> ignored;
+        (void)next_rdp_legacy_optional::maxchi_discover(
+            alignment, triplet, missing, prepare, variable_workspace, ignored);
+    };
+
+    if (event.program == 3) {
+        next_rdp_legacy_optional::MaxChiDiscoveryOptions discovery;
+        discovery.circular = options.circular;
+        discovery.bonferroni = options.correction_bonferroni;
+        discovery.p_value_cutoff = options.p_value_cutoff;
+        discovery.correction_tests = tests;
+        discovery.fixed_window_sites = std::max(2, options.maxchi_window_sites);
+        std::vector<next_rdp_legacy_optional::MaxChiDiscoveryCandidate> candidates;
+        next_rdp_legacy_optional::MaxChiWorkspace workspace;
+        (void)next_rdp_legacy_optional::maxchi_discover(
+            alignment, triplet, missing, discovery, workspace, candidates);
+        if (const auto* selected = nearest_optional_candidate(candidates, event);
+            selected != nullptr) {
+            event.maxchi_available = true;
+            event.maxchi_discovery = *selected;
+        }
+        return;
+    }
+
+    prepare_variable_workspace();
+    if (event.program == 4) {
+        next_rdp_legacy_optional::ChimaeraDiscoveryOptions discovery;
+        discovery.circular = options.circular;
+        discovery.bonferroni = options.correction_bonferroni;
+        discovery.p_value_cutoff = options.p_value_cutoff;
+        discovery.correction_tests = tests;
+        discovery.fixed_window_sites = std::max(2, options.chimaera_window_sites);
+        std::vector<next_rdp_legacy_optional::ChimaeraDiscoveryCandidate> candidates;
+        next_rdp_legacy_optional::MaxChiWorkspace target_workspace;
+        (void)next_rdp_legacy_optional::chimaera_discover_prepared(
+            variable_workspace, missing, similarities, discovery,
+            target_workspace, candidates);
+        if (const auto* selected = nearest_optional_candidate(candidates, event);
+            selected != nullptr) {
+            event.chimaera_available = true;
+            event.chimaera_discovery = *selected;
+        }
+        return;
+    }
+    if (event.program == 1) {
+        next_rdp_legacy_optional::GeneconvDiscoveryOptions discovery;
+        discovery.circular = options.circular;
+        discovery.bonferroni = options.correction_bonferroni;
+        discovery.p_value_cutoff = options.p_value_cutoff;
+        discovery.correction_tests = tests;
+        discovery.mismatch_scale = std::max(1, options.geneconv_mismatch_scale);
+        discovery.maximum_overlapping_fragments = std::max(
+            1, options.geneconv_max_overlaps);
+        std::vector<next_rdp_legacy_optional::GeneconvDiscoveryCandidate> candidates;
+        next_rdp_legacy_optional::GeneconvWorkspace workspace;
+        (void)next_rdp_legacy_optional::geneconv_discover_prepared(
+            variable_workspace, similarities, discovery, workspace, candidates);
+        if (const auto* selected = nearest_optional_candidate(candidates, event);
+            selected != nullptr) {
+            event.geneconv_available = true;
+            event.geneconv_discovery = *selected;
+        }
+        return;
+    }
+    if (event.program == 8) {
+        next_rdp_legacy_optional::ThreeSeqDiscoveryOptions discovery;
+        discovery.circular = options.circular;
+        discovery.correction_enabled = options.correction_bonferroni;
+        discovery.p_value_cutoff = options.p_value_cutoff;
+        discovery.correction_tests = tests;
+        std::vector<next_rdp_legacy_optional::ThreeSeqDiscoveryCandidate> candidates;
+        next_rdp_legacy_optional::ThreeSeqWorkspace workspace;
+        (void)next_rdp_legacy_optional::threeseq_discover_prepared(
+            variable_workspace, missing, similarities, discovery, workspace,
+            candidates);
+        if (const auto* selected = nearest_optional_candidate(candidates, event);
+            selected != nullptr) {
+            event.three_seq_available = true;
+            event.three_seq_discovery = *selected;
+        }
+    }
 }
 
 std::vector<float> load_three_seq_table_file(
@@ -973,6 +1116,8 @@ RdpFullAnalysisResult run_rdp_full_analysis(
         // method screening tables, but do not seed the RDP cyclic
         // tract-erasure scheduler. Preserve each selected method's source
         // emission order as a directly reviewable event.
+        const auto optional_alignment =
+            next_rdp_legacy_optional_bridge::make_alignment(initial.alignment);
         for (const auto& row : initial.events.xover_list) {
             for (const auto& raw : row) {
                 if (raw.program_flag == 0) continue;
@@ -1009,6 +1154,8 @@ RdpFullAnalysisResult run_rdp_full_analysis(
                         event.ending = event.burt.polished_ending;
                     }
                 }
+                attach_optional_discovery(
+                    event, optional_alignment, options, output.triplet_count);
                 output.events.push_back(std::move(event));
             }
         }
@@ -1019,6 +1166,8 @@ RdpFullAnalysisResult run_rdp_full_analysis(
 
     const int permanent_next_no = initial.alignment.next_no;
     const auto permanent_analysis_scan = initial.alignment;
+    const auto optional_alignment =
+        next_rdp_legacy_optional_bridge::make_alignment(initial.alignment);
     // RDP derives MinSeqSize from the alignment length (VB CLng rounds the
     // one-percent threshold).  The old port used a fixed 20 here, which
     // allowed short, poorly comparable sequence pairs into the NJ pass.
@@ -1331,6 +1480,8 @@ RdpFullAnalysisResult run_rdp_full_analysis(
                 }
             }
         }
+        attach_optional_discovery(
+            final_event, optional_alignment, options, output.triplet_count);
         output.events.push_back(std::move(final_event));
         report_progress(
             options, round_number == 1 ? 0 : 1, round_number,

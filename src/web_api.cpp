@@ -1372,6 +1372,126 @@ std::string event_phylpro_json(const WebContext& context, std::uint32_t event_id
     return output.str();
 }
 
+void write_maxchi_discovery_json(
+    std::ostringstream& output,
+    const next_rdp_legacy_optional::MaxChiDiscoveryCandidate& discovery) {
+    output << std::setprecision(17)
+           << "{\"status\":\"source-shaped-active-unvalidated\""
+           << ",\"kernel\":\"MCXoverF-multi-peak-destroy-retry\""
+           << ",\"peakOrdering\":\"raw-chi-square-lazy-heap\""
+           << ",\"smoothingUse\":\"twelve-term-eleven-divisor-source-basin-destruction-only\""
+           << ",\"peakAttempt\":" << discovery.peak_attempt
+           << ",\"peakPair\":";
+    if (discovery.peak_pair < 0) output << "null";
+    else output << static_cast<unsigned int>(discovery.peak_pair);
+    output << ",\"tractSide\":\"";
+    if (discovery.tract_side == next_rdp_legacy_optional::MaxChiTractSide::left) output << "left";
+    else if (discovery.tract_side == next_rdp_legacy_optional::MaxChiTractSide::right) output << "right";
+    else output << "unavailable";
+    output << "\",\"peakAlignmentPosition\":" << discovery.peak_alignment_position
+           << ",\"variableSites\":" << discovery.variable_sites
+           << ",\"initialHalfWindow\":" << discovery.initial_half_window
+           << ",\"grownHalfWindow\":" << discovery.grown_half_window
+           << ",\"criticalDifference\":" << discovery.critical_difference
+           << ",\"maximumChiSquare\":" << discovery.maximum_chi_square
+           << ",\"rawPValue\":" << discovery.raw_p_value
+           << ",\"withinTripletPValue\":" << discovery.within_triplet_p_value
+           << ",\"correctedPValue\":" << discovery.corrected_p_value
+           << ",\"leftFlankChiSquare\":" << discovery.left_flank_chi_square
+           << ",\"rightFlankChiSquare\":" << discovery.right_flank_chi_square
+           << ",\"missingDataWindowFilterApplied\":"
+           << (discovery.missing_data_window_filter_applied ? "true" : "false")
+           << ",\"linearEdgeWindowFilterApplied\":"
+           << (discovery.linear_edge_window_filter_applied ? "true" : "false") << '}';
+}
+
+void write_chimaera_discovery_json(
+    std::ostringstream& output,
+    const next_rdp_legacy_optional::ChimaeraDiscoveryCandidate& discovery) {
+    output << std::setprecision(17)
+           << "{\"status\":\"source-shaped-active-unvalidated\""
+           << ",\"kernel\":\"AlistChi-FastRecCheckChim-CXoverA\""
+           << ",\"profile\":\"target-specific-information-rich-binary-string\""
+           << ",\"peakOrdering\":\"raw-chi-square-lazy-heap-per-target\""
+           << ",\"smoothingUse\":\"twelve-term-eleven-divisor-source-basin-destruction-only\""
+           << ",\"targetLocal\":" << static_cast<unsigned int>(discovery.target_local)
+           << ",\"peakAttempt\":" << discovery.peak_attempt
+           << ",\"tractSide\":\"";
+    if (discovery.tract_side == next_rdp_legacy_optional::MaxChiTractSide::left) output << "left";
+    else if (discovery.tract_side == next_rdp_legacy_optional::MaxChiTractSide::right) output << "right";
+    else output << "unavailable";
+    output << "\",\"peakAlignmentPosition\":" << discovery.peak_alignment_position
+           << ",\"informationRichSites\":" << discovery.information_rich_sites
+           << ",\"initialHalfWindow\":" << discovery.initial_half_window
+           << ",\"grownHalfWindow\":" << discovery.grown_half_window
+           << ",\"criticalDifference\":" << discovery.critical_difference
+           << ",\"maximumChiSquare\":" << discovery.maximum_chi_square
+           << ",\"rawPValue\":" << discovery.raw_p_value
+           << ",\"withinTripletPValue\":" << discovery.within_triplet_p_value
+           << ",\"correctedPValue\":" << discovery.corrected_p_value
+           << ",\"leftFlankChiSquare\":" << discovery.left_flank_chi_square
+           << ",\"rightFlankChiSquare\":" << discovery.right_flank_chi_square
+           << ",\"insideParentOneMatchRate\":" << discovery.inside_parent_one_match_rate
+           << ",\"outsideParentOneMatchRate\":" << discovery.outside_parent_one_match_rate
+           << ",\"missingDataWindowFilterApplied\":"
+           << (discovery.missing_data_window_filter_applied ? "true" : "false")
+           << ",\"linearEdgeWindowFilterApplied\":"
+           << (discovery.linear_edge_window_filter_applied ? "true" : "false") << '}';
+}
+
+void write_geneconv_discovery_json(
+    std::ostringstream& output,
+    const next_rdp_legacy_optional::GeneconvDiscoveryCandidate& discovery) {
+    output << std::setprecision(17)
+           << "{\"status\":\"source-shaped-active-unvalidated\""
+           << ",\"kernel\":\"FindSubSeqGCAP6-GetFragsP-GetMaxFragScoreP-CalcKMaxP-GCCalcPValP2-GCXoverD\""
+           << ",\"probabilityModel\":\"karlin-altschul\""
+           << ",\"indelMode\":\"ignored\""
+           << ",\"overlapPolicy\":\"stable-lowest-p-configured-coverage\""
+           << ",\"minimumFragmentFiltersApplied\":false"
+           << ",\"track\":" << static_cast<unsigned int>(discovery.track)
+           << ",\"polymorphicSites\":" << discovery.polymorphic_sites
+           << ",\"positiveSites\":" << discovery.positive_sites
+           << ",\"discordantSites\":" << discovery.discordant_sites
+           << ",\"mismatchPenalty\":" << discovery.mismatch_penalty
+           << ",\"fragmentScore\":" << discovery.fragment_score
+           << ",\"criticalScore\":" << discovery.critical_score
+           << ",\"lambda\":" << discovery.lambda
+           << ",\"karlinAltschulK\":" << discovery.karlin_altschul_k
+           << ",\"rawPValue\":" << discovery.raw_p_value
+           << ",\"correctedPValue\":" << discovery.corrected_p_value
+           << ",\"karlinAltschulProbability\":"
+           << (discovery.karlin_altschul_probability ? "true" : "false")
+           << ",\"ignoredIndels\":" << (discovery.ignored_indels ? "true" : "false")
+           << ",\"overlapFilterApplied\":"
+           << (discovery.overlap_filter_applied ? "true" : "false") << '}';
+}
+
+void write_threeseq_discovery_json(
+    std::ostringstream& output,
+    const next_rdp_legacy_optional::ThreeSeqDiscoveryCandidate& discovery) {
+    output << std::setprecision(17)
+           << "{\"status\":\"source-shaped-active-unvalidated\""
+           << ",\"kernel\":\"FindSubSeqTS-Seq3PVals-CheckwrapC-TSXOver\""
+           << ",\"profile\":\"target-specific-information-rich-random-walk\""
+           << ",\"probabilityModel\":\"exact-hypergeometric-walk-with-siegmund-fallback\""
+           << ",\"correctionModel\":\"dunn-sidak-when-project-correction-enabled\""
+           << ",\"targetLocal\":" << static_cast<unsigned int>(discovery.target_local)
+           << ",\"walkDirection\":\""
+           << (discovery.direction == next_rdp_legacy_optional::ThreeSeqWalkDirection::ascent ? "ascent" : "descent")
+           << "\",\"informationRichSites\":" << discovery.information_rich_sites
+           << ",\"parentOneMatches\":" << discovery.parent_one_matches
+           << ",\"parentTwoMatches\":" << discovery.parent_two_matches
+           << ",\"probabilityExcursion\":" << discovery.probability_excursion
+           << ",\"maximumExcursion\":" << discovery.maximum_excursion
+           << ",\"rawPValue\":" << discovery.raw_p_value
+           << ",\"correctedPValue\":" << discovery.corrected_p_value
+           << ",\"exactProbability\":" << (discovery.exact_probability ? "true" : "false")
+           << ",\"siegmundFallback\":" << (discovery.siegmund_fallback ? "true" : "false")
+           << ",\"missingDataSplitApplied\":"
+           << (discovery.missing_data_split_applied ? "true" : "false") << '}';
+}
+
 std::string full_json(const WebContext& context) {
     const auto& result = context.full;
     std::ostringstream output;
@@ -1479,7 +1599,31 @@ std::string full_json(const WebContext& context) {
             output << event.burt.confidence[confidence];
         }
         output << "]"
-               << ",\"bootscanDiscovery\":";
+               << ",\"maxChiDiscovery\":";
+        if (!event.maxchi_available) {
+            output << "null";
+        } else {
+            write_maxchi_discovery_json(output, event.maxchi_discovery);
+        }
+        output << ",\"chimaeraDiscovery\":";
+        if (!event.chimaera_available) {
+            output << "null";
+        } else {
+            write_chimaera_discovery_json(output, event.chimaera_discovery);
+        }
+        output << ",\"geneconvDiscovery\":";
+        if (!event.geneconv_available) {
+            output << "null";
+        } else {
+            write_geneconv_discovery_json(output, event.geneconv_discovery);
+        }
+        output << ",\"threeSeqDiscovery\":";
+        if (!event.three_seq_available) {
+            output << "null";
+        } else {
+            write_threeseq_discovery_json(output, event.three_seq_discovery);
+        }
+        output << ",\"bootscanDiscovery\":";
         if (!event.bootscan_available) {
             output << "null";
         } else {
