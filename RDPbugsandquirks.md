@@ -63,12 +63,14 @@ we may want to expose to users.
   source workshare is retained.  The resulting `Redo` bytes and downstream
   event order are unchanged.
 
-- RDP's optional methods can be selected without the RDP method.  The source
-  still builds the shared StoreLPV screening table, but it does not run the
-  RDP XOver walk or the cyclic tract-erasure scheduler in that mode.  The
-  compatibility path therefore emits the selected GENECONV/MaxChi/CHIMAERA/
-  3SEQ records directly in their source method order; enabling RDP must not
-  be inferred merely because an optional method was selected.
+- RDP's optional methods can be selected without the RDP method.  `DoRDP` is
+  still called and its common cyclic selection/tract bookkeeping is entered;
+  only the RDP-specific `XOver` walk is guarded by `DoScans(0, 0)`.  During
+  selection, records for disabled program bits are assigned probability 1 and
+  skipped before the next candidate is considered.  A port must therefore
+  keep the scheduler active for optional-only runs without exposing disabled
+  RDP records as results (the old direct-emission shortcut was not source
+  faithful).
 
 - The RDP `DrawPlots`/`XOver` profile is an informative-site homology plot,
   not a percent-identity scan over every nucleotide.  `FindSubSeqP` or PB3

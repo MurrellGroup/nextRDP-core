@@ -5,7 +5,7 @@
 - Port routines in the order the RDP-only command-line execution reaches them.
 - A routine is not considered ported until its observable outputs match a captured oracle fixture.
 - Do not add dataset-specific conditions, lookup tables, role swaps, or breakpoint corrections.
-- Preserve native RDP bugs and quirks. Record confirmed quirks in `../nextRDP-wasm/RDPbugsandquirks.md`.
+- Preserve native RDP bugs and quirks. Record confirmed quirks in `RDPbugsandquirks.md`.
 - For every confirmed source/runtime behavior needed for parity, record the mechanism and the
   validating dataset/oracle evidence in that ledger; do not hide a compatibility quirk in a
   dataset-specific workaround.

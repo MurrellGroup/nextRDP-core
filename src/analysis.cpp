@@ -745,9 +745,11 @@ RdpInitialAnalysisResult run_rdp_initial_analysis(
             RdpFactorialTables::three_way_upper_bound,
             factorials.three_way.data(), factorials.factorial.data());
     };
-    // AlistRDP4 supplies the shared StoreLPV screening table used by the
-    // optional source methods even when RDP itself is not selected.  The
-    // actual RDP XOver walk is skipped for an optional-method-only scan.
+    // DoRDP is entered for every scan in the source.  AlistRDP4 supplies the
+    // shared StoreLPV screening table in all modes, while the RDP-specific
+    // XOver walk below is guarded by DoScans(0, 0).  Optional-only scans then
+    // continue through the same cyclic scheduler after their method lanes
+    // have populated XOverList.
     run_initial_rdp_ranges(triplet_count, run_alist_rdp4);
     report_progress(options, 0, 1, 0, triplet_count, 0);
 
@@ -970,55 +972,6 @@ RdpFullAnalysisResult run_rdp_full_analysis(
     output.triplet_count = initial.alignment.analysis_list_last + 1;
     for (const auto& row : initial.events.xover_list) {
         output.raw_candidate_count += static_cast<int>(row.size());
-    }
-
-    if (!options.enable_rdp) {
-        // Optional-method-only scans use the shared initial alignment and
-        // method screening tables, but do not seed the RDP cyclic
-        // tract-erasure scheduler. Preserve each selected method's source
-        // emission order as a directly reviewable event.
-        for (const auto& row : initial.events.xover_list) {
-            for (const auto& raw : row) {
-                if (raw.program_flag == 0) continue;
-                RdpFinalEvent event;
-                event.event_number = static_cast<int>(output.events.size()) + 1;
-                event.program = static_cast<int>(raw.program_flag);
-                event.winning_role = 0;
-                event.probability = raw.probability;
-                event.beginning = raw.beginning;
-                event.ending = raw.ending;
-                event.representative_sequences = {
-                    raw.daughter, raw.major_parent, raw.minor_parent};
-                if (raw.profile_available != 0) {
-                    for (int role = 0; role < 3; ++role) {
-                        event.profile_sequences[role] = raw.profile_sequences[role];
-                    }
-                    event.profile_sequences_available = true;
-                } else {
-                    event.profile_sequences = event.representative_sequences;
-                }
-                event.method_target_role = 0;
-                for (int role = 0; role < 3; ++role) {
-                    event.sequence_groups[role].push_back(
-                        event.representative_sequences[role]);
-                }
-                if (options.polish_breakpoints_with_burt) {
-                    event.burt = run_rdp_burt(
-                        initial.alignment, event.representative_sequences,
-                        event.beginning, event.ending, options.circular, 20, 0);
-                    event.burt_attempted = event.burt.attempted;
-                    event.burt_applied = event.burt.trained;
-                    if (event.burt.trained) {
-                        event.beginning = event.burt.polished_beginning;
-                        event.ending = event.burt.polished_ending;
-                    }
-                }
-                output.events.push_back(std::move(event));
-            }
-        }
-        append_legacy_optional_events(output, initial.alignment, options);
-        apply_legacy_optional_rechecks(output, initial.alignment, options);
-        return output;
     }
 
     const int permanent_next_no = initial.alignment.next_no;
