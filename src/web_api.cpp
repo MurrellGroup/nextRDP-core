@@ -829,6 +829,20 @@ std::string event_alignment_json(const WebContext& context, std::uint32_t event_
             std::clamp(event.winning_role, 0, 2))];
         return std::find(group.begin(), group.end(), sequence) != group.end();
     };
+    const auto input_role = [&](const int sequence) {
+        if (!context.options.query_reference_mode || sequence < 0 ||
+            sequence >= static_cast<int>(context.reference_groups.size())) {
+            return "not-applied";
+        }
+        return context.reference_groups[static_cast<std::size_t>(sequence)] > 0
+            ? "reference" : "query";
+    };
+    const auto input_group = [&](const int sequence) {
+        if (!context.options.query_reference_mode || sequence < 0 ||
+            sequence >= static_cast<int>(context.reference_groups.size()) ||
+            context.reference_groups[static_cast<std::size_t>(sequence)] == 0) return 0U;
+        return context.reference_groups[static_cast<std::size_t>(sequence)];
+    };
     const auto role = [&](const int sequence) {
         if (sequence == role_sequences[0]) return "recombinant";
         if (sequence == role_sequences[1]) return "major-parent";
@@ -882,7 +896,8 @@ std::string event_alignment_json(const WebContext& context, std::uint32_t event_
         output << "{\"sequenceIndex\":" << sequence << ",\"sequenceName\":";
         json_string(output, context.alignment.names[static_cast<std::size_t>(sequence)]);
         output << ",\"role\":\"" << role(sequence)
-               << "\",\"queryReferenceInputRole\":\"not-applied\",\"referenceGroup\":null"
+               << "\",\"queryReferenceInputRole\":\"" << input_role(sequence)
+               << "\",\"referenceGroup\":" << (input_group(sequence) == 0U ? "null" : std::to_string(input_group(sequence)))
                << ",\"masked\":" << (context.masked[static_cast<std::size_t>(sequence)] ? "true" : "false")
                << ",\"disabled\":" << (context.disabled[static_cast<std::size_t>(sequence)] ? "true" : "false")
                << ",\"currentGroupMember\":" << (is_group_member(sequence) ? "true" : "false")
@@ -947,6 +962,20 @@ std::string event_trees_json(const WebContext& context, std::uint32_t event_id) 
         const auto& group = event.sequence_groups[static_cast<std::size_t>(
             std::clamp(event.winning_role, 0, 2))];
         return std::find(group.begin(), group.end(), sequence) != group.end();
+    };
+    const auto input_role = [&](const int sequence) {
+        if (!context.options.query_reference_mode || sequence < 0 ||
+            sequence >= static_cast<int>(context.reference_groups.size())) {
+            return "not-applied";
+        }
+        return context.reference_groups[static_cast<std::size_t>(sequence)] > 0
+            ? "reference" : "query";
+    };
+    const auto input_group = [&](const int sequence) {
+        if (!context.options.query_reference_mode || sequence < 0 ||
+            sequence >= static_cast<int>(context.reference_groups.size()) ||
+            context.reference_groups[static_cast<std::size_t>(sequence)] == 0) return 0U;
+        return context.reference_groups[static_cast<std::size_t>(sequence)];
     };
     const auto distance = [&](const int first, const int second, const std::vector<int>& coordinates) {
         int compared = 0;
@@ -1052,7 +1081,8 @@ std::string event_trees_json(const WebContext& context, std::uint32_t event_id) 
                << ",\"sequenceIndex\":" << sequence << ",\"sequenceName\":";
         json_string(output, context.alignment.names[static_cast<std::size_t>(sequence)]);
         output << ",\"fragmentEventId\":null,\"role\":\"" << role(sequence)
-               << "\",\"queryReferenceInputRole\":\"not-applied\",\"referenceGroup\":null"
+               << "\",\"queryReferenceInputRole\":\"" << input_role(sequence)
+               << "\",\"referenceGroup\":" << (input_group(sequence) == 0U ? "null" : std::to_string(input_group(sequence)))
                << ",\"masked\":" << (context.masked[static_cast<std::size_t>(sequence)] ? "true" : "false")
                << ",\"disabled\":" << (context.disabled[static_cast<std::size_t>(sequence)] ? "true" : "false")
                << ",\"currentGroupMember\":" << (is_group_member(sequence) ? "true" : "false")
@@ -1352,6 +1382,31 @@ std::string full_json(const WebContext& context) {
            << ",\"tripletCount\":" << result.triplet_count
            << ",\"rawCandidateCount\":" << result.raw_candidate_count
            << ",\"rdpEnabled\":" << (context.options.enable_rdp ? "true" : "false")
+           << ",\"analysisMode\":\""
+           << (context.options.query_reference_mode ? "query-reference" : "exploratory")
+           << "\",\"queryReference\":{\"active\":"
+           << (context.options.query_reference_mode ? "true" : "false")
+           << ",\"querySequenceCount\":";
+    std::size_t query_count = 0;
+    std::size_t reference_count = 0;
+    std::size_t reference_group_count = 0;
+    if (context.options.query_reference_mode) {
+        std::vector<unsigned int> groups = context.reference_groups;
+        std::sort(groups.begin(), groups.end());
+        groups.erase(std::remove(groups.begin(), groups.end(), 0U), groups.end());
+        groups.erase(std::unique(groups.begin(), groups.end()), groups.end());
+        reference_group_count = groups.size();
+        for (std::size_t index = 0; index < context.alignment.names.size(); ++index) {
+            if (index < context.masked.size() && context.masked[index]) continue;
+            if (index < context.disabled.size() && context.disabled[index]) continue;
+            if (index < context.reference_groups.size() && context.reference_groups[index] == 0) ++query_count;
+            else if (index < context.reference_groups.size() && context.reference_groups[index] > 0) ++reference_count;
+        }
+    }
+    output << query_count << ",\"referenceSequenceCount\":" << reference_count
+           << ",\"referenceGroupCount\":" << reference_group_count
+           << ",\"tripletConstraint\":\"one-query-two-different-reference-groups\""
+           << ",\"sourceCorrectionRule\":\"reference-group-pairs-times-query-origins\"}"
            << ",\"geneconvEnabled\":" << (context.options.enable_geneconv ? "true" : "false")
            << ",\"maxChiEnabled\":" << (context.options.enable_maxchi ? "true" : "false")
            << ",\"chimaeraEnabled\":" << (context.options.enable_chimaera ? "true" : "false")
@@ -1676,8 +1731,8 @@ NEXT_RDP_KEEPALIVE int rdp_scan_begin(
     const int siscan_secondary_enabled, const std::uint32_t siscan_window_sites,
     const std::uint32_t siscan_step_sites, const std::uint32_t siscan_scan_permutations,
     const std::uint32_t siscan_p_value_permutations, const std::uint32_t siscan_random_seed,
-    const int polish_breakpoints, const int /*query_reference_mode*/,
-    const std::uint32_t* /*reference_groups*/, const std::size_t /*reference_group_count*/,
+    const int polish_breakpoints, const int query_reference_mode,
+    const std::uint32_t* reference_groups, const std::size_t reference_group_count,
     const std::uint8_t* masked_sequences, const std::size_t mask_length,
     const std::uint8_t* disabled_sequences, const std::size_t disabled_length) {
     auto* context = web_context(handle);
@@ -1717,6 +1772,14 @@ NEXT_RDP_KEEPALIVE int rdp_scan_begin(
     options.siscan_p_value_permutations = static_cast<int>(siscan_p_value_permutations);
     options.siscan_random_seed = siscan_random_seed;
     options.polish_breakpoints_with_burt = polish_breakpoints != 0;
+    options.query_reference_mode = query_reference_mode != 0;
+    if (options.query_reference_mode) {
+        if (reference_groups == nullptr || reference_group_count != count) {
+            context->error = "The query-vs-reference group buffer does not match the loaded alignment.";
+            return 0;
+        }
+        options.reference_groups.assign(reference_groups, reference_groups + reference_group_count);
+    }
     if (!options.enable_rdp && !options.enable_geneconv &&
         !options.enable_maxchi && !options.enable_chimaera &&
         !options.enable_three_seq && !options.enable_bootscan &&
@@ -1726,11 +1789,12 @@ NEXT_RDP_KEEPALIVE int rdp_scan_begin(
     }
     options.progress_callback = &web_progress_callback;
     options.progress_user = context;
-    context->options = std::move(options);
     context->masked.assign(masked_sequences, masked_sequences + mask_length);
     context->disabled.assign(disabled_sequences, disabled_sequences + disabled_length);
     options.masked_sequences = context->masked;
     options.disabled_sequences = context->disabled;
+    context->reference_groups = options.reference_groups;
+    context->options = std::move(options);
     context->started = true;
     context->finished = false;
     context->progress_phase = 0;
@@ -1738,6 +1802,29 @@ NEXT_RDP_KEEPALIVE int rdp_scan_begin(
     context->progress_processed_triplets = 0;
     context->progress_total_triplets = count < 3
         ? 0 : static_cast<int>(count * (count - 1) * (count - 2) / 6);
+    if (context->options.query_reference_mode) {
+        std::size_t references = 0;
+        std::size_t queries = 0;
+        for (std::size_t index = 0; index < count; ++index) {
+            if (context->masked[index] || context->disabled[index]) continue;
+            if (context->reference_groups[index] == 0) ++queries;
+            else ++references;
+        }
+        std::size_t pairs = 0;
+        for (std::size_t first = 0; first < count; ++first) {
+            if (context->masked[first] || context->disabled[first] ||
+                context->reference_groups[first] == 0) continue;
+            for (std::size_t second = first + 1; second < count; ++second) {
+                if (context->masked[second] || context->disabled[second] ||
+                    context->reference_groups[second] == 0 ||
+                    context->reference_groups[first] == context->reference_groups[second]) continue;
+                ++pairs;
+            }
+        }
+        (void)references;
+        context->progress_total_triplets = static_cast<int>(
+            std::min<std::size_t>(std::numeric_limits<int>::max(), pairs * queries));
+    }
     context->progress_event_count = 0;
     context->error.clear();
     return 1;

@@ -51,6 +51,14 @@ struct RdpInitialAnalysisOptions {
     unsigned int siscan_random_seed = 3;
     std::vector<unsigned char> masked_sequences;
     std::vector<unsigned char> disabled_sequences;
+    // When enabled, replace the exploratory MakeAListP2 list with the
+    // source MakeAnalysisListQvR ordering: one query (group 0) and two
+    // references from different positive reference groups.  Keeping this in
+    // the core options makes the browser and native entry points share the
+    // same list construction rather than merely labelling an exploratory
+    // scan as query-vs-reference.
+    bool query_reference_mode = false;
+    std::vector<unsigned int> reference_groups;
     bool polish_breakpoints_with_burt = false;
 
     // Optional source call-order captures.  GENECONV now has a direct

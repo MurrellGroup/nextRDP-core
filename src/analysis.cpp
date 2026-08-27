@@ -620,6 +620,77 @@ void apply_legacy_optional_rechecks(
     }
 }
 
+// Module3.MakeAnalysisListQvR builds a deliberately constrained list rather
+// than filtering MakeAListP2 after the fact.  References are the enabled
+// sequences assigned to a positive group; group zero sequences are queries.
+// The source walks references in input order, considers each unordered pair,
+// rejects pairs from the same group, and then appends every query in input
+// order.  Preserve that order because it is also the order used by the
+// source correction/list screens.
+void apply_query_reference_analysis_list(
+    RdpScanState& scan_state, const RdpInitialAnalysisOptions& options) {
+    if (!options.query_reference_mode) return;
+    const int sequence_count = scan_state.next_no + 1;
+    if (sequence_count < 3) {
+        throw std::runtime_error(
+            "Query-vs-reference analysis requires at least three sequences");
+    }
+    if (options.reference_groups.size() <
+        static_cast<std::size_t>(sequence_count)) {
+        throw std::runtime_error(
+            "Query-vs-reference groups do not match the alignment");
+    }
+    const auto is_excluded = [&](const int sequence) {
+        const bool masked = sequence < static_cast<int>(options.masked_sequences.size()) &&
+            options.masked_sequences[static_cast<std::size_t>(sequence)] != 0;
+        const bool disabled = sequence < static_cast<int>(options.disabled_sequences.size()) &&
+            options.disabled_sequences[static_cast<std::size_t>(sequence)] != 0;
+        return masked || disabled;
+    };
+    std::vector<int> references;
+    std::vector<int> queries;
+    references.reserve(static_cast<std::size_t>(sequence_count));
+    queries.reserve(static_cast<std::size_t>(sequence_count));
+    for (int sequence = 0; sequence < sequence_count; ++sequence) {
+        if (is_excluded(sequence)) continue;
+        const auto group = options.reference_groups[static_cast<std::size_t>(sequence)];
+        if (group == 0) queries.push_back(sequence);
+        else references.push_back(sequence);
+    }
+    std::vector<short> list;
+    const std::size_t reserve_count = references.size() > 1
+        ? (references.size() * (references.size() - 1) / 2) * queries.size()
+        : 0;
+    if (reserve_count >
+        static_cast<std::size_t>(std::numeric_limits<int>::max()) / 3U) {
+        throw std::runtime_error("Query-vs-reference analysis list is too large");
+    }
+    list.reserve(reserve_count * 3U);
+    for (std::size_t first = 0; first < references.size(); ++first) {
+        const int reference_a = references[first];
+        const auto group_a = options.reference_groups[
+            static_cast<std::size_t>(reference_a)];
+        for (std::size_t second = first + 1; second < references.size(); ++second) {
+            const int reference_b = references[second];
+            const auto group_b = options.reference_groups[
+                static_cast<std::size_t>(reference_b)];
+            if (group_a == group_b) continue;
+            for (const int query : queries) {
+                list.push_back(static_cast<short>(reference_a));
+                list.push_back(static_cast<short>(reference_b));
+                list.push_back(static_cast<short>(query));
+            }
+        }
+    }
+    if (list.empty()) {
+        throw std::runtime_error(
+            "Query-vs-reference analysis needs at least one query and a pair of differently grouped references");
+    }
+    scan_state.analysis_list = std::move(list);
+    scan_state.analysis_list_last = static_cast<int>(
+        scan_state.analysis_list.size() / 3U) - 1;
+}
+
 RdpInitialAnalysisResult run_rdp_initial_analysis(
     RdpScanState scan_state, const RdpInitialAnalysisOptions& options) {
     if (options.p_value_cutoff <= 0.0 || options.p_value_cutoff > 1.0) {
@@ -629,6 +700,7 @@ RdpInitialAnalysisResult run_rdp_initial_analysis(
         throw std::runtime_error("RDP window must be between 2 and 32767 sites");
     }
 
+    apply_query_reference_analysis_list(scan_state, options);
     auto distance_state = build_rdp_distance_state(
         scan_state, 1, scan_state.sequence_length);
     auto tree_state = build_rdp_upgma_tree_state(
