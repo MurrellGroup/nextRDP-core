@@ -362,7 +362,12 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
         : context.options.window_sites;
     requested_window = std::max(2, requested_window);
     const int half_window = std::max(1, requested_window / 2);
-    const bool exact_rdp_profile = program == 0 &&
+    // RDP5's review API exposes the first event's retained XOverHomologyP
+    // trace verbatim. Later cyclic events are reconstructed from the original
+    // alignment by the legacy client; treating their retained working trace
+    // as exact would make the page claim historical points that the source
+    // never exposed for that event.
+    const bool exact_rdp_profile = program == 0 && signal_id == 0 &&
         event.rdp_profile.exact &&
         event.rdp_profile.positions.size() ==
             event.rdp_profile.counts[0].size() &&
@@ -685,8 +690,11 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
         }
     }
     if (exact_rdp_profile) {
-        minimum = event.rdp_profile.minimum;
-        maximum = event.rdp_profile.maximum;
+        // SignalPlot defaults the RDP pair-identity domain to [0, 1], even
+        // when the observed profile never reaches one. Preserve that source
+        // metadata as well as the visual scale.
+        minimum = 0.0;
+        maximum = 1.0;
     } else if (exact_optional_profile) {
         minimum = optional_minimum;
         maximum = optional_maximum;
