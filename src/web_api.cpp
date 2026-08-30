@@ -23,6 +23,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -62,54 +63,398 @@ std::string result_json;
 std::string error_message;
 
 struct ParsedFasta {
+    std::string format = "FASTA";
     std::vector<std::string> names;
     std::vector<std::string> sequences;
 };
 
-ParsedFasta parse_fasta(const std::string& text) {
-    ParsedFasta parsed;
-    std::string current_name;
-    std::string current_sequence;
-    const auto finish = [&]() {
-        if (current_name.empty()) return;
-        parsed.names.push_back(current_name);
-        parsed.sequences.push_back(current_sequence);
-        current_name.clear();
-        current_sequence.clear();
-    };
-    std::size_t start = 0;
-    while (start <= text.size()) {
-        const auto end = text.find('\n', start);
-        const auto line_end = end == std::string::npos ? text.size() : end;
-        std::string line = text.substr(start, line_end - start);
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (!line.empty() && line.front() == '>') {
-            finish();
-            current_name = line.substr(1);
-            const auto first_space = current_name.find_first_of(" \t");
-            if (first_space != std::string::npos) current_name.resize(first_space);
-        } else if (!current_name.empty()) {
-            for (const char character : line) {
-                if (!std::isspace(static_cast<unsigned char>(character))) {
-                    current_sequence.push_back(character);
-                }
-            }
+using AlignmentRecords = std::vector<std::pair<std::string, std::string>>;
+
+std::string trim_text(const std::string_view value) {
+    const auto first = value.find_first_not_of(" \t\n\r");
+    if (first == std::string_view::npos) return {};
+    const auto last = value.find_last_not_of(" \t\n\r");
+    return std::string(value.substr(first, last - first + 1));
+}
+
+bool starts_with_case_insensitive(
+    const std::string_view value, const std::string_view prefix) {
+    if (value.size() < prefix.size()) return false;
+    for (std::size_t index = 0; index < prefix.size(); ++index) {
+        if (std::tolower(static_cast<unsigned char>(value[index])) !=
+            std::tolower(static_cast<unsigned char>(prefix[index]))) {
+            return false;
         }
-        if (end == std::string::npos) break;
-        start = end + 1;
+    }
+    return true;
+}
+
+std::vector<std::string> alignment_lines(const std::string_view input) {
+    std::vector<std::string> result;
+    std::string line;
+    line.reserve(256);
+    for (const char character : input) {
+        if (character == '\r') continue;
+        if (character == '\n') {
+            result.push_back(std::move(line));
+            line.clear();
+        } else {
+            line.push_back(character);
+        }
+    }
+    result.push_back(std::move(line));
+    return result;
+}
+
+std::vector<std::string> split_words(const std::string_view line) {
+    std::istringstream input{std::string(line)};
+    std::vector<std::string> result;
+    for (std::string word; input >> word;) result.push_back(std::move(word));
+    return result;
+}
+
+std::string sequence_fragment(const std::string_view value) {
+    std::string result;
+    result.reserve(value.size());
+    for (const unsigned char character : value) {
+        if (std::isalpha(character)) {
+            result.push_back(static_cast<char>(std::toupper(character)));
+        } else if (character == '-' || character == '.' || character == '?' ||
+                   character == '!' || character == '*') {
+            result.push_back(static_cast<char>(character));
+        }
+    }
+    return result;
+}
+
+void append_alignment_record(
+    AlignmentRecords& records,
+    std::unordered_map<std::string, std::size_t>& indices,
+    std::string name, std::string fragment) {
+    if (name.empty() || fragment.empty()) return;
+    const auto found = indices.find(name);
+    if (found == indices.end()) {
+        indices.emplace(name, records.size());
+        records.emplace_back(std::move(name), std::move(fragment));
+    } else {
+        records[found->second].second += fragment;
+    }
+}
+
+AlignmentRecords parse_fasta_or_gde(
+    const std::vector<std::string>& lines) {
+    AlignmentRecords records;
+    std::string name;
+    std::string sequence;
+    const auto finish = [&] {
+        if (!name.empty()) records.emplace_back(std::move(name), std::move(sequence));
+        name.clear();
+        sequence.clear();
+    };
+    for (const auto& raw : lines) {
+        const std::string line = trim_text(raw);
+        if (line.empty()) continue;
+        if (line.front() == '>' || line.front() == '%') {
+            finish();
+            name = trim_text(std::string_view(line).substr(1));
+            const auto whitespace = name.find_first_of(" \t");
+            if (whitespace != std::string::npos) name.resize(whitespace);
+        } else if (!name.empty() && line.front() != ';') {
+            sequence += sequence_fragment(line);
+        }
     }
     finish();
+    return records;
+}
+
+AlignmentRecords parse_clustal(const std::vector<std::string>& lines) {
+    AlignmentRecords records;
+    std::unordered_map<std::string, std::size_t> indices;
+    for (std::size_t index = 1; index < lines.size(); ++index) {
+        const auto& raw = lines[index];
+        const std::string line = trim_text(raw);
+        if (line.empty()) continue;
+        if (!raw.empty() && std::isspace(static_cast<unsigned char>(raw.front())) &&
+            line.find_first_not_of("*:. \t") == std::string::npos) {
+            continue;
+        }
+        const auto tokens = split_words(line);
+        if (tokens.size() < 2) continue;
+        append_alignment_record(
+            records, indices, tokens[0], sequence_fragment(tokens[1]));
+    }
+    return records;
+}
+
+AlignmentRecords parse_mega(const std::vector<std::string>& lines) {
+    AlignmentRecords records;
+    std::unordered_map<std::string, std::size_t> indices;
+    std::string current_name;
+    for (const auto& raw : lines) {
+        const std::string line = trim_text(raw);
+        if (line.empty() || line.front() == '!') continue;
+        if (line.front() == '#') {
+            if (starts_with_case_insensitive(line, "#mega") ||
+                starts_with_case_insensitive(line, "#title") ||
+                starts_with_case_insensitive(line, "#format")) {
+                continue;
+            }
+            const auto space = line.find_first_of(" \t");
+            current_name = trim_text(std::string_view(line).substr(
+                1, space == std::string::npos ? std::string::npos : space - 1));
+            if (space != std::string::npos) {
+                append_alignment_record(
+                    records, indices, current_name,
+                    sequence_fragment(std::string_view(line).substr(space + 1)));
+            }
+        } else if (!current_name.empty()) {
+            append_alignment_record(
+                records, indices, current_name, sequence_fragment(line));
+        }
+    }
+    return records;
+}
+
+std::pair<std::string, std::string> nexus_record(
+    const std::string_view raw) {
+    const std::string line = trim_text(raw);
+    if (line.empty()) return {};
+    if (line.front() == '\'' || line.front() == '"') {
+        const char quote = line.front();
+        const auto end = line.find(quote, 1);
+        if (end == std::string::npos) return {};
+        return {line.substr(1, end - 1),
+                sequence_fragment(std::string_view(line).substr(end + 1))};
+    }
+    const auto tokens = split_words(line);
+    if (tokens.size() < 2) return {};
+    return {tokens[0], sequence_fragment(tokens[1])};
+}
+
+AlignmentRecords parse_nexus(const std::vector<std::string>& lines) {
+    AlignmentRecords records;
+    std::unordered_map<std::string, std::size_t> indices;
+    bool in_matrix = false;
+    for (const auto& raw : lines) {
+        std::string line = trim_text(raw);
+        if (line.empty() || line.front() == '[') continue;
+        if (!in_matrix) {
+            std::string lowercase = line;
+            std::transform(
+                lowercase.begin(), lowercase.end(), lowercase.begin(),
+                [](const unsigned char character) {
+                    return static_cast<char>(std::tolower(character));
+                });
+            const auto matrix = lowercase.find("matrix");
+            if (matrix == std::string::npos) continue;
+            in_matrix = true;
+            line = trim_text(std::string_view(line).substr(matrix + 6));
+        }
+        const auto semicolon = line.find(';');
+        const std::string row = semicolon == std::string::npos
+            ? line : line.substr(0, semicolon);
+        auto [name, fragment] = nexus_record(row);
+        append_alignment_record(
+            records, indices, std::move(name), std::move(fragment));
+        if (semicolon != std::string::npos) break;
+    }
+    return records;
+}
+
+std::pair<std::string, std::string> phylip_named_row(
+    const std::string_view raw) {
+    const auto tokens = split_words(trim_text(raw));
+    if (tokens.size() >= 2) {
+        std::string fragment;
+        for (std::size_t index = 1; index < tokens.size(); ++index) {
+            fragment += sequence_fragment(tokens[index]);
+        }
+        return {tokens[0], std::move(fragment)};
+    }
+    if (raw.size() > 10) {
+        const std::string name = trim_text(raw.substr(0, 10));
+        const std::string fragment = sequence_fragment(raw.substr(10));
+        if (!name.empty() && !fragment.empty()) return {name, fragment};
+    }
+    return {};
+}
+
+bool phylip_complete(
+    const AlignmentRecords& records, const std::size_t count,
+    const std::size_t length) {
+    return records.size() == count &&
+        std::all_of(records.begin(), records.end(), [&](const auto& record) {
+            return record.second.size() == length;
+        });
+}
+
+AlignmentRecords parse_phylip_interleaved(
+    const std::vector<std::string>& lines, const std::size_t count,
+    const std::size_t length) {
+    AlignmentRecords records;
+    records.reserve(count);
+    std::unordered_map<std::string, std::size_t> indices;
+    std::size_t line_index = 1;
+    while (line_index < lines.size() && records.size() < count) {
+        const auto& raw = lines[line_index++];
+        if (trim_text(raw).empty()) continue;
+        auto [name, fragment] = phylip_named_row(raw);
+        if (name.empty() || fragment.empty() || fragment.size() > length ||
+            !indices.emplace(name, records.size()).second) {
+            return {};
+        }
+        records.emplace_back(std::move(name), std::move(fragment));
+    }
+    if (records.size() != count) return {};
+    std::size_t continuation = 0;
+    for (; line_index < lines.size(); ++line_index) {
+        const std::string line = trim_text(lines[line_index]);
+        if (line.empty()) {
+            continuation = 0;
+            continue;
+        }
+        const auto tokens = split_words(line);
+        if (tokens.empty()) continue;
+        const auto named = tokens.size() > 1 ? indices.find(tokens[0]) : indices.end();
+        std::size_t target = continuation % count;
+        std::string fragment;
+        if (named != indices.end()) {
+            target = named->second;
+            for (std::size_t index = 1; index < tokens.size(); ++index) {
+                fragment += sequence_fragment(tokens[index]);
+            }
+        } else {
+            fragment = sequence_fragment(line);
+        }
+        records[target].second += fragment;
+        if (records[target].second.size() > length) return {};
+        ++continuation;
+    }
+    return phylip_complete(records, count, length) ? records : AlignmentRecords{};
+}
+
+AlignmentRecords parse_phylip_sequential(
+    const std::vector<std::string>& lines, const std::size_t count,
+    const std::size_t length) {
+    AlignmentRecords records;
+    records.reserve(count);
+    std::size_t line_index = 1;
+    while (records.size() < count) {
+        while (line_index < lines.size() && trim_text(lines[line_index]).empty()) {
+            ++line_index;
+        }
+        if (line_index >= lines.size()) return {};
+        auto [name, sequence] = phylip_named_row(lines[line_index++]);
+        if (name.empty() || sequence.empty() || sequence.size() > length) return {};
+        while (sequence.size() < length) {
+            while (line_index < lines.size() && trim_text(lines[line_index]).empty()) {
+                ++line_index;
+            }
+            if (line_index >= lines.size()) return {};
+            sequence += sequence_fragment(lines[line_index++]);
+            if (sequence.size() > length) return {};
+        }
+        records.emplace_back(std::move(name), std::move(sequence));
+    }
+    return phylip_complete(records, count, length) ? records : AlignmentRecords{};
+}
+
+AlignmentRecords parse_phylip(const std::vector<std::string>& lines) {
+    if (lines.empty()) return {};
+    const auto header = split_words(lines.front());
+    if (header.size() < 2) return {};
+    std::size_t count = 0;
+    std::size_t length = 0;
+    try {
+        count = static_cast<std::size_t>(std::stoull(header[0]));
+        length = static_cast<std::size_t>(std::stoull(header[1]));
+    } catch (...) {
+        return {};
+    }
+    if (count == 0 || length == 0) return {};
+    auto records = parse_phylip_interleaved(lines, count, length);
+    return records.empty()
+        ? parse_phylip_sequential(lines, count, length) : records;
+}
+
+ParsedFasta parse_alignment(const std::string& text) {
+    if (text.empty()) throw std::runtime_error("The selected alignment file is empty.");
+    const auto lines = alignment_lines(text);
+    std::size_t first_index = 0;
+    std::string first;
+    for (; first_index < lines.size(); ++first_index) {
+        first = trim_text(lines[first_index]);
+        if (!first.empty()) break;
+    }
+    if (first.empty()) {
+        throw std::runtime_error("The selected alignment file contains no readable text.");
+    }
+    const std::vector<std::string> content(
+        lines.begin() + static_cast<std::ptrdiff_t>(first_index), lines.end());
+    AlignmentRecords records;
+    std::string format;
+    if (first.front() == '>' || first.front() == '%') {
+        format = first.front() == '>' ? "FASTA" : "GDE";
+        records = parse_fasta_or_gde(content);
+    } else if (starts_with_case_insensitive(first, "clustal") ||
+               starts_with_case_insensitive(first, "muscle")) {
+        format = "CLUSTAL";
+        records = parse_clustal(content);
+    } else if (starts_with_case_insensitive(first, "#nexus")) {
+        format = "NEXUS";
+        records = parse_nexus(content);
+    } else if (starts_with_case_insensitive(first, "#mega")) {
+        format = "MEGA";
+        records = parse_mega(content);
+    } else {
+        const auto header = split_words(first);
+        const auto decimal = [](const std::string& value) {
+            return !value.empty() && std::all_of(
+                value.begin(), value.end(), [](const unsigned char character) {
+                    return std::isdigit(character) != 0;
+                });
+        };
+        if (header.size() >= 2 && decimal(header[0]) && decimal(header[1])) {
+            format = "PHYLIP";
+            records = parse_phylip(content);
+        }
+    }
+    if (records.empty()) {
+        throw std::runtime_error(
+            "The alignment format was not recognised. Accepted text formats are FASTA, GDE, CLUSTAL/MUSCLE, PHYLIP, NEXUS, and MEGA.");
+    }
+    ParsedFasta parsed;
+    parsed.format = std::move(format);
+    parsed.names.reserve(records.size());
+    parsed.sequences.reserve(records.size());
+    for (auto& [name, sequence] : records) {
+        parsed.names.push_back(std::move(name));
+        parsed.sequences.push_back(std::move(sequence));
+    }
     if (parsed.names.size() < 3) {
-        throw std::runtime_error("The alignment must contain at least three FASTA sequences");
+        throw std::runtime_error("The alignment must contain at least three nucleotide sequences.");
     }
     const std::size_t length = parsed.sequences.front().size();
-    if (length == 0) throw std::runtime_error("The FASTA alignment contains an empty sequence");
-    for (const auto& sequence : parsed.sequences) {
-        if (sequence.size() != length) {
-            throw std::runtime_error("All FASTA sequences must have the same length");
+    if (length == 0) throw std::runtime_error("The alignment contains no nucleotide columns.");
+    for (std::size_t index = 0; index < parsed.sequences.size(); ++index) {
+        if (parsed.sequences[index].size() != length) {
+            std::ostringstream message;
+            message << "The sequences are not aligned: '" << parsed.names[index]
+                    << "' has " << parsed.sequences[index].size()
+                    << " columns; expected " << length << '.';
+            throw std::runtime_error(message.str());
         }
     }
     return parsed;
+}
+
+std::string canonical_fasta(const ParsedFasta& alignment) {
+    std::ostringstream output;
+    for (std::size_t index = 0; index < alignment.names.size(); ++index) {
+        output << '>' << alignment.names[index] << '\n'
+               << alignment.sequences[index] << '\n';
+    }
+    return output.str();
 }
 
 struct WebContext {
@@ -179,21 +524,116 @@ void json_string(std::ostringstream& output, const std::string& value) {
     output << '"';
 }
 
+int web_base_state(const char character) {
+    switch (static_cast<char>(std::toupper(
+        static_cast<unsigned char>(character)))) {
+    case 'A': return 1;
+    case 'C': return 2;
+    case 'G': return 3;
+    case 'T':
+    case 'U': return 4;
+    default: return 0;
+    }
+}
+
+std::size_t web_choose_three(const std::size_t count) {
+    return count < 3 ? 0 : count * (count - 1) * (count - 2) / 6;
+}
+
+std::vector<unsigned char> suggested_web_mask(
+    const ParsedFasta& alignment, const std::vector<float>& similarity,
+    const std::vector<std::size_t>& valid_sites,
+    const double minimum_pair_identity) {
+    const std::size_t count = alignment.sequences.size();
+    std::vector<unsigned char> mask(count, 0);
+    if (count <= 3) return mask;
+    if (minimum_pair_identity >= 1.0 - 1.0e-7) {
+        std::fill(mask.begin() + 3, mask.end(), 1);
+        return mask;
+    }
+    const auto identity = [&](const std::size_t first, const std::size_t second) {
+        return similarity[first * count + second];
+    };
+    std::vector<float> closest_identity(count, -1.0F);
+    std::vector<std::size_t> closest_sequence(count, count);
+    const auto active = [&](const std::size_t index) { return mask[index] == 0; };
+    const auto refresh = [&](const std::size_t first) {
+        closest_identity[first] = -1.0F;
+        closest_sequence[first] = count;
+        if (!active(first)) return;
+        for (std::size_t second = 0; second < count; ++second) {
+            if (first == second || !active(second)) continue;
+            const float pair_identity = identity(first, second);
+            if (pair_identity > closest_identity[first]) {
+                closest_identity[first] = pair_identity;
+                closest_sequence[first] = second;
+            }
+        }
+    };
+    for (std::size_t index = 0; index < count; ++index) refresh(index);
+
+    std::size_t active_count = count;
+    const auto length = static_cast<double>(alignment.sequences.front().size());
+    while (active_count >= 4) {
+        const double correction = static_cast<double>(
+            web_choose_three(active_count)) * (length / 30.0);
+        if (!(correction > 0.05)) break;
+        const double minimum_distance =
+            std::log(correction / 0.05) / std::log(4.0) / length;
+        float best_identity = -1.0F;
+        std::size_t first = count;
+        std::size_t second = count;
+        for (std::size_t index = 0; index < count; ++index) {
+            if (!active(index) || closest_identity[index] <= best_identity) continue;
+            best_identity = closest_identity[index];
+            first = index;
+            second = closest_sequence[index];
+        }
+        if (first == count || second == count || !active(second) ||
+            1.0 - static_cast<double>(best_identity) >= minimum_distance) {
+            break;
+        }
+        std::size_t remove = first;
+        const double first_length = static_cast<double>(valid_sites[first]);
+        const double second_length = static_cast<double>(valid_sites[second]);
+        if (second_length > first_length * 0.95 &&
+            first_length > second_length * 0.95) {
+            double first_distance = 0.0;
+            double second_distance = 0.0;
+            for (std::size_t other = 0; other < count; ++other) {
+                first_distance += 1.0 - identity(first, other);
+                second_distance += 1.0 - identity(second, other);
+            }
+            remove = first_distance > second_distance ? second : first;
+        } else {
+            remove = first_length > second_length ? second : first;
+        }
+        mask[remove] = 1;
+        --active_count;
+        closest_identity[remove] = -1.0F;
+        closest_sequence[remove] = count;
+        for (std::size_t index = 0; index < count; ++index) {
+            if (active(index) && closest_sequence[index] == remove) refresh(index);
+        }
+    }
+    return mask;
+}
+
 std::string summary_json(const WebContext& context) {
     const auto count = context.alignment.sequences.size();
     const auto length = context.alignment.sequences.front().size();
     std::size_t variable_sites = 0;
     std::size_t informative_sites = 0;
+    std::vector<std::size_t> valid_sites(count, 0);
     for (std::size_t position = 0; position < length; ++position) {
         std::array<int, 5> states{};
-        for (const auto& sequence : context.alignment.sequences) {
-            const char character = sequence[position];
-            int state = 0;
-            if (character == 'A' || character == 'a') state = 1;
-            else if (character == 'C' || character == 'c') state = 2;
-            else if (character == 'G' || character == 'g') state = 3;
-            else if (character == 'T' || character == 't' || character == 'U' || character == 'u') state = 4;
-            if (state != 0) ++states[state];
+        for (std::size_t sequence = 0; sequence < count; ++sequence) {
+            const int state = web_base_state(
+                context.alignment.sequences[sequence][position]);
+            if (state != 0) {
+                ++states[state];
+                ++valid_sites[sequence];
+            }
         }
         int observed = 0;
         int repeated_states = 0;
@@ -207,51 +647,86 @@ std::string summary_json(const WebContext& context) {
     double minimum_identity = 1.0;
     double identity_sum = 0.0;
     std::size_t identity_pairs = 0;
+    std::vector<float> pair_similarity(count * count, 1.0F);
     for (std::size_t first = 0; first < count; ++first) {
         for (std::size_t second = first + 1; second < count; ++second) {
             std::size_t compared = 0;
             std::size_t matches = 0;
             for (std::size_t position = 0; position < length; ++position) {
-                const char left = context.alignment.sequences[first][position];
-                const char right = context.alignment.sequences[second][position];
-                if (left == '-' || right == '-' || left == '?' || right == '?') continue;
+                const int left = web_base_state(
+                    context.alignment.sequences[first][position]);
+                const int right = web_base_state(
+                    context.alignment.sequences[second][position]);
+                if (left == 0 || right == 0) continue;
                 ++compared;
-                if (std::toupper(static_cast<unsigned char>(left)) ==
-                    std::toupper(static_cast<unsigned char>(right))) ++matches;
+                if (left == right) ++matches;
             }
-            if (compared == 0) continue;
-            const double identity = static_cast<double>(matches) / static_cast<double>(compared);
-            minimum_identity = std::min(minimum_identity, identity);
-            identity_sum += identity;
+            const float identity = compared == 0 ? 0.0F
+                : static_cast<float>(matches) / static_cast<float>(compared);
+            pair_similarity[first * count + second] = identity;
+            pair_similarity[second * count + first] = identity;
+            minimum_identity = std::min(
+                minimum_identity, static_cast<double>(identity));
+            identity_sum += static_cast<double>(identity);
             ++identity_pairs;
         }
     }
+    const auto suggested_mask = suggested_web_mask(
+        context.alignment, pair_similarity, valid_sites, minimum_identity);
+    const std::size_t masked_count = static_cast<std::size_t>(std::count(
+        suggested_mask.begin(), suggested_mask.end(), 1));
+    const std::size_t active_count = count - masked_count;
+    const double recommended_distance = length == 0 ? 0.0
+        : 2.0 * std::log(4.0 * static_cast<double>(
+            std::max<std::size_t>(1, active_count))) /
+            static_cast<double>(length);
     std::ostringstream output;
-    output << "{\"format\":\"FASTA\",\"sequenceCount\":" << count
+    output << "{\"format\":";
+    json_string(output, context.alignment.format);
+    output << ",\"sequenceCount\":" << count
            << ",\"alignmentLength\":" << length
-           << ",\"activeSequenceCount\":" << count
-           << ",\"tripletCount\":" << count * (count - 1) * (count - 2) / 6
+           << ",\"activeSequenceCount\":" << active_count
+           << ",\"tripletCount\":" << web_choose_three(active_count)
            << ",\"variableSiteCount\":" << variable_sites
            << ",\"informativeSiteCount\":" << informative_sites
            << ",\"minimumPairIdentity\":" << (identity_pairs == 0 ? 0.0 : minimum_identity)
            << ",\"meanPairIdentity\":" << (identity_pairs == 0 ? 0.0 : identity_sum / identity_pairs)
-           << ",\"recommendedMinimumDistance\":0,\"partitionBoundaries\":[1," << length << "]"
+           << ",\"recommendedMinimumDistance\":" << recommended_distance
+           << ",\"partitionBoundaries\":[1," << length << "]"
            << ",\"sequences\":[";
     for (std::size_t index = 0; index < count; ++index) {
         if (index != 0) output << ',';
-        std::size_t missing = 0;
-        for (const char character : context.alignment.sequences[index]) {
-            if (character == '-' || character == '?' || character == 'N' || character == 'n') ++missing;
-        }
+        const std::size_t missing = length - valid_sites[index];
         output << "{\"index\":" << index << ",\"name\":";
         json_string(output, context.alignment.names[index]);
-        output << ",\"validSites\":" << length - missing
+        output << ",\"validSites\":" << valid_sites[index]
                << ",\"missingSites\":" << missing
                << ",\"missingFraction\":" << std::setprecision(17)
                << static_cast<double>(missing) / static_cast<double>(length)
-               << ",\"masked\":false}";
+               << ",\"masked\":" << (suggested_mask[index] ? "true" : "false")
+               << '}';
     }
-    output << "],\"warnings\":[]}";
+    output << "],\"warnings\":[";
+    bool first_warning = true;
+    auto warning = [&](const std::string& message) {
+        if (!first_warning) output << ',';
+        first_warning = false;
+        json_string(output, message);
+    };
+    if (minimum_identity < 0.6) {
+        warning("At least one sequence pair is below 60% identity; the RDP5 manual warns that such alignments are especially vulnerable to false signals.");
+    }
+    for (std::size_t index = 0; index < count; ++index) {
+        if (valid_sites[index] == 0) {
+            warning("Sequence has no unambiguous nucleotide sites: " +
+                    context.alignment.names[index]);
+        }
+    }
+    if (masked_count > 0) {
+        warning(std::to_string(masked_count) +
+                " near-identical sequence(s) were auto-masked using the supplied RDP5 optimisation workflow; you can change the selection before scanning.");
+    }
+    output << "]}";
     return output.str();
 }
 
@@ -1966,8 +2441,12 @@ NEXT_RDP_KEEPALIVE int rdp_load_alignment(
     context->error.clear();
     try {
         if (bytes == nullptr || length == 0) throw std::runtime_error("The selected alignment file is empty.");
-        context->fasta.assign(reinterpret_cast<const char*>(bytes), length);
-        context->alignment = parse_fasta(context->fasta);
+        const std::string input(reinterpret_cast<const char*>(bytes), length);
+        context->alignment = parse_alignment(input);
+        // The source-faithful command-line core consumes FASTA. Preserve the
+        // detected input format for the browser/project metadata while
+        // canonicalising the same aligned records at this boundary.
+        context->fasta = canonical_fasta(context->alignment);
         context->review_states.assign(context->alignment.names.size(), 0);
         context->loaded = true;
         context->started = false;
@@ -2576,7 +3055,9 @@ NEXT_RDP_KEEPALIVE const char* rdp_export_project_json(const std::uint32_t handl
     auto* context = web_context(handle);
     if (context == nullptr) return "";
     std::ostringstream output;
-    output << "{\"schema\":\"org.rdp-web.project/v1alpha20\",\"engineVersion\":\"nextRDP-core 0.1.0\",\"dataset\":{\"format\":\"FASTA\",\"sequences\":[";
+    output << "{\"schema\":\"org.rdp-web.project/v1alpha20\",\"engineVersion\":\"nextRDP-core 0.1.0\",\"dataset\":{\"format\":";
+    json_string(output, context->alignment.format);
+    output << ",\"sequences\":[";
     for (std::size_t index = 0; index < context->alignment.names.size(); ++index) {
         if (index) output << ',';
         output << "{\"name\":";
