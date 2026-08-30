@@ -1,6 +1,7 @@
 #include "burt_state.hpp"
 
 #include "MathFuncsDll.h"
+#include "legacy_method_state.hpp"
 
 #include <algorithm>
 #include <array>
@@ -8,6 +9,7 @@
 #include <cstddef>
 #include <limits>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -117,6 +119,231 @@ struct HmmOutput {
     bool trained = false;
 };
 
+#if defined(NEXT_RDP_METHOD_MANUAL_THREADS) && !defined(NEXT_RDP_USE_REAL_OPENMP)
+
+// One BenHMM restart is independent of every other restart except for two
+// source-order choices: the MSVCRT random stream that seeds it, and the
+// PathMax equality test carried between restarts.  Capture the random inputs
+// in source order, evaluate both possible first-iteration/full-convergence
+// outcomes in parallel, then replay those two choices serially.  This retains
+// DoHMMCyclesSerial's exact winning model while making the supplied 21
+// restarts useful work for the browser pthread pool.
+struct HmmCycleSeed {
+    double imbalance = 0.0;
+    std::array<int, 3> favored_symbols{};
+};
+
+struct HmmCycleState {
+    double maximum_likelihood = kNegativeLattice;
+    std::array<double, 9> transition{};
+    std::array<double, 9> emission{};
+    std::array<double, 3> initial{};
+    std::vector<int> path;
+};
+
+struct HmmCycleOutcome {
+    std::vector<HmmCycleState> iterations;
+    HmmCycleState exhausted_iterations;
+    bool exhausted = false;
+};
+
+std::uint32_t next_msvcrt_random(std::uint32_t& state) {
+    state = state * UINT32_C(214013) + UINT32_C(2531011);
+    return (state >> 16U) & UINT32_C(0x7fff);
+}
+
+std::vector<HmmCycleSeed> make_hmm_cycle_seeds(const int cycles) {
+    std::vector<HmmCycleSeed> seeds(static_cast<std::size_t>(cycles));
+    std::uint32_t random_state = 3;
+    constexpr double random_maximum = 32767.0;
+    for (auto& seed : seeds) {
+        const double imbalance_random =
+            static_cast<double>(next_msvcrt_random(random_state)) /
+            random_maximum;
+        seed.imbalance = static_cast<int>(3.0 * imbalance_random + 1.0) /
+            10.0;
+        std::array<unsigned char, 3> used{};
+        for (int state = 0; state < 3; ++state) {
+            for (;;) {
+                const double choice_random =
+                    static_cast<double>(next_msvcrt_random(random_state)) /
+                    random_maximum;
+                const int choice = static_cast<int>(6.0 * choice_random) - 2;
+                if (choice < 0 || choice >= 3 || used[choice] != 0) continue;
+                used[choice] = 1;
+                seed.favored_symbols[static_cast<std::size_t>(state)] = choice;
+                break;
+            }
+        }
+    }
+    return seeds;
+}
+
+HmmCycleState capture_hmm_cycle_state(
+    const double maximum_likelihood,
+    const std::array<double, 9>& transition,
+    const std::array<double, 9>& emission,
+    const std::array<double, 3>& initial,
+    const std::vector<int>& path) {
+    return {maximum_likelihood, transition, emission, initial, path};
+}
+
+HmmCycleOutcome run_hmm_cycle(
+    const HmmInput& input, const HmmCycleSeed& seed) {
+    constexpr int states = 3;
+    constexpr int symbols = 3;
+    const int lattice_stride = input.slen + 1;
+    std::array<double, states * states> transition{};
+    std::array<double, symbols * states> emission{};
+    std::array<double, states> initial{};
+    std::array<double, states * states> options{};
+    std::array<double, states * states> transition_count{};
+    std::array<double, symbols * states> state_count{};
+    std::vector<double> lattice_backtrack(
+        static_cast<std::size_t>(lattice_stride * states), 0.0);
+    std::vector<double> lattice_values(
+        static_cast<std::size_t>(lattice_stride * states), 0.0);
+    std::vector<int> path(static_cast<std::size_t>(input.slen + 4), 0);
+
+    const float initial_change_probability =
+        static_cast<float>(5.0 / static_cast<double>(input.sequence_length));
+    for (int from = 0; from < states; ++from) {
+        for (int to = 0; to < states; ++to) {
+            transition[from + to * states] = from == to
+                // The supplied body evaluates `1 - iVal` at float precision
+                // before casting it to double for log().
+                ? std::log(static_cast<double>(
+                    1.0F - initial_change_probability))
+                : std::log(initial_change_probability / (states - 1.0));
+        }
+    }
+    for (int state = 0; state < states; ++state) {
+        for (int symbol = 0; symbol < symbols; ++symbol) {
+            const double probability =
+                symbol == seed.favored_symbols[static_cast<std::size_t>(state)]
+                ? 1.0 / symbols + seed.imbalance * 2.0
+                : 1.0 / symbols - seed.imbalance;
+            emission[symbol + state * symbols] = std::log(probability);
+        }
+        initial[state] = std::log(1.0 / states);
+    }
+
+    HmmCycleOutcome outcome;
+    outcome.iterations.reserve(16);
+    double preceding_likelihood = std::numeric_limits<double>::quiet_NaN();
+    for (int iteration = 1; iteration <= 100; ++iteration) {
+        for (int state = 0; state < states; ++state) {
+            lattice_values[state * lattice_stride] =
+                emission[input.recode[0] + state * symbols] + initial[state];
+        }
+        (void)MathFuncs::MyMathFuncs::ViterbiCP(
+            input.slen, symbols, states, options.data(),
+            const_cast<unsigned char*>(input.recode.data()),
+            lattice_values.data(), transition.data(), emission.data(),
+            lattice_backtrack.data());
+        const double maximum_likelihood =
+            MathFuncs::MyMathFuncs::GetLaticePathP(
+                input.slen, states, lattice_values.data(),
+                lattice_backtrack.data(), path.data());
+        outcome.iterations.push_back(capture_hmm_cycle_state(
+            maximum_likelihood, transition, emission, initial, path));
+        if (preceding_likelihood == maximum_likelihood) {
+            return outcome;
+        }
+        preceding_likelihood = maximum_likelihood;
+
+        transition_count.fill(0.0);
+        state_count.fill(0.0);
+        (void)MathFuncs::MyMathFuncs::UpdateCountsP(
+            input.slen, symbols, states, path.data(),
+            const_cast<unsigned char*>(input.recode.data()),
+            transition_count.data(), state_count.data());
+        constexpr double fudge = 0.01;
+        for (int from = 0; from < states; ++from) {
+            double total = 0.0;
+            for (int to = 0; to < states; ++to) {
+                total += transition_count[from + to * states];
+            }
+            total += fudge * states;
+            for (int to = 0; to < states; ++to) {
+                const int index = from + to * states;
+                transition_count[index] += fudge;
+                transition[index] = std::log(transition_count[index] / total);
+            }
+        }
+        for (int state = 0; state < states; ++state) {
+            double total = 0.0;
+            for (int symbol = 0; symbol < symbols; ++symbol) {
+                total += state_count[symbol + state * symbols];
+            }
+            total += fudge * symbols;
+            for (int symbol = 0; symbol < symbols; ++symbol) {
+                emission[symbol + state * symbols] = std::log(
+                    (state_count[symbol + state * symbols] + fudge) / total);
+            }
+        }
+    }
+    // DoHMMCyclesSerial still copies the post-update model when the fixed
+    // 100-iteration bound is exhausted, even though MaxL and LaticePath came
+    // from the preceding Viterbi pass.
+    outcome.exhausted_iterations = capture_hmm_cycle_state(
+        preceding_likelihood, transition, emission, initial, path);
+    outcome.exhausted = true;
+    return outcome;
+}
+
+float train_hmm_restarts_parallel(
+    const HmmInput& input, const int hmm_cycles,
+    double* transition, double* emission, double* initial, int* path) {
+    const int cycle_count = hmm_cycles + 1;
+    const auto seeds = make_hmm_cycle_seeds(cycle_count);
+    std::vector<HmmCycleOutcome> outcomes(static_cast<std::size_t>(cycle_count));
+    const int workers = std::min(
+        std::max(1, rdp_method_worker_threads()), cycle_count);
+    std::vector<std::thread> threads;
+    threads.reserve(static_cast<std::size_t>(workers));
+    for (int worker = 0; worker < workers; ++worker) {
+        const int first = cycle_count * worker / workers;
+        const int last = cycle_count * (worker + 1) / workers;
+        threads.emplace_back([&, first, last] {
+            for (int cycle = first; cycle < last; ++cycle) {
+                outcomes[static_cast<std::size_t>(cycle)] = run_hmm_cycle(
+                    input, seeds[static_cast<std::size_t>(cycle)]);
+            }
+        });
+    }
+    for (auto& thread : threads) thread.join();
+
+    double best_likelihood = -1000000.0;
+    double path_maximum = 0.0;
+    for (const auto& outcome : outcomes) {
+        const HmmCycleState* selected = nullptr;
+        for (const auto& iteration : outcome.iterations) {
+            if (path_maximum == iteration.maximum_likelihood) {
+                selected = &iteration;
+                break;
+            }
+            path_maximum = iteration.maximum_likelihood;
+        }
+        if (selected == nullptr) {
+            if (!outcome.exhausted) {
+                selected = &outcome.iterations.back();
+            } else {
+                selected = &outcome.exhausted_iterations;
+            }
+        }
+        if (selected->maximum_likelihood <= best_likelihood) continue;
+        best_likelihood = selected->maximum_likelihood;
+        std::copy(selected->transition.begin(), selected->transition.end(), transition);
+        std::copy(selected->emission.begin(), selected->emission.end(), emission);
+        std::copy(selected->initial.begin(), selected->initial.end(), initial);
+        std::copy(selected->path.begin(), selected->path.end(), path);
+    }
+    return static_cast<float>(best_likelihood);
+}
+
+#endif
+
 HmmOutput train_hmm(const HmmInput& input, int hmm_cycles) {
     HmmOutput output;
     if (input.informative <= 0 || input.slen <= 0) return output;
@@ -127,10 +354,20 @@ HmmOutput train_hmm(const HmmInput& input, int hmm_cycles) {
     std::vector<double> emission(symbols * states, 0.0);
     std::vector<double> initial(states, 0.0);
     std::vector<int> path(static_cast<std::size_t>(input.slen + 4), 0);
-    const float best = MathFuncs::MyMathFuncs::DoHMMCyclesSerial(
-        3, input.slen, hmm_cycles, input.sequence_length, states, symbols,
-        const_cast<unsigned char*>(input.recode.data()), transition.data(),
-        emission.data(), initial.data(), path.data());
+    float best = kNegativeLattice;
+#if defined(NEXT_RDP_METHOD_MANUAL_THREADS) && !defined(NEXT_RDP_USE_REAL_OPENMP)
+    if (rdp_method_worker_threads() > 1) {
+        best = train_hmm_restarts_parallel(
+            input, hmm_cycles, transition.data(), emission.data(),
+            initial.data(), path.data());
+    } else
+#endif
+    {
+        best = MathFuncs::MyMathFuncs::DoHMMCyclesSerial(
+            3, input.slen, hmm_cycles, input.sequence_length, states, symbols,
+            const_cast<unsigned char*>(input.recode.data()), transition.data(),
+            emission.data(), initial.data(), path.data());
+    }
     output.best_like = static_cast<double>(best);
     output.path = path;
     output.trained = best > -1000000.0;

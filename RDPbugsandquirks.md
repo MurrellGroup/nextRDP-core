@@ -53,9 +53,16 @@ we may want to expose to users.
   outputs are independent, so deterministic range partitioning reproduces the
   serial results while restoring the intended parallelism in pthread WASM.
   `BenHMM` is different: the active source path explicitly calls
-  `DoHMMCyclesSerial`, so BURT must remain serial even when method screens are
-  threaded.  A cleanup should expose these two policies instead of treating
-  every source `#pragma omp` as interchangeable.
+  `DoHMMCyclesSerial`. Its 21 seeded restarts are computationally independent,
+  but two pieces of state make naive fan-out change results: one MSVCRT
+  `rand()` stream seeds them in source order, and `PathMax` is not reset between
+  restarts, so a likelihood encountered at any iteration can stop the next
+  restart early. The self-transition initialization also evaluates `1 - iVal`
+  at `float` precision before converting to `double` for `log`. The pthread
+  port therefore captures the seed stream first, evaluates every restart's
+  iteration states independently, and replays the carried-`PathMax`/first-best
+  selection in source order. Exact serial/parallel equality was checked for
+  every BURT call in the full cyclic runs on all ten supplied datasets.
 
 - `AlistRDP4` has the same independent-row OpenMP structure.  In the
   Emscripten pthread build it is invoked over deterministic contiguous row

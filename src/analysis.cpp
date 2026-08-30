@@ -131,7 +131,8 @@ void report_progress(const RdpInitialAnalysisOptions& options,
 }
 
 template <typename Function>
-void run_initial_rdp_ranges(const int count, Function&& function) {
+void run_initial_rdp_ranges(
+    const int count, Function&& function, const int maximum_workers = 8) {
     if (count <= 0) return;
 #if defined(NEXT_RDP_METHOD_MANUAL_THREADS) && !defined(NEXT_RDP_USE_REAL_OPENMP)
     // Emscripten has no libomp in the supported toolchain.  AlistRDP4's
@@ -140,7 +141,7 @@ void run_initial_rdp_ranges(const int count, Function&& function) {
     // Native OpenMP builds call it once and let the literal source pragma
     // select its team, avoiding nested parallel regions.
     const int requested = std::max(1, rdp_method_worker_threads());
-    const int workers = std::min(requested, count);
+    const int workers = std::min({requested, count, maximum_workers});
     if (workers <= 1) {
         function(0, count - 1);
         return;
@@ -430,13 +431,20 @@ void append_legacy_optional_events(
          index < count && index < options.disabled_sequences.size(); ++index) {
         disabled[index] = options.disabled_sequences[index] != 0 ? 1 : 0;
     }
-    std::vector<std::uint8_t> missing;
-    next_rdp_legacy_optional::BootscanWorkspace bootscan_workspace;
-    next_rdp_legacy_optional::SiscanWorkspace siscan_workspace;
     const std::uint64_t correction_tests = std::max<std::uint64_t>(
         1, static_cast<std::uint64_t>(output.triplet_count));
     const int list_last = scan_state.analysis_list_last;
-    for (int index = 0; index <= list_last; ++index) {
+    std::vector<std::vector<RdpFinalEvent>> triplet_events(
+        static_cast<std::size_t>(list_last + 1));
+    // BootScan and SISCAN discovery records are independent per analysis-list
+    // row. Give each deterministic range its own cache/context, retain every
+    // row's method/candidate order, then merge by the original list index.
+    // This makes the browser workers useful without changing event ordering.
+    run_initial_rdp_ranges(list_last + 1, [&](const int first, const int last) {
+      std::vector<std::uint8_t> missing;
+      next_rdp_legacy_optional::BootscanWorkspace bootscan_workspace;
+      next_rdp_legacy_optional::SiscanWorkspace siscan_workspace;
+      for (int index = first; index <= last; ++index) {
         const std::array<std::uint32_t, 3> triplet{
             static_cast<std::uint32_t>(scan_state.analysis_list[index * 3]),
             static_cast<std::uint32_t>(scan_state.analysis_list[index * 3 + 1]),
@@ -475,7 +483,6 @@ void append_legacy_optional_events(
                 bootscan_workspace, candidates);
             for (const auto& candidate : candidates) {
                 RdpFinalEvent event;
-                event.event_number = static_cast<int>(output.events.size()) + 1;
                 event.program = 5;
                 event.winning_role = 0;
                 event.probability = candidate.corrected_p_value;
@@ -495,7 +502,8 @@ void append_legacy_optional_events(
                 }
                 event.bootscan_available = true;
                 event.bootscan_discovery = candidate;
-                output.events.push_back(std::move(event));
+                triplet_events[static_cast<std::size_t>(index)].push_back(
+                    std::move(event));
             }
         }
 
@@ -519,7 +527,6 @@ void append_legacy_optional_events(
                 discovery, siscan_workspace, candidates);
             for (const auto& candidate : candidates) {
                 RdpFinalEvent event;
-                event.event_number = static_cast<int>(output.events.size()) + 1;
                 event.program = 6;
                 event.winning_role = 0;
                 event.probability = candidate.corrected_p_value;
@@ -539,8 +546,16 @@ void append_legacy_optional_events(
                 }
                 event.siscan_available = true;
                 event.siscan_discovery = candidate;
-                output.events.push_back(std::move(event));
+                triplet_events[static_cast<std::size_t>(index)].push_back(
+                    std::move(event));
             }
+        }
+      }
+    }, options.enable_bootscan ? 4 : 8);
+    for (auto& row : triplet_events) {
+        for (auto& event : row) {
+            event.event_number = static_cast<int>(output.events.size()) + 1;
+            output.events.push_back(std::move(event));
         }
     }
     output.raw_candidate_count = static_cast<int>(output.events.size());
@@ -569,9 +584,13 @@ void apply_legacy_optional_rechecks(
     }
     const std::uint64_t correction_tests = std::max<std::uint64_t>(
         1, static_cast<std::uint64_t>(output.triplet_count));
-    next_rdp_legacy_optional::BootscanWorkspace bootscan_workspace;
-    next_rdp_legacy_optional::SiscanWorkspace siscan_workspace;
-    for (auto& event : output.events) {
+    run_initial_rdp_ranges(
+      static_cast<int>(output.events.size()),
+      [&](const int first, const int last) {
+      next_rdp_legacy_optional::BootscanWorkspace bootscan_workspace;
+      next_rdp_legacy_optional::SiscanWorkspace siscan_workspace;
+      for (int event_index = first; event_index <= last; ++event_index) {
+        auto& event = output.events[static_cast<std::size_t>(event_index)];
         std::array<std::uint32_t, 3> triplet{};
         bool valid = true;
         for (int role = 0; role < 3; ++role) {
@@ -621,7 +640,8 @@ void apply_legacy_optional_rechecks(
                 static_cast<std::size_t>(std::max(1, event.ending)), recheck,
                 siscan_workspace);
         }
-    }
+      }
+    }, options.enable_bootscan_secondary ? 4 : 8);
 }
 
 // Module3.MakeAnalysisListQvR builds a deliberately constrained list rather
