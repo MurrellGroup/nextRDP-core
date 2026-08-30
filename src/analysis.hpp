@@ -12,12 +12,21 @@
 #include "xover_state.hpp"
 
 #include <array>
+#include <exception>
 #include <string>
 #include <vector>
 
 using RdpProgressCallback = void (*)(
     int phase, int round, int processed_triplets, int total_triplets,
     int event_count, void* user);
+using RdpCancellationCallback = bool (*)(void* user);
+
+class RdpAnalysisCancelled final : public std::exception {
+ public:
+    const char* what() const noexcept override {
+        return "The scan was cancelled.";
+    }
+};
 
 struct RdpInitialAnalysisOptions {
     bool circular = true;
@@ -80,6 +89,8 @@ struct RdpInitialAnalysisOptions {
     // fabricates progress for work that has not completed.
     RdpProgressCallback progress_callback = nullptr;
     void* progress_user = nullptr;
+    RdpCancellationCallback cancellation_callback = nullptr;
+    void* cancellation_user = nullptr;
 };
 
 struct RdpInitialAnalysisResult {

@@ -444,21 +444,15 @@ std::uint8_t default_filtered_category(std::uint8_t category) {
   return category == 11 || category == 15 ? 0 : category;
 }
 
-std::uint8_t vertical_category(
-    std::uint8_t category,
-    std::uint8_t random_value) {
-  std::uint8_t mapped = 0;
-  if (category == 1 || category == 15) {
-    mapped = category;
-  } else if (category >= 2 && category <= 7) {
-    mapped = static_cast<std::uint8_t>(2 + (random_value - 1) % 6);
-  } else if (category >= 8 && category <= 10) {
-    mapped = static_cast<std::uint8_t>(8 + (random_value - 1) % 3);
-  } else if (category >= 11 && category <= 14) {
-    mapped = static_cast<std::uint8_t>(11 + (random_value - 1) % 4);
-  }
-  return default_filtered_category(mapped);
-}
+constexpr std::array<std::uint8_t, 13> kVerticalSixWay{{
+    0, 2, 3, 4, 5, 6, 7, 2, 3, 4, 5, 6, 7,
+}};
+constexpr std::array<std::uint8_t, 13> kVerticalThreeWay{{
+    0, 8, 9, 10, 8, 9, 10, 8, 9, 10, 8, 9, 10,
+}};
+constexpr std::array<std::uint8_t, 13> kVerticalFourWay{{
+    0, 0, 12, 13, 14, 0, 12, 13, 14, 0, 12, 13, 14,
+}};
 
 std::uint8_t triplet_category(
     const Alignment& alignment,
@@ -577,15 +571,26 @@ std::size_t permute_patterns(
 
   std::size_t cursor = 0;
   for (std::uint8_t category = 2; category <= 14; ++category) {
+    const auto& vertical_map = category <= 7
+        ? kVerticalSixWay
+        : category <= 10 ? kVerticalThreeWay : kVerticalFourWay;
+    std::array<std::size_t, 13> score_offsets{};
+    for (std::size_t random_value = 1;
+         random_value < score_offsets.size();
+         ++random_value) {
+      score_offsets[random_value] =
+          static_cast<std::size_t>(vertical_map[random_value]) * stride;
+    }
     for (std::size_t occurrence = 0;
          occurrence < workspace.pattern_counts[category];
          ++occurrence) {
       for (std::size_t permutation = 1;
            permutation <= permutations;
            ++permutation) {
-        const std::uint8_t mapped = vertical_category(
-            category, workspace.vertical_random_prefix[cursor++]);
-        ++workspace.permutation_scores[mapped * stride + permutation];
+        const std::uint8_t random_value =
+            workspace.vertical_random_prefix[cursor++];
+        ++workspace.permutation_scores[
+            score_offsets[random_value] + permutation];
       }
     }
   }

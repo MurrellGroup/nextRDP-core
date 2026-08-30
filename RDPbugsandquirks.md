@@ -70,6 +70,16 @@ we may want to expose to users.
   source workshare is retained.  The resulting `Redo` bytes and downstream
   event order are unchanged.
 
+- The source probability-table setup calls `ProbCalcP` independently for
+  every `(length, lower-bound, probability)` cell. All lower bounds for a
+  fixed length/probability recalculate the same factorial and `pow` terms.
+  The compatibility port caches those long-double terms and parallelizes the
+  independent probability columns, but deliberately repeats `ProbCalcP`'s
+  ascending per-bound addition with a double rounding after every term.
+  Replacing it with an ordinary reverse cumulative sum is faster but changes
+  floating-point grouping. The retained implementation was checked against
+  every source table cell and keeps the full cyclic result hash unchanged.
+
 - RDP's optional methods can be selected without the RDP method.  `DoRDP` is
   still called and its common cyclic selection/tract bookkeeping is entered;
   only the RDP-specific `XOver` walk is guarded by `DoScans(0, 0)`.  During
@@ -94,14 +104,22 @@ we may want to expose to users.
 - BootScan's automated `BSXoverR` screen counts only strict, unique closest-pair
   votes. A window tied for the closest distance is not a vote for either pair;
   treating ties as a shared vote inflates support and can create a false tract.
-  The review curve must use the same strict rule as discovery.
+  The review curve must use the same strict rule as discovery. Fixed-region
+  rechecks also repeat the same seeded pair/window distance profiles used by
+  discovery; those profiles may be reused by sequence-pair key, but the cache
+  must be invalidated after tract erasure. Reusing that exact profile path
+  removed the dominant secondary-check cost without changing any serialized
+  BootScan result at one, four, or eight requested workers.
 
 - SISCAN's fast `QuickCheckB` window pass deliberately uses the source's
   one-site-short window bound before the full `ShrinkRegionC` pass. It also
   consumes a single seeded flat `MakeVRand` prefix across windows and triplets.
   Recomputing a fresh random stream per window or changing the bound to an
   inclusive window silently changes both the selected sister pair and its
-  permutation P values.
+  permutation P values. The vertical remap depends only on the source category
+  family and the 1..12 random value, so a lookup table is equivalent to the
+  source modulo branches only while the flat prefix cursor remains in exactly
+  the same category/occurrence/permutation order.
 
 - The browser's initial BootScan/SISCAN implementation emits their direct
   source-kernel discoveries after the shared initial triplet screen. They do

@@ -114,6 +114,7 @@ if(EMSCRIPTEN)
     # bodies from both, so it must use that ABI as well.
     target_compile_options(next_rdp_core PRIVATE
         "-ffp-eval-method=extended"
+        "-fwasm-exceptions"
     )
     target_compile_options(rdp-core PRIVATE
         "-ffp-eval-method=extended"
@@ -133,6 +134,7 @@ if(EMSCRIPTEN)
     target_link_libraries(next-rdp-core-web PRIVATE next_rdp_core)
     target_compile_options(next-rdp-core-web PRIVATE
         "-ffp-eval-method=extended"
+        "-fwasm-exceptions"
         $<$<BOOL:${NEXT_RDP_ENABLE_MANUAL_THREADS}>:-pthread>
     )
     set_target_properties(next-rdp-core-web PROPERTIES SUFFIX ".mjs")
@@ -140,6 +142,7 @@ if(EMSCRIPTEN)
         $<$<BOOL:${NEXT_RDP_ENABLE_MANUAL_THREADS}>:-pthread>
         $<$<BOOL:${NEXT_RDP_ENABLE_MANUAL_THREADS}>:-sUSE_PTHREADS=1>
         $<$<BOOL:${NEXT_RDP_ENABLE_MANUAL_THREADS}>:-sPTHREAD_POOL_SIZE=8>
+        "-fwasm-exceptions"
         "--no-entry"
         "-sENVIRONMENT=web,worker,node"
         "-sMODULARIZE=1"
@@ -149,7 +152,7 @@ if(EMSCRIPTEN)
         "-sSTACK_SIZE=67108864"
         "-sINITIAL_MEMORY=134217728"
         "-sMAXIMUM_MEMORY=4294967296"
-        "-sEXPORTED_FUNCTIONS=['_malloc','_free','_next_rdp_analyze','_next_rdp_result_json','_next_rdp_error','_next_rdp_version','_rdp_create','_rdp_destroy','_rdp_version','_rdp_set_worker_threads','_rdp_load_alignment','_rdp_get_summary_json','_rdp_scan_begin','_rdp_scan_batch','_rdp_reconcile','_rdp_cancel','_rdp_get_progress_json','_rdp_get_results_json','_rdp_get_signal_plot_json','_rdp_get_event_alignment_json','_rdp_get_event_trees_json','_rdp_get_event_phylpro_json','_rdp_set_review_state','_rdp_set_event_review_state','_rdp_update_event','_rdp_update_event_group','_rdp_reconcile_after','_rdp_export_csv','_rdp_export_enabled_sequences_fasta','_rdp_export_masked_or_disabled_sequences_fasta','_rdp_export_recombinant_sequences_removed_fasta','_rdp_export_recombinant_columns_removed_fasta','_rdp_export_recombination_free_fasta','_rdp_export_fragmented_fasta','_rdp_export_project_json','_rdp_get_error']"
+        "-sEXPORTED_FUNCTIONS=['_malloc','_free','_next_rdp_analyze','_next_rdp_result_json','_next_rdp_error','_next_rdp_version','_rdp_create','_rdp_destroy','_rdp_version','_rdp_set_worker_threads','_rdp_load_alignment','_rdp_get_summary_json','_rdp_scan_begin','_rdp_scan_batch','_rdp_reconcile','_rdp_cancel','_rdp_get_cancel_flag_address','_rdp_get_progress_json','_rdp_get_results_json','_rdp_get_signal_plot_json','_rdp_get_event_alignment_json','_rdp_get_event_trees_json','_rdp_get_event_phylpro_json','_rdp_set_review_state','_rdp_set_event_review_state','_rdp_update_event','_rdp_update_event_group','_rdp_reconcile_after','_rdp_export_csv','_rdp_export_enabled_sequences_fasta','_rdp_export_masked_or_disabled_sequences_fasta','_rdp_export_recombinant_sequences_removed_fasta','_rdp_export_recombinant_columns_removed_fasta','_rdp_export_recombination_free_fasta','_rdp_export_fragmented_fasta','_rdp_export_project_json','_rdp_get_error']"
         "-sEXPORTED_RUNTIME_METHODS=['UTF8ToString','HEAPU8']"
     )
 endif()

@@ -40,6 +40,13 @@ int count_events(const RdpRawEventState& events) {
     return count;
 }
 
+void throw_if_cancelled(const RdpInitialAnalysisOptions& options) {
+    if (options.cancellation_callback != nullptr &&
+        options.cancellation_callback(options.cancellation_user)) {
+        throw RdpAnalysisCancelled{};
+    }
+}
+
 RdpSlidingWindowProfile make_rdp_sliding_window_profile(
     const RdpScanState& scan_state, const RdpDistanceState& distance_state,
     const RdpTreeState& tree_state, const RdpRawEvent& event,
@@ -124,6 +131,7 @@ void report_progress(const RdpInitialAnalysisOptions& options,
                      const int phase, const int round,
                      const int processed_triplets, const int total_triplets,
                      const int event_count) {
+    throw_if_cancelled(options);
     if (options.progress_callback == nullptr) return;
     options.progress_callback(
         phase, round, processed_triplets, total_triplets, event_count,
@@ -132,7 +140,8 @@ void report_progress(const RdpInitialAnalysisOptions& options,
 
 template <typename Function>
 void run_initial_rdp_ranges(
-    const int count, Function&& function, const int maximum_workers = 8) {
+    const int count, Function&& function, const int maximum_workers = 8,
+    const int work_chunk_size = 0) {
     if (count <= 0) return;
 #if defined(NEXT_RDP_METHOD_MANUAL_THREADS) && !defined(NEXT_RDP_USE_REAL_OPENMP)
     // Emscripten has no libomp in the supported toolchain.  AlistRDP4's
@@ -143,7 +152,13 @@ void run_initial_rdp_ranges(
     const int requested = std::max(1, rdp_method_worker_threads());
     const int workers = std::min({requested, count, maximum_workers});
     if (workers <= 1) {
-        function(0, count - 1);
+        if (work_chunk_size <= 0) {
+            function(0, count - 1);
+        } else {
+            for (int first = 0; first < count; first += work_chunk_size) {
+                function(first, std::min(count - 1, first + work_chunk_size - 1));
+            }
+        }
         return;
     }
     std::vector<std::thread> threads;
@@ -155,7 +170,17 @@ void run_initial_rdp_ranges(
         const int last = (count * (worker + 1)) / workers - 1;
         threads.emplace_back([&, first, last] {
             try {
-                if (first <= last) function(first, last);
+                if (first > last) return;
+                if (work_chunk_size <= 0) {
+                    function(first, last);
+                    return;
+                }
+                for (int chunk_first = first; chunk_first <= last;
+                     chunk_first += work_chunk_size) {
+                    function(
+                        chunk_first,
+                        std::min(last, chunk_first + work_chunk_size - 1));
+                }
             } catch (...) {
                 std::lock_guard<std::mutex> lock(failure_mutex);
                 if (!failure) failure = std::current_exception();
@@ -260,7 +285,8 @@ RdpFactorialTables make_factorial_tables() {
 }
 
 std::vector<double> make_probability_estimate(
-    std::vector<double>& factorial) {
+    std::vector<double>& factorial,
+    const RdpInitialAnalysisOptions& options) {
     constexpr int upper_bound = 171;
     constexpr int stride = upper_bound + 1;
     constexpr int categories = 51;
@@ -277,20 +303,50 @@ std::vector<double> make_probability_estimate(
             }
         }
     }
-    for (int length = 1; length <= 170; ++length) {
-        for (int common = 3; common <= length; ++common) {
-            for (int category = 2; category < categories; ++category) {
+    // The supplied setup calls ProbCalcP separately for every lower-tail
+    // bound, recalculating identical factorial and pow() terms O(length)
+    // times. Cache those long-double terms once per length/probability, then
+    // retain ProbCalcP's original ascending addition and double rounding for
+    // every bound. This is numerically identical but removes most fresh-page
+    // scan startup work.
+    run_initial_rdp_ranges(categories - 2, [&](const int first, const int last) {
+      std::vector<long double> terms(171, 0.0L);
+      for (int category = first + 2; category <= last + 2; ++category) {
+        const double independent_probability =
+            static_cast<double>(category) / 50.0;
+        for (int length = 1; length <= 170; ++length) {
+            throw_if_cancelled(options);
+            const double length_as_double = static_cast<double>(length);
+            const double sequence_length = static_cast<double>(length * 2);
+            const long double n_factorial =
+                static_cast<long double>(factorial[length]);
+            for (int matched = 3; matched <= length; ++matched) {
+                const long double denominator =
+                    static_cast<long double>(factorial[matched]) *
+                    static_cast<long double>(factorial[length - matched]);
+                const long double coefficient = n_factorial / denominator;
+                terms[matched] =
+                    std::pow(independent_probability, matched) *
+                    std::pow(
+                        1.0 - independent_probability, length - matched) *
+                    coefficient;
+            }
+            for (int common = 3; common <= length; ++common) {
+                double probability = 0.0;
+                for (int matched = common; matched <= length; ++matched) {
+                    probability = static_cast<double>(
+                        static_cast<long double>(probability) + terms[matched]);
+                }
+                probability = probability * sequence_length / length_as_double;
                 estimate[
                     static_cast<std::size_t>(length) +
                     static_cast<std::size_t>(common) * stride +
                     static_cast<std::size_t>(category) * stride * stride] =
-                        MathFuncs::MyMathFuncs::ProbCalcP(
-                            factorial.data(), length, common,
-                            static_cast<double>(category) / 50.0,
-                            length * 2);
+                        probability;
             }
         }
-    }
+      }
+    });
     return estimate;
 }
 
@@ -341,9 +397,11 @@ RdpFactorialTables& shared_factorial_tables() {
     return tables;
 }
 
-std::vector<double>& shared_probability_estimate() {
+std::vector<double>& shared_probability_estimate(
+    const RdpInitialAnalysisOptions& options) {
     static thread_local std::vector<double> estimate =
-        make_probability_estimate(shared_factorial_tables().factorial);
+        make_probability_estimate(
+            shared_factorial_tables().factorial, options);
     return estimate;
 }
 
@@ -440,11 +498,12 @@ void append_legacy_optional_events(
     // row. Give each deterministic range its own cache/context, retain every
     // row's method/candidate order, then merge by the original list index.
     // This makes the browser workers useful without changing event ordering.
-    run_initial_rdp_ranges(list_last + 1, [&](const int first, const int last) {
+    if (options.enable_bootscan) {
+      run_initial_rdp_ranges(list_last + 1, [&](const int first, const int last) {
       std::vector<std::uint8_t> missing;
       next_rdp_legacy_optional::BootscanWorkspace bootscan_workspace;
-      next_rdp_legacy_optional::SiscanWorkspace siscan_workspace;
       for (int index = first; index <= last; ++index) {
+        throw_if_cancelled(options);
         const std::array<std::uint32_t, 3> triplet{
             static_cast<std::uint32_t>(scan_state.analysis_list[index * 3]),
             static_cast<std::uint32_t>(scan_state.analysis_list[index * 3 + 1]),
@@ -465,8 +524,7 @@ void append_legacy_optional_events(
         missing = next_rdp_legacy_optional_bridge::triplet_missing_data(
             alignment, triplet);
 
-        if (options.enable_bootscan) {
-            next_rdp_legacy_optional::BootscanDiscoveryOptions discovery;
+        next_rdp_legacy_optional::BootscanDiscoveryOptions discovery;
             discovery.circular = options.circular;
             discovery.bonferroni = options.correction_bonferroni;
             discovery.p_value_cutoff = options.p_value_cutoff;
@@ -505,53 +563,79 @@ void append_legacy_optional_events(
                 triplet_events[static_cast<std::size_t>(index)].push_back(
                     std::move(event));
             }
-        }
-
-        if (options.enable_siscan) {
-            next_rdp_legacy_optional::SiscanOptions discovery;
-            discovery.circular = options.circular;
-            discovery.bonferroni = options.correction_bonferroni;
-            discovery.p_value_cutoff = options.p_value_cutoff;
-            discovery.correction_tests = correction_tests;
-            discovery.window_sites = std::max(5, options.siscan_window_sites);
-            discovery.step_sites = std::max(1, options.siscan_step_sites);
-            discovery.scan_permutations = std::max(
-                10, options.siscan_scan_permutations);
-            discovery.p_value_permutations = std::max<std::size_t>(
-                discovery.scan_permutations,
-                static_cast<std::size_t>(std::max(1, options.siscan_p_value_permutations)));
-            discovery.random_seed = options.siscan_random_seed;
-            std::vector<next_rdp_legacy_optional::SiscanDiscoveryCandidate> candidates;
-            (void)next_rdp_legacy_optional::siscan_discover(
-                alignment, triplet, missing, similarities, origins, disabled,
-                discovery, siscan_workspace, candidates);
-            for (const auto& candidate : candidates) {
-                RdpFinalEvent event;
-                event.program = 6;
-                event.winning_role = 0;
-                event.probability = candidate.corrected_p_value;
-                event.beginning = static_cast<int>(candidate.beginning);
-                event.ending = static_cast<int>(candidate.ending);
-                event.representative_sequences = {
-                    static_cast<int>(triplet[candidate.recombinant_local]),
-                    static_cast<int>(triplet[candidate.major_parent_local]),
-                    static_cast<int>(triplet[candidate.minor_parent_local])};
-                event.profile_sequences = {
-                    static_cast<int>(triplet[0]), static_cast<int>(triplet[1]),
-                    static_cast<int>(triplet[2])};
-                event.profile_sequences_available = true;
-                for (int role = 0; role < 3; ++role) {
-                    event.sequence_groups[role].push_back(
-                        event.representative_sequences[role]);
-                }
-                event.siscan_available = true;
-                event.siscan_discovery = candidate;
-                triplet_events[static_cast<std::size_t>(index)].push_back(
-                    std::move(event));
-            }
-        }
       }
-    }, options.enable_bootscan ? 4 : 8);
+      }, 4);
+    }
+    if (options.enable_siscan) {
+      run_initial_rdp_ranges(list_last + 1, [&](const int first, const int last) {
+        std::vector<std::uint8_t> missing;
+        next_rdp_legacy_optional::SiscanWorkspace siscan_workspace;
+        for (int index = first; index <= last; ++index) {
+          throw_if_cancelled(options);
+          const std::array<std::uint32_t, 3> triplet{
+              static_cast<std::uint32_t>(scan_state.analysis_list[index * 3]),
+              static_cast<std::uint32_t>(scan_state.analysis_list[index * 3 + 1]),
+              static_cast<std::uint32_t>(scan_state.analysis_list[index * 3 + 2])};
+          bool skip = false;
+          for (const auto sequence : triplet) {
+              if (sequence >= options.disabled_sequences.size()) continue;
+              if (options.disabled_sequences[sequence] != 0 ||
+                  (sequence < options.masked_sequences.size() &&
+                   options.masked_sequences[sequence] != 0)) {
+                  skip = true;
+                  break;
+              }
+          }
+          if (skip) continue;
+          const auto similarities =
+              next_rdp_legacy_optional_bridge::pair_similarity(alignment, triplet);
+          missing = next_rdp_legacy_optional_bridge::triplet_missing_data(
+              alignment, triplet);
+          next_rdp_legacy_optional::SiscanOptions discovery;
+          discovery.circular = options.circular;
+          discovery.bonferroni = options.correction_bonferroni;
+          discovery.p_value_cutoff = options.p_value_cutoff;
+          discovery.correction_tests = correction_tests;
+          discovery.window_sites = std::max(5, options.siscan_window_sites);
+          discovery.step_sites = std::max(1, options.siscan_step_sites);
+          discovery.scan_permutations = std::max(
+              10, options.siscan_scan_permutations);
+          discovery.p_value_permutations = std::max<std::size_t>(
+              discovery.scan_permutations,
+              static_cast<std::size_t>(
+                  std::max(1, options.siscan_p_value_permutations)));
+          discovery.random_seed = options.siscan_random_seed;
+          std::vector<next_rdp_legacy_optional::SiscanDiscoveryCandidate> candidates;
+          (void)next_rdp_legacy_optional::siscan_discover(
+              alignment, triplet, missing, similarities, origins, disabled,
+              discovery, siscan_workspace, candidates);
+          for (const auto& candidate : candidates) {
+              RdpFinalEvent event;
+              event.program = 6;
+              event.winning_role = 0;
+              event.probability = candidate.corrected_p_value;
+              event.beginning = static_cast<int>(candidate.beginning);
+              event.ending = static_cast<int>(candidate.ending);
+              event.representative_sequences = {
+                  static_cast<int>(triplet[candidate.recombinant_local]),
+                  static_cast<int>(triplet[candidate.major_parent_local]),
+                  static_cast<int>(triplet[candidate.minor_parent_local])};
+              event.profile_sequences = {
+                  static_cast<int>(triplet[0]), static_cast<int>(triplet[1]),
+                  static_cast<int>(triplet[2])};
+              event.profile_sequences_available = true;
+              for (int role = 0; role < 3; ++role) {
+                  event.sequence_groups[role].push_back(
+                      event.representative_sequences[role]);
+              }
+              event.siscan_available = true;
+              event.siscan_discovery = candidate;
+              triplet_events[static_cast<std::size_t>(index)].push_back(
+                  std::move(event));
+          }
+        }
+      }, 8);
+    }
     for (auto& row : triplet_events) {
         for (auto& event : row) {
             event.event_number = static_cast<int>(output.events.size()) + 1;
@@ -584,64 +668,100 @@ void apply_legacy_optional_rechecks(
     }
     const std::uint64_t correction_tests = std::max<std::uint64_t>(
         1, static_cast<std::uint64_t>(output.triplet_count));
-    run_initial_rdp_ranges(
-      static_cast<int>(output.events.size()),
-      [&](const int first, const int last) {
-      next_rdp_legacy_optional::BootscanWorkspace bootscan_workspace;
-      next_rdp_legacy_optional::SiscanWorkspace siscan_workspace;
-      for (int event_index = first; event_index <= last; ++event_index) {
-        auto& event = output.events[static_cast<std::size_t>(event_index)];
-        std::array<std::uint32_t, 3> triplet{};
-        bool valid = true;
-        for (int role = 0; role < 3; ++role) {
-            const int sequence = event.representative_sequences[role];
-            if (sequence < 0 || sequence >= static_cast<int>(alignment.sequence_count())) {
-                valid = false;
-                break;
+    if (options.enable_bootscan_secondary) {
+        run_initial_rdp_ranges(
+            static_cast<int>(output.events.size()),
+            [&](const int first, const int last) {
+            next_rdp_legacy_optional::BootscanWorkspace bootscan_workspace;
+            for (int event_index = first; event_index <= last; ++event_index) {
+                throw_if_cancelled(options);
+                auto& event =
+                    output.events[static_cast<std::size_t>(event_index)];
+                std::array<std::uint32_t, 3> triplet{};
+                bool valid = true;
+                for (int role = 0; role < 3; ++role) {
+                    const int sequence = event.representative_sequences[role];
+                    if (sequence < 0 || sequence >= static_cast<int>(
+                            alignment.sequence_count())) {
+                        valid = false;
+                        break;
+                    }
+                    triplet[role] = static_cast<std::uint32_t>(sequence);
+                }
+                if (!valid) continue;
+                const auto missing =
+                    next_rdp_legacy_optional_bridge::triplet_missing_data(
+                        alignment, triplet);
+                next_rdp_legacy_optional::BootscanRecheckOptions recheck;
+                recheck.circular = options.circular;
+                recheck.bonferroni = options.correction_bonferroni;
+                recheck.p_value_cutoff = options.p_value_cutoff;
+                recheck.correction_tests = correction_tests;
+                recheck.window_sites =
+                    std::max(5, options.bootscan_window_sites);
+                recheck.step_sites =
+                    std::max(1, options.bootscan_step_sites);
+                recheck.bootstrap_replicates = std::max(
+                    10, options.bootscan_bootstrap_replicates);
+                recheck.support_cutoff = options.bootscan_support_cutoff;
+                recheck.random_seed = options.bootscan_random_seed;
+                event.bootscan_recheck =
+                    next_rdp_legacy_optional::bootscan_recheck(
+                        alignment, triplet, missing,
+                        static_cast<std::size_t>(
+                            std::max(1, event.beginning)),
+                        static_cast<std::size_t>(
+                            std::max(1, event.ending)),
+                        recheck, bootscan_workspace);
             }
-            triplet[role] = static_cast<std::uint32_t>(sequence);
+            },
+            4);
+    }
+    if (options.enable_siscan_secondary) {
+      run_initial_rdp_ranges(
+        static_cast<int>(output.events.size()),
+        [&](const int first, const int last) {
+        next_rdp_legacy_optional::SiscanWorkspace siscan_workspace;
+        for (int event_index = first; event_index <= last; ++event_index) {
+          throw_if_cancelled(options);
+          auto& event = output.events[static_cast<std::size_t>(event_index)];
+          std::array<std::uint32_t, 3> triplet{};
+          bool valid = true;
+          for (int role = 0; role < 3; ++role) {
+              const int sequence = event.representative_sequences[role];
+              if (sequence < 0 ||
+                  sequence >= static_cast<int>(alignment.sequence_count())) {
+                  valid = false;
+                  break;
+              }
+              triplet[role] = static_cast<std::uint32_t>(sequence);
+          }
+          if (!valid) continue;
+          const auto missing =
+              next_rdp_legacy_optional_bridge::triplet_missing_data(
+                  alignment, triplet);
+          next_rdp_legacy_optional::SiscanOptions recheck;
+          recheck.circular = options.circular;
+          recheck.bonferroni = options.correction_bonferroni;
+          recheck.p_value_cutoff = options.p_value_cutoff;
+          recheck.correction_tests = correction_tests;
+          recheck.window_sites = std::max(5, options.siscan_window_sites);
+          recheck.step_sites = std::max(1, options.siscan_step_sites);
+          recheck.scan_permutations = std::max(
+              10, options.siscan_scan_permutations);
+          recheck.p_value_permutations = std::max<std::size_t>(
+              recheck.scan_permutations,
+              static_cast<std::size_t>(
+                  std::max(1, options.siscan_p_value_permutations)));
+          recheck.random_seed = options.siscan_random_seed;
+          event.siscan_recheck = next_rdp_legacy_optional::siscan_recheck(
+              alignment, triplet, missing, origins, disabled,
+              static_cast<std::size_t>(std::max(1, event.beginning)),
+              static_cast<std::size_t>(std::max(1, event.ending)), recheck,
+              siscan_workspace);
         }
-        if (!valid) continue;
-        const auto missing = next_rdp_legacy_optional_bridge::triplet_missing_data(
-            alignment, triplet);
-        if (options.enable_bootscan_secondary) {
-            next_rdp_legacy_optional::BootscanRecheckOptions recheck;
-            recheck.circular = options.circular;
-            recheck.bonferroni = options.correction_bonferroni;
-            recheck.p_value_cutoff = options.p_value_cutoff;
-            recheck.correction_tests = correction_tests;
-            recheck.window_sites = std::max(5, options.bootscan_window_sites);
-            recheck.step_sites = std::max(1, options.bootscan_step_sites);
-            recheck.bootstrap_replicates = std::max(10, options.bootscan_bootstrap_replicates);
-            recheck.support_cutoff = options.bootscan_support_cutoff;
-            recheck.random_seed = options.bootscan_random_seed;
-            event.bootscan_recheck = next_rdp_legacy_optional::bootscan_recheck(
-                alignment, triplet, missing,
-                static_cast<std::size_t>(std::max(1, event.beginning)),
-                static_cast<std::size_t>(std::max(1, event.ending)), recheck,
-                bootscan_workspace);
-        }
-        if (options.enable_siscan_secondary) {
-            next_rdp_legacy_optional::SiscanOptions recheck;
-            recheck.circular = options.circular;
-            recheck.bonferroni = options.correction_bonferroni;
-            recheck.p_value_cutoff = options.p_value_cutoff;
-            recheck.correction_tests = correction_tests;
-            recheck.window_sites = std::max(5, options.siscan_window_sites);
-            recheck.step_sites = std::max(1, options.siscan_step_sites);
-            recheck.scan_permutations = std::max(10, options.siscan_scan_permutations);
-            recheck.p_value_permutations = std::max<std::size_t>(
-                recheck.scan_permutations,
-                static_cast<std::size_t>(std::max(1, options.siscan_p_value_permutations)));
-            recheck.random_seed = options.siscan_random_seed;
-            event.siscan_recheck = next_rdp_legacy_optional::siscan_recheck(
-                alignment, triplet, missing, origins, disabled,
-                static_cast<std::size_t>(std::max(1, event.beginning)),
-                static_cast<std::size_t>(std::max(1, event.ending)), recheck,
-                siscan_workspace);
-        }
-      }
-    }, options.enable_bootscan_secondary ? 4 : 8);
+      }, 8);
+    }
 }
 
 // Module3.MakeAnalysisListQvR builds a deliberately constrained list rather
@@ -739,7 +859,7 @@ RdpInitialAnalysisResult run_rdp_initial_analysis(
     std::vector<unsigned char> redo(triplet_count, 0);
     auto& fss_rdp = shared_fss_rdp();
     auto& factorials = shared_factorial_tables();
-    auto& probability_estimate = shared_probability_estimate();
+    auto& probability_estimate = shared_probability_estimate(options);
     const int correction_tests = triplet_count;
     const double uncorrected_threshold =
         options.p_value_cutoff / correction_tests;
@@ -749,6 +869,7 @@ RdpInitialAnalysisResult run_rdp_initial_analysis(
     const int half_window = static_cast<int>(std::nearbyint(
         static_cast<double>(options.window_sites) / 2.0));
     const auto run_alist_rdp4 = [&](const int first, const int last) {
+        throw_if_cancelled(options);
         (void)MathFuncs::MyMathFuncs::AlistRDP4(
             store_lpv_upper_bound, store_lpv.data(),
             scan_state.analysis_list.data(), scan_state.analysis_list_last,
@@ -770,7 +891,10 @@ RdpInitialAnalysisResult run_rdp_initial_analysis(
     // XOver walk below is guarded by DoScans(0, 0).  Optional-only scans then
     // continue through the same cyclic scheduler after their method lanes
     // have populated XOverList.
-    run_initial_rdp_ranges(triplet_count, run_alist_rdp4);
+    // Keep cancellation responsive while the supplied per-row AlistRDP4
+    // kernel is running. Splitting a worker's deterministic range does not
+    // change its row-local writes or source order.
+    run_initial_rdp_ranges(triplet_count, run_alist_rdp4, 8, 32);
     report_progress(options, 0, 1, 0, triplet_count, 0);
 
     const RdpXoverSettings xover_settings{
@@ -1029,7 +1153,7 @@ RdpFullAnalysisResult run_rdp_full_analysis(
 
     auto& fss_rdp = shared_fss_rdp();
     auto& factorials = shared_factorial_tables();
-    auto& probability_estimate = shared_probability_estimate();
+    auto& probability_estimate = shared_probability_estimate(options);
     const int correction_tests = output.triplet_count;
     const int target = static_cast<int>(std::nearbyint(
         static_cast<double>(scan_state.sequence_length) / 10.0));

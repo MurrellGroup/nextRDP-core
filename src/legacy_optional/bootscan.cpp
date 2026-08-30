@@ -903,86 +903,38 @@ BootscanRecheckEvidence bootscan_recheck(
   event_beginning = std::clamp<std::size_t>(event_beginning, 1, length);
   event_ending = std::clamp<std::size_t>(event_ending, 1, length);
 
-  source_seqboot2(
+  const std::size_t source_num_windows = length / step_sites + 2;
+  configure_discovery_workspace(
+      alignment,
       window_sites,
+      step_sites,
       bootstrap_replicates,
       evidence.random_seed,
-      workspace.bootstrap_weights);
-  const std::size_t replicate_stride = bootstrap_replicates;
-  const std::size_t source_num_windows = length / step_sites + 2;
-  workspace.support_counts.assign(source_num_windows + 1, {0, 0, 0});
-  workspace.usable_windows.assign(source_num_windows + 1, 0);
-
-  std::array<std::vector<std::uint32_t>, 3> valid;
-  std::array<std::vector<std::uint32_t>, 3> differences;
+      workspace.pair_profile_cache_limit_bytes,
+      workspace);
+  std::array<std::shared_ptr<BootscanPairDistanceProfile>, 3> pair_profiles;
   for (std::size_t pair = 0; pair < 3; ++pair) {
-    valid[pair].resize(bootstrap_replicates);
-    differences[pair].resize(bootstrap_replicates);
+    const auto members = kPairs[pair];
+    pair_profiles[pair] = pair_distance_profile(
+        alignment,
+        triplet[members[0]],
+        triplet[members[1]],
+        window_sites,
+        step_sites,
+        bootstrap_replicates,
+        source_num_windows,
+        workspace);
   }
-
-  for (std::size_t window = 0; window <= source_num_windows; ++window) {
-    for (std::size_t pair = 0; pair < 3; ++pair) {
-      std::fill(valid[pair].begin(), valid[pair].end(), 0);
-      std::fill(differences[pair].begin(), differences[pair].end(), 0);
-    }
-    const long long offset = static_cast<long long>(window * step_sites) -
-        static_cast<long long>(window_sites / 2);
-    for (std::size_t local = 1; local <= window_sites; ++local) {
-      const std::size_t coordinate = wrapped_coordinate(
-          offset + static_cast<long long>(local), length);
-      std::array<std::uint8_t, 3> states{};
-      for (std::size_t member = 0; member < 3; ++member) {
-        states[member] = alignment.at(triplet[member], coordinate - 1);
-      }
-      for (std::size_t pair = 0; pair < 3; ++pair) {
-        const auto members = kPairs[pair];
-        if (states[members[0]] == 0 || states[members[1]] == 0) continue;
-        const bool differs = states[members[0]] != states[members[1]];
-        const std::size_t weight_offset = (local - 1) * replicate_stride;
-        for (std::size_t replicate = 0;
-             replicate < bootstrap_replicates;
-             ++replicate) {
-          const std::uint32_t weight =
-              workspace.bootstrap_weights[weight_offset + replicate];
-          valid[pair][replicate] += weight;
-          if (differs) differences[pair][replicate] += weight;
-        }
-      }
-    }
-
-    for (std::size_t replicate = 0;
-         replicate < bootstrap_replicates;
-         ++replicate) {
-      std::array<float, 3> distances{};
-      for (std::size_t pair = 0; pair < 3; ++pair) {
-        distances[pair] = source_jukes_cantor_distance(
-            valid[pair][replicate], differences[pair][replicate]);
-      }
-      if (!(distances[0] < 2.0F && distances[1] < 2.0F && distances[2] < 2.0F)) {
-        continue;
-      }
-      workspace.usable_windows[window] = 1;
-      if (distances[0] < distances[1] && distances[0] < distances[2]) {
-        ++workspace.support_counts[window][0];
-      } else if (distances[1] < distances[0] && distances[1] < distances[2]) {
-        ++workspace.support_counts[window][1];
-      } else if (distances[2] < distances[0] && distances[2] < distances[1]) {
-        ++workspace.support_counts[window][2];
-      }
-    }
-  }
+  combine_pair_profiles(
+      pair_profiles,
+      triplet_missing_data,
+      length,
+      step_sites,
+      bootstrap_replicates,
+      source_num_windows,
+      workspace,
+      evidence.erased_window_filter_applied);
   evidence.windows_scanned = source_num_windows + 1;
-
-  if (triplet_missing_data.size() == length) {
-    for (std::size_t coordinate = 1; coordinate <= length; ++coordinate) {
-      if (triplet_missing_data[coordinate - 1] == 0) continue;
-      const std::size_t window = coordinate / step_sites;
-      if (window >= workspace.support_counts.size()) continue;
-      workspace.support_counts[window] = {0, 0, 0};
-      workspace.usable_windows[window] = 0;
-      evidence.erased_window_filter_applied = true;
-    }
-  }
 
   workspace.event_window_indices.clear();
   const std::size_t last_source_window = length / step_sites > 0

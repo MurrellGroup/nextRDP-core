@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -476,7 +477,14 @@ struct WebContext {
     std::vector<unsigned char> disabled;
     std::vector<unsigned int> reference_groups;
     std::vector<int> review_states;
+    alignas(4) std::atomic<std::int32_t> cancel_requested{0};
 };
+
+bool web_cancellation_callback(void* user) {
+    const auto* context = static_cast<const WebContext*>(user);
+    return context != nullptr &&
+        context->cancel_requested.load(std::memory_order_relaxed) != 0;
+}
 
 void web_progress_callback(
     const int phase, const int round, const int processed_triplets,
@@ -2543,12 +2551,15 @@ NEXT_RDP_KEEPALIVE int rdp_scan_begin(
     }
     options.progress_callback = &web_progress_callback;
     options.progress_user = context;
+    options.cancellation_callback = &web_cancellation_callback;
+    options.cancellation_user = context;
     context->masked.assign(masked_sequences, masked_sequences + mask_length);
     context->disabled.assign(disabled_sequences, disabled_sequences + disabled_length);
     options.masked_sequences = context->masked;
     options.disabled_sequences = context->disabled;
     context->reference_groups = options.reference_groups;
     context->options = std::move(options);
+    context->cancel_requested.store(0, std::memory_order_relaxed);
     context->started = true;
     context->finished = false;
     context->progress_phase = 0;
@@ -2592,6 +2603,11 @@ NEXT_RDP_KEEPALIVE int rdp_scan_batch(const std::uint32_t handle, const std::uin
         context->full = run_rdp_full_analysis_from_fasta_text(context->fasta, context->options);
         context->finished = true;
         return 1;
+    } catch (const RdpAnalysisCancelled& error) {
+        context->error = error.what();
+        context->started = false;
+        context->finished = false;
+        return 2;
     } catch (const std::exception& error) {
         context->error = error.what();
         return -1;
@@ -2603,7 +2619,20 @@ NEXT_RDP_KEEPALIVE int rdp_reconcile(const std::uint32_t handle) {
     return context != nullptr && context->finished ? 1 : 0;
 }
 
-NEXT_RDP_KEEPALIVE void rdp_cancel(const std::uint32_t /*handle*/) {}
+NEXT_RDP_KEEPALIVE void rdp_cancel(const std::uint32_t handle) {
+    auto* context = web_context(handle);
+    if (context != nullptr) {
+        context->cancel_requested.store(1, std::memory_order_relaxed);
+    }
+}
+
+NEXT_RDP_KEEPALIVE std::uintptr_t rdp_get_cancel_flag_address(
+    const std::uint32_t handle) {
+    auto* context = web_context(handle);
+    if (context == nullptr) return 0;
+    static_assert(std::atomic<std::int32_t>::is_always_lock_free);
+    return reinterpret_cast<std::uintptr_t>(&context->cancel_requested);
+}
 
 NEXT_RDP_KEEPALIVE const char* rdp_get_progress_json(const std::uint32_t handle) {
     auto* context = web_context(handle);
