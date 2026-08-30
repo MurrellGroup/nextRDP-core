@@ -7574,6 +7574,9 @@ int oracle_fixture_chain(const std::string& directory) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (const char* workers = std::getenv("NEXT_RDP_WORKERS")) {
+        set_rdp_method_worker_threads(std::stoi(workers));
+    }
     if (argc == 2 && std::string_view(argv[1]) == "self-test") {
         return self_test();
     }

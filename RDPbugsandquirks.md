@@ -171,3 +171,21 @@ we may want to expose to users.
   respective fields on an already stable event vector. This split was checked
   by comparing complete one-thread and eight-thread JSON byte hashes for the
   combined primary+secondary lanes on all ten supplied datasets; all matched.
+
+- DNA5 `GetLaticePathP` does not seed the terminal Viterbi path with the
+  winning terminal state. It stores that state's back-pointer instead, then
+  begins the ordinary backward walk from that predecessor. This drops the
+  terminal state from the reconstructed path and is almost certainly an
+  off-by-one-style HMM quirk, but BURT training and breakpoint polishing must
+  retain it for compatibility.
+
+- DNA5 `CMaxD2P3` initializes its nominal one-third fallback as
+  `(float)(1 / 3)`. Because both operands are integers, the value is zero, not
+  one third. Quartets with no usable split score therefore receive three zero
+  components in the maximum-distance role heuristic. Preserve the integer
+  division until a cleaned-up statistical mode is explicitly introduced. Its
+  quartet calculations are otherwise independent, but the float distance
+  totals are accumulated in lexicographic quartet order. The pthread port may
+  evaluate quartets concurrently only when it stores each distance separately
+  and replays that reduction in source order. The one/eight-worker consensus
+  traces and complete cyclic result hashes match on all ten supplied datasets.

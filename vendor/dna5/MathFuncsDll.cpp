@@ -25016,7 +25016,7 @@ int MyMathFuncs::MakeCompressSeqP(int NextNo, int UBR, unsigned char *Recoded, i
 					//Dim Dummy As Long, x As Long, OptXY() As Double
 					//ReDim OptXY(NumberXY - 1, NumberXY - 1)
 					OptXY = (double*)calloc(NumberXY*NumberXY, sizeof(double));
-					
+
 					//ReDim LaticeAB(SLen, NumberXY - 1)
 					//ReDim LaticeXY(SLen, NumberXY - 1)
 					//double testv;
@@ -25035,7 +25035,7 @@ int MyMathFuncs::MakeCompressSeqP(int NextNo, int UBR, unsigned char *Recoded, i
 
 					if (PathMax == MaxL) {
 						free(OptXY);
-						
+
 						break;
 
 					}
@@ -28065,24 +28065,21 @@ double MyMathFuncs::ViterbiCP(int SLen, int NumberAB, int NumberXY, double *OptX
 	off2 = NumberAB;
 	off3 = SLen + 1;
 	for (X = 1; X <= SLen; X++) {
-
-		for (A = 0; A < NumberXY; A++) { //first state
-			offa = X - 1 + A*off3;
-			for (B = 0; B < NumberXY; B++) { //second state
-				OptXY[A + B*off1] = LaticeXY[offa] + TransitionM2[A + B*off1] + EmissionM2[RecodeB[X] + B*off2];
-
-			}
-		}
-
-
-
-		for (A = 0; A < NumberXY; A++) { //first state
+		// The original source first materialized every source/destination
+		// candidate and then immediately traversed the same matrix by
+		// destination.  Materialize each destination column immediately before
+		// consuming it.  Every expression, comparison, tie rule, and final OptXY
+		// cell remains identical, while the hot matrix stays cache-local.
+		for (A = 0; A < NumberXY; A++) { //destination state
 			offa = X + A*off3;
 			offa2 = A*off1;
 			LaticeXY[offa] = -10000000000000000;
-			for (B = 0; B < NumberXY; B++) { //second state
-				if (LaticeXY[offa] < OptXY[B + offa2]) {
-					LaticeXY[offa] = OptXY[B + offa2];
+			for (B = 0; B < NumberXY; B++) { //source state
+				const int option = B + offa2;
+				OptXY[option] = LaticeXY[X - 1 + B*off3] +
+					TransitionM2[option] + EmissionM2[RecodeB[X] + A*off2];
+				if (LaticeXY[offa] < OptXY[option]) {
+					LaticeXY[offa] = OptXY[option];
 					LaticeAB[offa] = B;
 				}
 			}

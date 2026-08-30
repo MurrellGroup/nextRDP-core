@@ -1,5 +1,6 @@
 #include "identification_state.hpp"
 #include "MathFuncsDll.h"
+#include "legacy_method_state.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -11,8 +12,205 @@
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 
 namespace {
+
+#if defined(NEXT_RDP_METHOD_MANUAL_THREADS) && !defined(NEXT_RDP_USE_REAL_OPENMP)
+
+struct MaximumDistanceQuartet {
+    std::array<int, 4> sequences{};
+    float distance = 0.0F;
+    bool contributes = false;
+};
+
+// Deterministic pthread form of DNA5.CMaxD2P3's OpenMP quartet loop. Each
+// quartet performs the literal source arithmetic independently. Distances are
+// then reduced in the original lexicographic quartet order, reproducing the
+// serial float additions while making the source's intended workshare usable
+// in pthread WASM.
+int calculate_maximum_distances_parallel(
+    const int sequence_length, const int next_no,
+    const std::array<int, 3>& representatives,
+    int beginning, int ending,
+    const std::vector<short>& sequence_data,
+    const std::vector<int>& informative_to_position,
+    const std::vector<int>& position_to_informative,
+    const std::vector<unsigned char>& nucleotide_map,
+    const std::vector<unsigned char>& included_mask,
+    const std::vector<unsigned char>& representative_mask,
+    const std::vector<float>& split_scores,
+    std::array<float, 3>& distance_totals,
+    std::array<int, 3>& distance_counts) {
+    const int stride = sequence_length + 1;
+    const int beginning_minus = beginning > 0
+        ? position_to_informative[beginning - 1]
+        : position_to_informative[beginning];
+    const int ending_plus = ending < sequence_length
+        ? position_to_informative[ending + 1]
+        : position_to_informative[ending];
+    beginning = position_to_informative[beginning];
+    ending = position_to_informative[ending];
+    const int informative_last = position_to_informative[sequence_length];
+
+    std::vector<unsigned char> recoded(sequence_data.size(), 0);
+    for (int sequence = 0; sequence <= next_no; ++sequence) {
+        const int offset = sequence * stride;
+        for (int site = 0; site <= sequence_length; ++site) {
+            const int nucleotide = sequence_data[site + offset];
+            recoded[site + offset] = nucleotide >= 0 &&
+                    nucleotide < static_cast<int>(nucleotide_map.size())
+                ? nucleotide_map[static_cast<std::size_t>(nucleotide)] : 0;
+        }
+    }
+
+    std::vector<MaximumDistanceQuartet> quartets;
+    for (int first = 0; first <= next_no - 3; ++first) {
+        if (included_mask[first] == 0) continue;
+        for (int second = first + 1; second <= next_no - 2; ++second) {
+            if (included_mask[second] == 0) continue;
+            for (int third = second + 1; third <= next_no - 1; ++third) {
+                if (included_mask[third] == 0) continue;
+                for (int fourth = third + 1; fourth <= next_no; ++fourth) {
+                    if (included_mask[fourth] == 0) continue;
+                    if (representative_mask[first] +
+                            representative_mask[second] +
+                            representative_mask[third] +
+                            representative_mask[fourth] == 0) {
+                        continue;
+                    }
+                    quartets.push_back({{first, second, third, fourth}});
+                }
+            }
+        }
+    }
+
+    const auto score_range = [&](
+        const MaximumDistanceQuartet& quartet, const int first_site,
+        const int last_site, float& first, float& second, float& third) {
+        if (first_site > last_site) return;
+        const int first_offset = quartet.sequences[0] * stride;
+        const int second_offset = quartet.sequences[1] * stride;
+        const int third_offset = quartet.sequences[2] * stride;
+        const int fourth_offset = quartet.sequences[3] * stride;
+        for (int site = first_site; site <= last_site; ++site) {
+            const int position = informative_to_position[site];
+            const unsigned int cell =
+                recoded[position + first_offset] +
+                recoded[position + second_offset] * 5U +
+                recoded[position + third_offset] * 25U +
+                recoded[position + fourth_offset] * 125U;
+            first = first + split_scores[cell];
+            second = second + split_scores[cell + 625U];
+            third = third + split_scores[cell + 1250U];
+        }
+    };
+    const auto evaluate = [&](MaximumDistanceQuartet& quartet) {
+        float outside_first = 0.0F;
+        float outside_second = 0.0F;
+        float outside_third = 0.0F;
+        float inside_first = 0.0F;
+        float inside_second = 0.0F;
+        float inside_third = 0.0F;
+        // Preserve `(float)(1 / 3)` from CMaxD2P3: integer division makes
+        // the source fallback exactly zero.
+        const float one_third = static_cast<float>(1 / 3);
+        if (beginning < ending) {
+            score_range(quartet, 1, beginning_minus,
+                        outside_first, outside_second, outside_third);
+            score_range(quartet, ending_plus, informative_last,
+                        outside_first, outside_second, outside_third);
+            float total = outside_first + outside_second + outside_third;
+            if (total > 0.0F) {
+                outside_first = outside_first / total;
+                outside_second = outside_second / total;
+                outside_third = outside_third / total;
+                score_range(quartet, beginning, ending,
+                            inside_first, inside_second, inside_third);
+                total = inside_first + inside_second + inside_third;
+                if (total > 0.0F) {
+                    inside_first = inside_first / total;
+                    inside_second = inside_second / total;
+                    inside_third = inside_third / total;
+                } else {
+                    inside_first = inside_second = inside_third = one_third;
+                    outside_first = outside_second = outside_third = one_third;
+                }
+            } else {
+                outside_first = outside_second = outside_third = one_third;
+                inside_first = inside_second = inside_third = one_third;
+            }
+        } else {
+            score_range(quartet, ending_plus, beginning_minus,
+                        outside_first, outside_second, outside_third);
+            float total = outside_first + outside_second + outside_third;
+            if (total > 0.0F) {
+                outside_first = outside_first / total;
+                outside_second = outside_second / total;
+                outside_third = outside_third / total;
+                score_range(quartet, 1, ending,
+                            inside_first, inside_second, inside_third);
+                score_range(quartet, beginning, informative_last,
+                            inside_first, inside_second, inside_third);
+                total = inside_first + inside_second + inside_third;
+                if (total > 0.0F) {
+                    inside_first = inside_first / total;
+                    inside_second = inside_second / total;
+                    inside_third = inside_third / total;
+                } else {
+                    inside_first = inside_second = inside_third = one_third;
+                    outside_first = outside_second = outside_third = one_third;
+                }
+            } else {
+                outside_first = outside_second = outside_third = one_third;
+                inside_first = inside_second = inside_third = one_third;
+            }
+        }
+        if (inside_first != one_third || inside_second != one_third) {
+            const float first = static_cast<float>(
+                std::fabs(inside_first - outside_first));
+            const float second = static_cast<float>(
+                std::fabs(inside_second - outside_second));
+            const float third = static_cast<float>(
+                std::fabs(inside_third - outside_third));
+            const float sum = first + second + third;
+            quartet.distance = static_cast<float>(sum);
+            quartet.contributes = true;
+        }
+    };
+
+    const int requested = std::max(1, rdp_method_worker_threads());
+    const int workers = std::min(
+        requested, static_cast<int>(quartets.size()));
+    std::vector<std::thread> threads;
+    threads.reserve(static_cast<std::size_t>(workers));
+    for (int worker = 0; worker < workers; ++worker) {
+        const int first = static_cast<int>(quartets.size()) * worker / workers;
+        const int last = static_cast<int>(quartets.size()) * (worker + 1) /
+            workers;
+        threads.emplace_back([&, first, last] {
+            for (int index = first; index < last; ++index) {
+                evaluate(quartets[static_cast<std::size_t>(index)]);
+            }
+        });
+    }
+    for (auto& thread : threads) thread.join();
+
+    for (const auto& quartet : quartets) {
+        if (!quartet.contributes) continue;
+        for (int role = 0; role < 3; ++role) {
+            if (std::find(quartet.sequences.begin(), quartet.sequences.end(),
+                          representatives[role]) == quartet.sequences.end()) {
+                continue;
+            }
+            distance_totals[role] += quartet.distance;
+            ++distance_counts[role];
+        }
+    }
+    return 1;
+}
+
+#endif
 
 double vb_round(const double value, const double scale) {
     return std::nearbyint(value * scale) / scale;
@@ -3929,16 +4127,29 @@ RdpMaximumDistanceState calculate_rdp_maximum_distances(
         static_cast<std::size_t>(stride) * count, 0);
     std::array<float, 3> outside{};
     std::array<float, 3> inside{};
-    state.result = MathFuncs::MyMathFuncs::CMaxD2P3(
-        state.included_last, sequences[0], sequences[1], sequences[2],
-        beginning, ending, next_no, sequence_length,
-        const_cast<short*>(sequence_data.data()), sequence_scratch.data(),
-        state.informative_to_position.data(),
-        state.position_to_informative.data(), state.nucleotide_map.data(),
-        state.included_sequences.data(), state.included_mask.data(),
-        state.representative_mask.data(), outside.data(), inside.data(),
-        state.split_scores.data(), state.distance_totals.data(),
-        state.distance_counts.data());
+#if defined(NEXT_RDP_METHOD_MANUAL_THREADS) && !defined(NEXT_RDP_USE_REAL_OPENMP)
+    if (rdp_method_worker_threads() > 1) {
+        state.result = calculate_maximum_distances_parallel(
+            sequence_length, next_no, sequences, beginning, ending,
+            sequence_data, state.informative_to_position,
+            state.position_to_informative, state.nucleotide_map,
+            state.included_mask, state.representative_mask,
+            state.split_scores, state.distance_totals,
+            state.distance_counts);
+    } else
+#endif
+    {
+        state.result = MathFuncs::MyMathFuncs::CMaxD2P3(
+            state.included_last, sequences[0], sequences[1], sequences[2],
+            beginning, ending, next_no, sequence_length,
+            const_cast<short*>(sequence_data.data()), sequence_scratch.data(),
+            state.informative_to_position.data(),
+            state.position_to_informative.data(), state.nucleotide_map.data(),
+            state.included_sequences.data(), state.included_mask.data(),
+            state.representative_mask.data(), outside.data(), inside.data(),
+            state.split_scores.data(), state.distance_totals.data(),
+            state.distance_counts.data());
+    }
     if (state.distance_counts[0] > 0 && state.distance_counts[1] > 0 &&
         state.distance_counts[2] > 0) {
         for (int role = 0; role < 3; ++role) {
