@@ -160,3 +160,14 @@ we may want to expose to users.
   reference pairs entirely. The desktop correction bookkeeping still derives
   its opportunity count from reference-group pairs × queries, which can differ
   from the number of emitted triplets when groups have uneven sizes.
+
+- The browser-only direct BootScan and SISCAN lanes are independent through
+  both discovery and their fixed-bound secondary checks: they use separate
+  workspaces and write separate method fields. Their source-visible ordering
+  is nevertheless BootScan before SISCAN within each permanent analysis-list
+  row. The pthread port may evaluate those lanes concurrently only if it keeps
+  separate per-row result buffers and merges BootScan then SISCAN in that
+  original row order. Likewise, concurrent rechecks may update only their
+  respective fields on an already stable event vector. This split was checked
+  by comparing complete one-thread and eight-thread JSON byte hashes for the
+  combined primary+secondary lanes on all ten supplied datasets; all matched.

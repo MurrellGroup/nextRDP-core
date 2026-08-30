@@ -194,6 +194,41 @@ void run_initial_rdp_ranges(
 #endif
 }
 
+template <typename FirstLane, typename SecondLane>
+void run_independent_method_lanes(
+    FirstLane&& first_lane, SecondLane&& second_lane,
+    const int first_worker_limit, const int second_worker_limit) {
+#if defined(NEXT_RDP_METHOD_MANUAL_THREADS) && !defined(NEXT_RDP_USE_REAL_OPENMP)
+    const int requested = std::max(1, rdp_method_worker_threads());
+    if (requested > 1) {
+        const int first_workers = std::min(
+            first_worker_limit, std::max(1, (requested + 1) / 2));
+        const int second_workers = std::min(
+            second_worker_limit, std::max(1, requested - first_workers));
+        std::exception_ptr first_failure;
+        std::thread first_thread([&] {
+            try {
+                first_lane(first_workers);
+            } catch (...) {
+                first_failure = std::current_exception();
+            }
+        });
+        std::exception_ptr second_failure;
+        try {
+            second_lane(second_workers);
+        } catch (...) {
+            second_failure = std::current_exception();
+        }
+        first_thread.join();
+        if (first_failure) std::rethrow_exception(first_failure);
+        if (second_failure) std::rethrow_exception(second_failure);
+        return;
+    }
+#endif
+    first_lane(first_worker_limit);
+    second_lane(second_worker_limit);
+}
+
 void trace_legacy_method_state(const char* label,
                                const RdpRawEventState& events) {
     if (std::getenv("RDP_TRACE_TEMP") == nullptr) return;
@@ -492,13 +527,15 @@ void append_legacy_optional_events(
     const std::uint64_t correction_tests = std::max<std::uint64_t>(
         1, static_cast<std::uint64_t>(output.triplet_count));
     const int list_last = scan_state.analysis_list_last;
-    std::vector<std::vector<RdpFinalEvent>> triplet_events(
+    std::vector<std::vector<RdpFinalEvent>> bootscan_triplet_events(
+        static_cast<std::size_t>(list_last + 1));
+    std::vector<std::vector<RdpFinalEvent>> siscan_triplet_events(
         static_cast<std::size_t>(list_last + 1));
     // BootScan and SISCAN discovery records are independent per analysis-list
     // row. Give each deterministic range its own cache/context, retain every
     // row's method/candidate order, then merge by the original list index.
     // This makes the browser workers useful without changing event ordering.
-    if (options.enable_bootscan) {
+    const auto run_bootscan = [&](const int worker_limit) {
       run_initial_rdp_ranges(list_last + 1, [&](const int first, const int last) {
       std::vector<std::uint8_t> missing;
       next_rdp_legacy_optional::BootscanWorkspace bootscan_workspace;
@@ -560,13 +597,13 @@ void append_legacy_optional_events(
                 }
                 event.bootscan_available = true;
                 event.bootscan_discovery = candidate;
-                triplet_events[static_cast<std::size_t>(index)].push_back(
-                    std::move(event));
+                bootscan_triplet_events[
+                    static_cast<std::size_t>(index)].push_back(std::move(event));
             }
       }
-      }, 4);
-    }
-    if (options.enable_siscan) {
+      }, worker_limit);
+    };
+    const auto run_siscan = [&](const int worker_limit) {
       run_initial_rdp_ranges(list_last + 1, [&](const int first, const int last) {
         std::vector<std::uint8_t> missing;
         next_rdp_legacy_optional::SiscanWorkspace siscan_workspace;
@@ -630,14 +667,26 @@ void append_legacy_optional_events(
               }
               event.siscan_available = true;
               event.siscan_discovery = candidate;
-              triplet_events[static_cast<std::size_t>(index)].push_back(
+              siscan_triplet_events[static_cast<std::size_t>(index)].push_back(
                   std::move(event));
           }
         }
-      }, 8);
+      }, worker_limit);
+    };
+    if (options.enable_bootscan && options.enable_siscan) {
+        run_independent_method_lanes(run_bootscan, run_siscan, 4, 8);
+    } else if (options.enable_bootscan) {
+        run_bootscan(4);
+    } else if (options.enable_siscan) {
+        run_siscan(8);
     }
-    for (auto& row : triplet_events) {
-        for (auto& event : row) {
+    for (std::size_t index = 0;
+         index < bootscan_triplet_events.size(); ++index) {
+        for (auto& event : bootscan_triplet_events[index]) {
+            event.event_number = static_cast<int>(output.events.size()) + 1;
+            output.events.push_back(std::move(event));
+        }
+        for (auto& event : siscan_triplet_events[index]) {
             event.event_number = static_cast<int>(output.events.size()) + 1;
             output.events.push_back(std::move(event));
         }
@@ -668,7 +717,7 @@ void apply_legacy_optional_rechecks(
     }
     const std::uint64_t correction_tests = std::max<std::uint64_t>(
         1, static_cast<std::uint64_t>(output.triplet_count));
-    if (options.enable_bootscan_secondary) {
+    const auto run_bootscan_rechecks = [&](const int worker_limit) {
         run_initial_rdp_ranges(
             static_cast<int>(output.events.size()),
             [&](const int first, const int last) {
@@ -715,9 +764,9 @@ void apply_legacy_optional_rechecks(
                         recheck, bootscan_workspace);
             }
             },
-            4);
-    }
-    if (options.enable_siscan_secondary) {
+            worker_limit);
+    };
+    const auto run_siscan_rechecks = [&](const int worker_limit) {
       run_initial_rdp_ranges(
         static_cast<int>(output.events.size()),
         [&](const int first, const int last) {
@@ -760,7 +809,15 @@ void apply_legacy_optional_rechecks(
               static_cast<std::size_t>(std::max(1, event.ending)), recheck,
               siscan_workspace);
         }
-      }, 8);
+      }, worker_limit);
+    };
+    if (options.enable_bootscan_secondary && options.enable_siscan_secondary) {
+        run_independent_method_lanes(
+            run_bootscan_rechecks, run_siscan_rechecks, 4, 8);
+    } else if (options.enable_bootscan_secondary) {
+        run_bootscan_rechecks(4);
+    } else if (options.enable_siscan_secondary) {
+        run_siscan_rechecks(8);
     }
 }
 
