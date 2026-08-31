@@ -1214,7 +1214,13 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
         coordinate = std::clamp(coordinate, 1, length);
         coordinates.push_back(coordinate);
     };
-    if (!exact_detection_profile) {
+    // Source-kernel optional profiles are already sampled on their own exact
+    // coordinate grid, even when they are reconstructed from the original
+    // alignment for a later cyclic event. Injecting breakpoint coordinates
+    // into that grid desynchronizes coordinates from the parallel value
+    // arrays (and could read beyond those arrays). Only the generic identity
+    // fallback needs explicit breakpoint samples.
+    if (!exact_rdp_profile && !exact_optional_profile) {
         add_coordinate(event.beginning);
         add_coordinate(event.ending);
         std::sort(coordinates.begin(), coordinates.end());
@@ -1256,7 +1262,11 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
         } else if (exact_optional_profile &&
                    coordinate_index < optional_coordinates.size()) {
             for (int pair = 0; pair < 3; ++pair) {
-                point[pair] = optional_values[pair][coordinate_index];
+                // CHIMAERA has a single target/parent trace; its other two
+                // pair slots are intentionally absent. Keep those display
+                // lanes at zero instead of indexing empty vectors.
+                point[pair] = coordinate_index < optional_values[pair].size()
+                    ? optional_values[pair][coordinate_index] : 0.0;
             }
         } else if (program == 8) {
             for (int target = 0; target < 3; ++target) {
