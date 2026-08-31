@@ -138,12 +138,12 @@ struct HmmCycleState {
     std::array<double, 9> transition{};
     std::array<double, 9> emission{};
     std::array<double, 3> initial{};
-    std::vector<int> path;
 };
 
 struct HmmCycleOutcome {
     std::vector<HmmCycleState> iterations;
     HmmCycleState exhausted_iterations;
+    std::vector<int> exhausted_path;
     bool exhausted = false;
 };
 
@@ -183,9 +183,35 @@ HmmCycleState capture_hmm_cycle_state(
     const double maximum_likelihood,
     const std::array<double, 9>& transition,
     const std::array<double, 9>& emission,
-    const std::array<double, 3>& initial,
-    const std::vector<int>& path) {
-    return {maximum_likelihood, transition, emission, initial, path};
+    const std::array<double, 3>& initial) {
+    return {maximum_likelihood, transition, emission, initial};
+}
+
+void decode_hmm_path(
+    const HmmInput& input, const HmmCycleState& state, int* path) {
+    constexpr int states = 3;
+    constexpr int symbols = 3;
+    const int lattice_stride = input.slen + 1;
+    std::array<double, states * states> options{};
+    std::vector<double> lattice_backtrack(
+        static_cast<std::size_t>(lattice_stride * states), 0.0);
+    std::vector<double> lattice_values(
+        static_cast<std::size_t>(lattice_stride * states), 0.0);
+    for (int hmm_state = 0; hmm_state < states; ++hmm_state) {
+        lattice_values[hmm_state * lattice_stride] =
+            state.emission[input.recode[0] + hmm_state * symbols] +
+            state.initial[hmm_state];
+    }
+    (void)MathFuncs::MyMathFuncs::ViterbiCP(
+        input.slen, symbols, states, options.data(),
+        const_cast<unsigned char*>(input.recode.data()),
+        lattice_values.data(),
+        const_cast<double*>(state.transition.data()),
+        const_cast<double*>(state.emission.data()),
+        lattice_backtrack.data());
+    (void)MathFuncs::MyMathFuncs::GetLaticePathP(
+        input.slen, states, lattice_values.data(), lattice_backtrack.data(),
+        path);
 }
 
 HmmCycleOutcome run_hmm_cycle(
@@ -246,7 +272,7 @@ HmmCycleOutcome run_hmm_cycle(
                 input.slen, states, lattice_values.data(),
                 lattice_backtrack.data(), path.data());
         outcome.iterations.push_back(capture_hmm_cycle_state(
-            maximum_likelihood, transition, emission, initial, path));
+            maximum_likelihood, transition, emission, initial));
         if (preceding_likelihood == maximum_likelihood) {
             return outcome;
         }
@@ -287,7 +313,8 @@ HmmCycleOutcome run_hmm_cycle(
     // 100-iteration bound is exhausted, even though MaxL and LaticePath came
     // from the preceding Viterbi pass.
     outcome.exhausted_iterations = capture_hmm_cycle_state(
-        preceding_likelihood, transition, emission, initial, path);
+        preceding_likelihood, transition, emission, initial);
+    outcome.exhausted_path = std::move(path);
     outcome.exhausted = true;
     return outcome;
 }
@@ -316,8 +343,11 @@ float train_hmm_restarts_parallel(
 
     double best_likelihood = -1000000.0;
     double path_maximum = 0.0;
+    const HmmCycleState* best_state = nullptr;
+    const std::vector<int>* best_exhausted_path = nullptr;
     for (const auto& outcome : outcomes) {
         const HmmCycleState* selected = nullptr;
+        bool selected_exhausted = false;
         for (const auto& iteration : outcome.iterations) {
             if (path_maximum == iteration.maximum_likelihood) {
                 selected = &iteration;
@@ -330,14 +360,28 @@ float train_hmm_restarts_parallel(
                 selected = &outcome.iterations.back();
             } else {
                 selected = &outcome.exhausted_iterations;
+                selected_exhausted = true;
             }
         }
         if (selected->maximum_likelihood <= best_likelihood) continue;
         best_likelihood = selected->maximum_likelihood;
-        std::copy(selected->transition.begin(), selected->transition.end(), transition);
-        std::copy(selected->emission.begin(), selected->emission.end(), emission);
-        std::copy(selected->initial.begin(), selected->initial.end(), initial);
-        std::copy(selected->path.begin(), selected->path.end(), path);
+        best_state = selected;
+        best_exhausted_path = selected_exhausted
+            ? &outcome.exhausted_path : nullptr;
+    }
+    if (best_state != nullptr) {
+        std::copy(best_state->transition.begin(), best_state->transition.end(),
+                  transition);
+        std::copy(best_state->emission.begin(), best_state->emission.end(),
+                  emission);
+        std::copy(best_state->initial.begin(), best_state->initial.end(),
+                  initial);
+        if (best_exhausted_path != nullptr) {
+            std::copy(best_exhausted_path->begin(),
+                      best_exhausted_path->end(), path);
+        } else {
+            decode_hmm_path(input, *best_state, path);
+        }
     }
     return static_cast<float>(best_likelihood);
 }
