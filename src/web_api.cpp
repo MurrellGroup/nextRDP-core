@@ -2217,8 +2217,14 @@ std::string full_json(const WebContext& context) {
     append_method("MAXCHI", context.options.enable_maxchi);
     append_method("CHIMAERA", context.options.enable_chimaera);
     append_method("3SEQ", context.options.enable_three_seq);
-    append_method("BOOTSCAN", context.options.enable_bootscan || context.options.enable_bootscan_secondary);
-    append_method("SISCAN", context.options.enable_siscan || context.options.enable_siscan_secondary);
+    // `enabledMethods` is consumed as the discovery-method list by the web
+    // review/export surfaces.  Secondary BootScan/SISCAN are corroboration
+    // passes over events discovered by another method; they must not be
+    // described as methods that participated in strongest-first selection.
+    // Their independent state is already exported by the corresponding
+    // `*SecondaryEnabled` fields above.
+    append_method("BOOTSCAN", context.options.enable_bootscan);
+    append_method("SISCAN", context.options.enable_siscan);
     output << ']'
            << ",\"events\":[";
     for (std::size_t index = 0; index < result.events.size(); ++index) {
