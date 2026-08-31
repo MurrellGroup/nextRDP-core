@@ -875,12 +875,12 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
         : context.options.window_sites;
     requested_window = std::max(2, requested_window);
     const int half_window = std::max(1, requested_window / 2);
-    // RDP5's review API exposes the first event's retained XOverHomologyP
-    // trace verbatim. Later cyclic events are reconstructed from the original
-    // alignment by the legacy client; treating their retained working trace
-    // as exact would make the page claim historical points that the source
-    // never exposed for that event.
-    const bool exact_rdp_profile = program == 0 && signal_id == 0 &&
+    // Each cyclic RDP event now retains the XOverHomologyP trace produced on
+    // the live detection alignment immediately before tract erasure. Use that
+    // source-shaped profile for every RDP event. Reconstructing later events
+    // from raw pair identity on the original alignment changes both the site
+    // set and the vertical scale, which is visibly not an RDP DrawPlots curve.
+    const bool exact_rdp_profile = program == 0 &&
         event.rdp_profile.exact &&
         event.rdp_profile.positions.size() ==
             event.rdp_profile.counts[0].size() &&
