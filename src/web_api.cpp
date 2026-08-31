@@ -3076,7 +3076,11 @@ NEXT_RDP_KEEPALIVE const char* rdp_export_recombinant_columns_removed_fasta(cons
         for (std::size_t coordinate = 1; coordinate <= length; ++coordinate) {
             if (removed[coordinate] == 0) retained.push_back(context->alignment.sequences[sequence][coordinate - 1]);
         }
-        if (!retained.empty()) write_fasta_record(output, context->alignment.names[sequence], retained);
+        // If accepted tracts cover the entire alignment, the valid result is
+        // a zero-column alignment rather than an unavailable export. Keep one
+        // header per input row so the browser can download and identify that
+        // result instead of mistaking an empty string for an engine failure.
+        write_fasta_record(output, context->alignment.names[sequence], retained);
     }
     return cached(*context, output.str());
 }
