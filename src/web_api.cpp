@@ -19,6 +19,7 @@
 #include <iomanip>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -1187,6 +1188,50 @@ std::string signal_plot_json(const WebContext& context, std::uint32_t signal_id)
                 for (const double value : optional_values[pair]) {
                     optional_minimum = std::min(optional_minimum, value);
                     optional_maximum = std::max(optional_maximum, value);
+                }
+            }
+        }
+    }
+    // Circular BootScan/SISCAN window iterators can finish with wrapped
+    // low-numbered centers after the high end of the alignment. SVG review
+    // coordinates must be monotone, so reorder coordinates and their method
+    // values together. Drop duplicate centers while retaining the first
+    // source occurrence; all non-circular and variable-site profiles are
+    // already in this order and pass through unchanged.
+    if (!optional_coordinates.empty()) {
+        std::vector<std::size_t> order(optional_coordinates.size());
+        std::iota(order.begin(), order.end(), 0);
+        std::stable_sort(
+            order.begin(), order.end(), [&](const std::size_t first,
+                                             const std::size_t second) {
+                return optional_coordinates[first] < optional_coordinates[second];
+            });
+        bool needs_reorder = false;
+        for (std::size_t index = 0; index < order.size(); ++index) {
+            if (order[index] != index ||
+                (index > 0 && optional_coordinates[order[index]] ==
+                    optional_coordinates[order[index - 1]])) {
+                needs_reorder = true;
+                break;
+            }
+        }
+        if (needs_reorder) {
+            const auto original_coordinates = optional_coordinates;
+            const auto original_values = optional_values;
+            optional_coordinates.clear();
+            for (auto& values : optional_values) values.clear();
+            for (const std::size_t source : order) {
+                if (!optional_coordinates.empty() &&
+                    optional_coordinates.back() == original_coordinates[source]) {
+                    continue;
+                }
+                optional_coordinates.push_back(original_coordinates[source]);
+                for (int pair = 0; pair < 3; ++pair) {
+                    if (original_values[pair].size() ==
+                        original_coordinates.size()) {
+                        optional_values[pair].push_back(
+                            original_values[pair][source]);
+                    }
                 }
             }
         }
